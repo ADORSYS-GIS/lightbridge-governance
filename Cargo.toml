@@ -44,17 +44,17 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # some members and not others: 0.4.16's cratestack-core added a
 # `TransportStyle::Grpc` variant that the older cratestack-macros did not cover.
 # Bump all five together or none.
-cratestack-core = "0.4.18"
-cratestack-axum = "0.4.18"
+cratestack-core = "0.4.19"
+cratestack-axum = "0.4.19"
 # The server facade (schema codegen + sqlx/axum runtime). Renamed to `cratestack`
 # because `include_server_schema!` emits `::cratestack::*` paths.
-cratestack = { package = "cratestack-pg", version = "0.4.18" }
+cratestack = { package = "cratestack-pg", version = "0.4.19" }
 # CBOR is the wire format for the product API (ADR-0009).
-cratestack-codec-cbor = "0.4.18"
+cratestack-codec-cbor = "0.4.19"
 # JSON is retained for ONE reason: Authorino's `metadata.http` step posts and
 # parses `application/json` and cannot be taught CBOR, so `/internal/v1/resolve`
 # must speak JSON. Do not use it for the product API.
-cratestack-codec-json = "0.4.18"
+cratestack-codec-json = "0.4.19"
 
 # ⚠️ `default-features = false` is load-bearing, not tidiness. The default
 # feature set includes `rustls`, which resolves to
