@@ -10,7 +10,7 @@ on:
 # polished artifacts. https://adorsys-gis.github.io/ai-governance/
 jobs:
   governance-check:
-    runs-on: adorsys-gis-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Check PR body for required sections

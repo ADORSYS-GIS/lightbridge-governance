@@ -27,11 +27,18 @@ just up             # local Postgres
 just migrate
 ```
 
-There is no `npm` and no Python here. `cargo` and `sqlx` are the toolchain.
+There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain.
 
 ## Conventions that are not negotiable
 
+- **cratestack is the only persistence layer** (ADR-0009). `crates/governance-core/schema/governance.cstack`
+  is the source of truth for tables, migrations, CRUD and routes. Do **not** hand-write SQL
+  or a migration — if the generated CRUD cannot express it, add a schema `procedure`.
+- **REST transport, CBOR payloads.** JSON is retained for exactly one consumer:
+  `/internal/v1/resolve`, because Authorino's `metadata.http` speaks JSON and cannot be
+  taught CBOR. Do not reach for JSON on the product API.
 - **Money is integer micro-USD** (ADR-0008). No float touches a monetary value, ever.
+  cratestack's `Int` is `i64`, so never model money as `Decimal` or `Float` in the schema.
 - **`thiserror` in libraries, `anyhow` in binaries.** No `unwrap()` outside tests.
 - **Never log a token, a signed URL, or a request/response body.** Wrap secrets in a
   newtype whose `Debug`/`Display` print `<redacted>` so this is structural, not a habit.
@@ -50,6 +57,9 @@ There is no `npm` and no Python here. `cargo` and `sqlx` are the toolchain.
 - ⚠️ Never mark a `secretKeyRef` env var `optional: true`. Env vars bind once at pod start
   and never refresh, so an optional ref lets a pod that beats ESO capture an **empty**
   credential and fail auth forever.
+- ⚠️ The cratestack family must move in **lockstep**. lightbridge-authz broke `main` by
+  bumping some members and not others — a newer `cratestack-core` added a
+  `TransportStyle::Grpc` variant the older `cratestack-macros` did not cover.
 - ⚠️ `/internal/v1/resolve` is in Authorino's ext_authz hot path. Keep it fast and cached.
   **Never add a database lookup to the Authorino step itself** — that pattern was disabled
   in production on 2026-07-02 because the ext_authz timeout is shorter than the lookup.

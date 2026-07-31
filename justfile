@@ -42,6 +42,7 @@ down:
 nuke:
 	docker compose -p lightbridge-governance -f compose.yaml down -v
 
-# Apply migrations against the local database
+# Apply migrations. cratestack derives these from schema/governance.cstack --
+# there are no hand-written migration files to edit (ADR-0009).
 migrate:
-	sqlx migrate run --database-url postgres://postgres:postgres@localhost:5432/lightbridge_governance
+	cargo run --bin governance-ctl -- migrate

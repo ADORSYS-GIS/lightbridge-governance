@@ -8,7 +8,8 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+cratestack.workspace = true
+cratestack-core.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

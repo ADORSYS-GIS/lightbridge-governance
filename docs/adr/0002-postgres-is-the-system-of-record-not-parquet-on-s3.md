@@ -28,8 +28,9 @@ object exactly as fetched, so any day can be replayed without calling the provid
 - Deletes an entire subsystem: no Parquet writer, no Arrow/object_store/DataFusion in the
   dependency tree, no hand-rolled partition-pruning query layer, and no separate
   `normalize` and `publish-metrics` commands.
-- Idempotent reprocessing becomes `INSERT ... ON CONFLICT DO UPDATE`, which is what the
-  spec's "deterministic keys and overwrite-safe processing" was describing.
+- Idempotent reprocessing becomes an upsert on a unique key — cratestack's `UpsertModelInput`
+  (ADR-0009) — which is what the spec's "deterministic keys and overwrite-safe processing"
+  was describing.
 - Server-side filtering and pagination are ordinary SQL.
 - Unlocks ADR-0003 -- Grafana reads it directly.
 - Sizing is trivial: ~500 seats x 365 days is ~200k rows/year on the largest table.

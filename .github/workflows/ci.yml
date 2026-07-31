@@ -11,10 +11,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # GitHub-hosted runners are billing-blocked org-wide; every adorsys-gis repo
-  # uses the self-hosted ARC pool.
+  # This repository is PUBLIC, so GitHub-hosted runners are free and the org-wide
+  # Actions billing block (which applies to private repos) does not bite. Private
+  # repos in this org must use `adorsys-gis-runner` instead -- if this repo is ever
+  # made private, these workflows stall in `queued` until they are switched back.
   code-checks:
-    runs-on: adorsys-gis-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -26,7 +28,7 @@ jobs:
 
   test:
     needs: code-checks
-    runs-on: adorsys-gis-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +36,7 @@ jobs:
       - run: cargo test --all-features
 
   sast:
-    runs-on: adorsys-gis-runner
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         checks: [advisories, "bans licenses sources"]

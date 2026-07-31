@@ -44,6 +44,10 @@ enum Command {
     Verify,
     /// Print connector status: last success, report age, unmapped users.
     Status,
+    /// Apply the schema migrations cratestack derives from
+    /// `schema/governance.cstack`. There are no hand-written migration files
+    /// (ADR-0009).
+    Migrate,
 }
 
 #[tokio::main]

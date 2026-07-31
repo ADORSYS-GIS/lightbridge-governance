@@ -12,9 +12,14 @@ pub enum Error {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
-    /// A database operation failed.
-    #[error("database error")]
-    Database(#[from] sqlx::Error),
+    /// A persistence or transport operation failed inside cratestack.
+    ///
+    /// Deliberately opaque: the inner error can carry query text and parameter
+    /// values, which for this service can include a credential hash. Log it at
+    /// the boundary with the fields you actually want; never let `Display`
+    /// surface it to a caller.
+    #[error("storage error")]
+    Storage(#[from] cratestack_core::CoolError),
 }
 
 /// Convenience alias for fallible governance operations.

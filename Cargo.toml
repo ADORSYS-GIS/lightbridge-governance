@@ -33,8 +33,29 @@ tower-http = { version = "0.7", features = ["cors", "trace"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
-# --- storage ---
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "macros", "migrate"] }
+# --- storage: cratestack ONLY (ADR-0009) ---
+# Schema-first codegen: `schema/governance.cstack` is the source of truth for the
+# tables, the migrations, the CRUD layer and the REST routes. There is no
+# hand-written sqlx in this workspace and no hand-written migration; anything
+# cratestack's generated CRUD cannot express goes in a schema `procedure`, not in
+# a second persistence path.
+#
+# ⚠️ The family MUST move in lockstep. lightbridge-authz broke `main` by bumping
+# some members and not others: 0.4.16's cratestack-core added a
+# `TransportStyle::Grpc` variant that the older cratestack-macros did not cover.
+# Bump all five together or none.
+cratestack-core = "0.4.18"
+cratestack-axum = "0.4.18"
+# The server facade (schema codegen + sqlx/axum runtime). Renamed to `cratestack`
+# because `include_server_schema!` emits `::cratestack::*` paths.
+cratestack = { package = "cratestack-pg", version = "0.4.18" }
+# CBOR is the wire format for the product API (ADR-0009).
+cratestack-codec-cbor = "0.4.18"
+# JSON is retained for ONE reason: Authorino's `metadata.http` step posts and
+# parses `application/json` and cannot be taught CBOR, so `/internal/v1/resolve`
+# must speak JSON. Do not use it for the product API.
+cratestack-codec-json = "0.4.18"
+
 aws-sdk-s3 = "1"
 aws-config = "1"
 

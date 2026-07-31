@@ -21,7 +21,7 @@ crates/governance-copilot    the pull connector
 crates/governance-foundry    the push connector
 app/lightbridge-governance   API server        (bin)
 app/governance-ctl           collector CLI     (bin)
-migrations/                  sqlx migrations
+crates/governance-core/schema/governance.cstack   the schema — tables, migrations, CRUD, routes
 charts/                      Helm chart, published to OCI on merge
 docs/{adr,rfc,runbooks}/     why, what, and what-to-do-at-3am
 ```
@@ -42,6 +42,7 @@ Start at [`docs/adr/README.md`](docs/adr/README.md). The load-bearing ones:
 - [ADR-0002](docs/adr/0002-postgres-is-the-system-of-record-not-parquet-on-s3.md) — Postgres is the system of record; S3 is the raw archive.
 - [ADR-0004](docs/adr/0004-observability-stack-stays-single-tenant.md) — the LGTM stack stays single-tenant; the database is the isolation boundary.
 - [ADR-0006](docs/adr/0006-foundry-auth-reuses-core-gateway-and-authorino.md) — reuse core-gateway + Authorino; build no auth service.
+- [ADR-0009](docs/adr/0009-cratestack-only-rest-transport-cbor-payloads.md) — cratestack is the only persistence layer; REST transport, CBOR payloads.
 
 ## Status
 

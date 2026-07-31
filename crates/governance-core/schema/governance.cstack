@@ -1,0 +1,143 @@
+// Governance registry + connector schema (ADR-0009: cratestack only).
+//
+// This file is the SOURCE OF TRUTH for the tables, the migrations, the CRUD
+// layer and the REST routes. There is no hand-written SQL and no hand-written
+// migration anywhere in this workspace. Anything the generated CRUD cannot
+// express belongs in a `procedure` below -- not in a second persistence path.
+//
+// Money is ALWAYS micro-USD (ADR-0008). cratestack's `Int` maps to Rust `i64`,
+// so a micro-USD amount is safe at any budget we will ever hold; never model a
+// monetary value as `Decimal` or `Float` here.
+//
+// `tenantId` is on every model. A deployment serves ONE tenant (ADR-0001) --
+// the column exists so our install and a customer's run the identical schema,
+// and so every query has one thing to filter on.
+
+// REST, not RPC: resource-shaped routes, standard verbs (ADR-0009).
+transport rest
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+auth Principal {
+  id String
+}
+
+mixin AuditFields {
+  createdAt DateTime @default(dbgenerated())
+  updatedAt DateTime @default(dbgenerated())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Registry (ADR-0005) -- built before either connector, because retrofitting
+// `tenantId` under existing tables means rewriting every primary key.
+// ────────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  @use(AuditFields)
+
+  id String @id
+  name String
+
+  applications Application[] @relation(fields:[id],references:[tenantId])
+
+  @@allow("read", auth() != null)
+}
+
+model Application {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  name String
+  owner String?
+  environment String
+
+  tenant Tenant @relation(fields:[tenantId],references:[id])
+  integrations Integration[] @relation(fields:[id],references:[applicationId])
+
+  @@unique([tenantId, name, environment])
+  @@paged
+  @@allow("create", auth() != null)
+  @@allow("read", auth() != null)
+  @@allow("update", auth() != null)
+}
+
+// One credential per integration. Only the argon2id HASH is stored -- the token
+// is returned once at creation and is not recoverable. Revocation is a `status`
+// flip that /internal/v1/resolve reads, so it is authoritative and server-side
+// (ADR-0006).
+//
+// `credentialHash` is `@readonly`: it must never appear in a generated create or
+// update input, or a caller could set their own hash and mint a token we did not
+// issue. Issuance goes through the `issueIntegrationCredential` procedure.
+model Integration {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  applicationId String
+  provider String
+  environment String
+  credentialHash String @readonly
+  status String @readonly
+  contentCapture String
+  lastTelemetryAt DateTime?
+
+  application Application @relation(fields:[applicationId],references:[id])
+
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// Provider principal -> internal identity. Deliberately NOT matched on display
+// name: verified email or an explicit mapping only.
+model IdentityMap {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  provider String
+  providerUserId String
+  internalUserId String?
+  teamId String?
+  costCenterId String?
+  mappingSource String
+  validFrom DateTime @default(dbgenerated())
+  validTo DateTime?
+
+  @@unique([tenantId, provider, providerUserId, validFrom])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ingestion bookkeeping
+// ────────────────────────────────────────────────────────────────────────────
+
+// One row per (day, report). This is what makes reprocessing idempotent -- and
+// it is ALSO where the connector's operational metrics come from, because a
+// CronJob pod cannot be scraped (ADR-0007). Reprocessing a day upserts this row
+// rather than inserting a second one.
+model IngestManifest {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  provider String
+  scopeId String
+  reportDay DateTime
+  reportType String
+  status String
+  recordCount Int
+  checksum String?
+  schemaVersion Int
+  startedAt DateTime @default(dbgenerated())
+  completedAt DateTime?
+
+  @@unique([tenantId, provider, scopeId, reportDay, reportType])
+  @@paged
+  @@allow("read", auth() != null)
+}
