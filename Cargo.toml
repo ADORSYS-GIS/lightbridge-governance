@@ -44,17 +44,17 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # some members and not others: 0.4.16's cratestack-core added a
 # `TransportStyle::Grpc` variant that the older cratestack-macros did not cover.
 # Bump all five together or none.
-cratestack-core = "0.4.18"
-cratestack-axum = "0.4.18"
+cratestack-core = "0.4.19"
+cratestack-axum = "0.4.19"
 # The server facade (schema codegen + sqlx/axum runtime). Renamed to `cratestack`
 # because `include_server_schema!` emits `::cratestack::*` paths.
-cratestack = { package = "cratestack-pg", version = "0.4.18" }
+cratestack = { package = "cratestack-pg", version = "0.4.19" }
 # CBOR is the wire format for the product API (ADR-0009).
-cratestack-codec-cbor = "0.4.18"
+cratestack-codec-cbor = "0.4.19"
 # JSON is retained for ONE reason: Authorino's `metadata.http` step posts and
 # parses `application/json` and cannot be taught CBOR, so `/internal/v1/resolve`
 # must speak JSON. Do not use it for the product API.
-cratestack-codec-json = "0.4.18"
+cratestack-codec-json = "0.4.19"
 
 # ⚠️ `default-features = false` is load-bearing, not tidiness. The default
 # feature set includes `rustls`, which resolves to
@@ -97,6 +97,18 @@ repository = "https://github.com/ADORSYS-GIS/lightbridge-governance"
 # that claim to be publishable.
 publish = false
 
+# Deliberately not the same as `[profile.release]` (cargo defaults: opt-level 3,
+# codegen-units 16, no LTO) — that stays cheap for local/CI `--release` runs. `prod`
+# is what `.docker/Dockerfile` actually builds, so it's the one place paying extra
+# build cost for a smaller binary is worth it.
+#
+# Already on `lto = "thin"` rather than fat here, which is good — fat LTO measured
+# ~1.5-2.3x the peak build RAM of thin for a meaningfully smaller binary on
+# cratestack-pg's own release pipeline (cratestack/cratestack#250). `codegen-units = 1`
+# on top of thin LTO still forces single-unit optimization though, which mainly costs
+# memory/time without much further size win once LTO itself is already merging things
+# — worth re-measuring locally (`cargo build --profile prod` with/without this line) to
+# confirm it's still earning its keep here, since it wasn't verified as part of that PR.
 [profile.prod]
 inherits = "release"
 lto = "thin"
