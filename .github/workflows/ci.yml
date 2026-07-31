@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push: {}
+  pull_request: {}
+
+# A branch with an open PR fires both events; collapse duplicate runs so the
+# self-hosted runners are not starved by two identical in-flight builds.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # GitHub-hosted runners are billing-blocked org-wide; every adorsys-gis repo
+  # uses the self-hosted ARC pool.
+  code-checks:
+    runs-on: adorsys-gis-runner
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    needs: code-checks
+    runs-on: adorsys-gis-runner
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features
+
+  sast:
+    runs-on: adorsys-gis-runner
+    strategy:
+      matrix:
+        checks: [advisories, "bans licenses sources"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}

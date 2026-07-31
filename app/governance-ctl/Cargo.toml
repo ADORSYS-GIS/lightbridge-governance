@@ -1,0 +1,24 @@
+[package]
+name = "governance-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "governance-ctl"
+path = "src/main.rs"
+
+[dependencies]
+governance-core.workspace = true
+governance-copilot.workspace = true
+governance-foundry.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+mimalloc.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

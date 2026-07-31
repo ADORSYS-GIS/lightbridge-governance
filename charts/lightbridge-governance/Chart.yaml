@@ -1,0 +1,22 @@
+apiVersion: v2
+name: lightbridge-governance
+description: |
+  The AI governance platform: a tenant/application/integration registry plus two
+  connectors -- GitHub Copilot (pull, RFC-0001) and Microsoft Foundry (push over
+  OTLP, RFC-0002).
+
+  Renders the API Deployment, the copilot-sync CronJob and the ServiceMonitor.
+  The OTLP collector for Foundry is a separate OpenTelemetryCollector CR.
+
+  Published to OCI on merge and consumed by ai-helm, matching the
+  lightbridge-authz convention (charts live with the code that they deploy).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - governance
+  - copilot
+  - foundry
+  - otlp
+maintainers:
+  - name: adorsys-gis

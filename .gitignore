@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.env
+.env.*
+!.env.example
+/config/tls
+*.pem
+.DS_Store

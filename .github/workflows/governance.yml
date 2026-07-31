@@ -1,0 +1,36 @@
+name: governance
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+# Enforces the adorsys-gis AI-governance PR template: a real source-of-truth
+# reference, a completed AI Usage Declaration, and verification evidence.
+# Doctrine: AI may accelerate the work, but it must not launder ignorance into
+# polished artifacts. https://adorsys-gis.github.io/ai-governance/
+jobs:
+  governance-check:
+    runs-on: adorsys-gis-runner
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check PR body for required sections
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          fail=0
+          for section in "## Summary" "## Intent" "## Verification" "## AI Usage Declaration"; do
+            case "$BODY" in
+              *"$section"*) ;;
+              *) echo "::error::PR description is missing '$section'"; fail=1 ;;
+            esac
+          done
+          # A boilerplate governance link is not a source of truth.
+          if ! printf '%s' "$BODY" | grep -Eq '(#[0-9]+|https?://[^ )]+)'; then
+            echo "::error::No source-of-truth reference (a URL or #123) found"
+            fail=1
+          fi
+          if ! printf '%s' "$BODY" | grep -q '\[x\]'; then
+            echo "::error::No checked accountability box in the AI Usage Declaration"
+            fail=1
+          fi
+          exit $fail

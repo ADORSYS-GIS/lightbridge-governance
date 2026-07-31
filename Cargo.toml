@@ -1,0 +1,71 @@
+[workspace]
+members = [
+    "crates/governance-core",
+    "crates/governance-copilot",
+    "crates/governance-foundry",
+    "app/lightbridge-governance",
+    "app/governance-ctl",
+]
+resolver = "3"
+
+[workspace.dependencies]
+governance-core = { path = "./crates/governance-core" }
+governance-copilot = { path = "./crates/governance-copilot" }
+governance-foundry = { path = "./crates/governance-foundry" }
+
+# --- serde / encoding ---
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# --- crypto / jwt ---
+# `rust_crypto` is REQUIRED: jsonwebtoken v10 made the crypto backend an explicit
+# feature choice and signing PANICS at runtime with neither selected. Same pin as
+# lightbridge-repo-auth, which hit exactly that.
+jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }
+argon2 = "0.5"
+
+# --- async runtime / http ---
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
+axum = { version = "0.8", features = ["macros", "tracing"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
+# default-features off + rustls keeps OpenSSL out of the distroless runtime image.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# --- storage ---
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "macros", "migrate"] }
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# --- observability ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "tokio"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.33"
+prometheus = "0.14"
+
+# --- errors / config / misc ---
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+cuid = { version = "2", default-features = false, features = ["v2"] }
+moka = { version = "0.12", features = ["future"] }
+utoipa = { version = "5", features = ["macros", "chrono"] }
+mimalloc = "0"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/ADORSYS-GIS/lightbridge-governance"
+
+[profile.prod]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = true

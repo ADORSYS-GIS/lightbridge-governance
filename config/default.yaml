@@ -1,0 +1,27 @@
+# Structural defaults only. Everything environment-specific is overridden from
+# ai-helm-values (values-repo-first) or the environment.
+server:
+  listenAddr: "0.0.0.0:8080"
+
+# Token -> tenant resolution cache. This sits in Authorino's ext_authz hot path,
+# so it is a latency bound, NOT an authorization cache: revocation propagates
+# within one TTL. Keep it short and say so in the customer docs.
+resolveCache:
+  ttlSeconds: 60
+  maxCapacity: 10000
+
+# Raw archive. The system of record is Postgres (ADR-0002); S3 holds the
+# immutable source objects so any day can be replayed without calling the
+# provider again.
+archive:
+  bucket: "ssegning-k8s-state"
+  prefix: "lightbridge-governance"
+  endpoint: "https://nbg1.your-objectstorage.com"
+  region: "us-east-1"
+
+copilot:
+  apiVersion: "2026-03-10"
+  # Every run re-fetches this many recent days so a late-published report is
+  # picked up without operator action.
+  lookbackDays: 3
+  backfillDays: 28

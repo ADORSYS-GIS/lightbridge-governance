@@ -1,0 +1,30 @@
+[package]
+name = "lightbridge-governance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lightbridge-governance"
+path = "src/main.rs"
+
+[dependencies]
+governance-core.workspace = true
+governance-copilot.workspace = true
+governance-foundry.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+mimalloc.workspace = true
+moka.workspace = true
+rustls.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true

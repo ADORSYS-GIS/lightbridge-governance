@@ -1,0 +1,47 @@
+# Structural defaults only. Deployed values live in ai-helm-values
+# (environments/<env>/values/lightbridge-governance.yaml) -- values-repo-FIRST:
+# the file must exist on main before the ai-helm change merges, or
+# ignoreMissingValueFiles silently falls back to these defaults.
+image:
+  repository: ghcr.io/adorsys-gis/lightbridge-governance
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
+# picked up without operator action.
+sync:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  backoffLimit: 4
+  activeDeadlineSeconds: 1800
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+# ⚠️ Never `optional: true` on a secretKeyRef env: env vars bind once at pod start
+# and never refresh, so an optional ref lets a pod that beats ESO capture an EMPTY
+# credential and fail auth forever (the context7 MCP_TOKEN incident). Required
+# means the pod waits in ContainerCreating until ESO has synced.
+externalSecret:
+  enabled: true
+  storeRef: ssegning-aws
+  remoteKey: ai/camer/digital/prod/env
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
