@@ -97,6 +97,18 @@ repository = "https://github.com/ADORSYS-GIS/lightbridge-governance"
 # that claim to be publishable.
 publish = false
 
+# Deliberately not the same as `[profile.release]` (cargo defaults: opt-level 3,
+# codegen-units 16, no LTO) — that stays cheap for local/CI `--release` runs. `prod`
+# is what `.docker/Dockerfile` actually builds, so it's the one place paying extra
+# build cost for a smaller binary is worth it.
+#
+# Already on `lto = "thin"` rather than fat here, which is good — fat LTO measured
+# ~1.5-2.3x the peak build RAM of thin for a meaningfully smaller binary on
+# cratestack-pg's own release pipeline (cratestack/cratestack#250). `codegen-units = 1`
+# on top of thin LTO still forces single-unit optimization though, which mainly costs
+# memory/time without much further size win once LTO itself is already merging things
+# — worth re-measuring locally (`cargo build --profile prod` with/without this line) to
+# confirm it's still earning its keep here, since it wasn't verified as part of that PR.
 [profile.prod]
 inherits = "release"
 lto = "thin"
