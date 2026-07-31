@@ -56,8 +56,15 @@ cratestack-codec-cbor = "0.4.18"
 # must speak JSON. Do not use it for the product API.
 cratestack-codec-json = "0.4.18"
 
-aws-sdk-s3 = "1"
-aws-config = "1"
+# ⚠️ `default-features = false` is load-bearing, not tidiness. The default
+# feature set includes `rustls`, which resolves to
+# aws-smithy-http-client/legacy-rustls-ring -> rustls 0.21 -> rustls-webpki
+# 0.101.7, which carries RUSTSEC-2026-0098/0099/0104 (name-constraint bypasses
+# and a reachable panic in CRL parsing). `default-https-client` takes the modern
+# rustls-aws-lc path instead. The other four features are the remainder of the
+# default set, restated so nothing else is silently dropped.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "rt-tokio", "default-https-client", "behavior-version-latest"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 # --- observability ---
 tracing = "0.1"
@@ -84,6 +91,11 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ADORSYS-GIS/lightbridge-governance"
+# These crates are deployed as one container image, never published to
+# crates.io. Also what lets cargo-deny's `allow-wildcard-paths` apply to the
+# intra-workspace path dependencies -- it deliberately does not exempt crates
+# that claim to be publishable.
+publish = false
 
 [profile.prod]
 inherits = "release"

@@ -1,14 +1,36 @@
+# Supply-chain policy. Kept in step with lightbridge-authz's deny.toml so the
+# family agrees on what is acceptable; divergence here should be deliberate.
+
+[licenses]
+unused-allowed-license = "warn"
+confidence-threshold = 0.95
+allow = [
+    "Zlib",
+    "ISC",
+    "Unicode-3.0",
+    "MIT",
+    "Apache-2.0",
+    # Common in the wasi/llvm-adjacent tree.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "BlueOak-1.0.0",
+    # Data licences, carried by webpki-roots and friends.
+    "CDLA-Permissive-2.0",
+]
+
 [advisories]
 version = 2
 yanked = "deny"
 
-[licenses]
-version = 2
-allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
-
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies inside this workspace carry no version, which cargo-deny
+# otherwise reports as a wildcard. This exempts ONLY intra-workspace paths --
+# a genuine `foo = "*"` from crates.io still fails.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
