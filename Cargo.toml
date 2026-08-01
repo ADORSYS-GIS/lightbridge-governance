@@ -19,10 +19,12 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 
 # --- crypto / jwt ---
-# `rust_crypto` is REQUIRED: jsonwebtoken v10 made the crypto backend an explicit
-# feature choice and signing PANICS at runtime with neither selected. Same pin as
-# lightbridge-repo-auth, which hit exactly that.
-jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }
+# `rust_crypto` is REQUIRED and still is on v11: jsonwebtoken makes the crypto
+# backend an explicit feature choice (`rust_crypto` or `aws_lc_rs`, neither in
+# `default`) and signing PANICS at runtime with neither selected. Declare it
+# explicitly rather than relying on another crate in the graph enabling it —
+# lightbridge-authz was silently depending on authkestra for exactly this.
+jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
 argon2 = "0.5"
 
 # --- async runtime / http ---
