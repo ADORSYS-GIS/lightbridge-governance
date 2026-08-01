@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "lightbridge-governance"
 path = "src/main.rs"

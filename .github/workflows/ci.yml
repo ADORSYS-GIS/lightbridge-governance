@@ -22,8 +22,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # rustfmt.toml sets `imports_granularity` and `group_imports`, which are
+      # NIGHTLY-ONLY. On stable, rustfmt warns and exits 0 — so a stable
+      # `cargo fmt --check` would pass without enforcing them, i.e. a check that
+      # reports success by doing nothing. The fmt step therefore runs on nightly.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - run: cargo +nightly fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:

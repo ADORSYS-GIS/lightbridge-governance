@@ -86,6 +86,64 @@ moka = { version = "0.12", features = ["future"] }
 utoipa = { version = "5", features = ["macros", "chrono"] }
 mimalloc = "0"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Lints. Levels live here; the knobs individual lints read live in clippy.toml.
+#
+# ⚠️ CI runs `cargo clippy --all-targets --all-features -- -D warnings`, so in
+# this repo there is NO soft tier: `warn` and `deny` both fail the build. Every
+# level below was therefore MEASURED at zero violations before being set, not
+# copied from a template. If you add a lint here, measure it first —
+# `cargo clean -p <crate>` beforehand, because a cached clippy run reports clean
+# without having looked.
+#
+# `clippy::pedantic` is deliberately NOT enabled wholesale: it has real hits
+# here (4 `doc_markdown`) and, under `-D warnings`, blanket-enabling it would
+# break the build rather than advise. Selected pedantic lints are listed
+# individually below instead.
+# ─────────────────────────────────────────────────────────────────────────────
+[workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+# No `unsafe` in this tree today. This service holds an S3 credential and a
+# GitHub App key; keep adding `unsafe` a deliberate, reviewable act.
+unsafe_code = "deny"
+
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+
+[workspace.lints.clippy]
+# correctness + suspicious + style + complexity + perf. Zero violations today,
+# so this is a real gate from day one.
+all = { level = "deny", priority = -1 }
+
+# Apollo §2.3's table, each verified at zero here.
+redundant_clone = "deny"
+needless_borrow = "deny"
+map_unwrap_or = "deny"
+manual_ok_or = "deny"
+large_enum_variant = "deny"
+unnecessary_wraps = "deny"
+clone_on_copy = "deny"
+needless_collect = "deny"
+
+# Apollo §4.1/§4.2: no panicking in shipping code. Tests are exempted via the
+# `allow-*-in-tests` knobs in clippy.toml, which is the guide's own carve-out.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# Hygiene.
+dbg_macro = "deny"
+missing_safety_doc = "deny"
+empty_docs = "deny"
+indexing_slicing = "deny"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

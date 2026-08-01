@@ -1,0 +1,36 @@
+# Clippy tunables. The lint LEVELS live in the root Cargo.toml
+# (`[workspace.lints.clippy]`); this file only configures the knobs that
+# individual lints read.
+#
+# Source of truth: https://github.com/apollographql/rust-best-practices
+
+# --- Apollo §4.2 "Avoid unwrap/expect in Production" -------------------------
+# The guide's rule is *"Keep `unwrap`/`expect` restricted to tests or
+# impossibility proofs"* (.codex/rules/rust_programming.md, Rule 3) — not a
+# blanket ban. `unwrap_used` / `expect_used` / `panic` are therefore enabled in
+# Cargo.toml and relaxed here for test code only, which is precisely the carve
+# out the guide asks for.
+#
+# NOTE: these options key off clippy's "is this in a test?" check, which matches
+# `#[cfg(test)]` modules and `#[test]`/`#[tokio::test]` functions. Free helper
+# functions in `tests/support/mod.rs` are NOT covered by it — verified locally,
+# see the PR's Verification section.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# --- Apollo §3.3 "Stack vs. Heap: Be size-smart!" ----------------------------
+# Threshold at which `large_enum_variant` / `result_large_err` start
+# complaining. Clippy's defaults (200 / 128 bytes) are kept deliberately: the
+# guide gives no number, and inventing a stricter one would be noise.
+# enum-variant-size-threshold = 200
+
+# --- Apollo §1.8 / ch.8: keep public API documented and honest ---------------
+# `missing_panics_doc` and `missing_errors_doc` are enabled at `warn` in
+# Cargo.toml; no tunables needed.
+
+# Disallow easily-misused constructs. `std::mem::forget` on a type with a Drop
+# impl is a leak; clippy has a dedicated lint, so nothing extra is needed here.
