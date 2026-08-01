@@ -28,3 +28,19 @@ pub enum ContentCapture {
     /// Full content. Requires explicit opt-in and shortened retention.
     Full,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ContentCapture, Provider};
+
+    #[test]
+    fn provider_serializes_as_snake_case() {
+        let json = serde_json::to_string(&Provider::GithubCopilot).expect("serialize provider");
+        assert_eq!(json, "\"github_copilot\"");
+    }
+
+    #[test]
+    fn content_capture_defaults_to_metadata_only() {
+        assert_eq!(ContentCapture::default(), ContentCapture::MetadataOnly);
+    }
+}
