@@ -3,7 +3,8 @@
 - Status: Draft
 - Date: 2026-07-31
 - Author: @stephane-segning
-- Source of truth: `~/Downloads/microsoft-foundry-governance-mvp-plan.md`
+- Source of truth: [`sources/microsoft-foundry-governance-mvp-plan.md`](./sources/microsoft-foundry-governance-mvp-plan.md)
+  (the original planning spec, copied in so it survives outside the maintainer's own machine)
 
 ## Summary
 

@@ -20,3 +20,9 @@ Statuses: `Draft` -> `In review` -> `Accepted` -> `Implemented` | `Withdrawn`.
 
 Copy `template.md`. Keep the **Open questions** section alive -- an RFC with no open
 questions has either been fully agreed or has not been read carefully.
+
+## Source documents
+
+[`sources/`](./sources/) holds the original planning specs an RFC's "Source of truth" line
+points to. Copy the document in here rather than citing a path on the maintainer's own
+machine (`~/Downloads/...`) -- a citation nobody else can open isn't a source of truth.

@@ -3,7 +3,8 @@
 - Status: Draft
 - Date: 2026-07-31
 - Author: @stephane-segning
-- Source of truth: `~/Downloads/github-copilot-governance-mvp.md`, and
+- Source of truth: [`sources/github-copilot-governance-mvp.md`](./sources/github-copilot-governance-mvp.md)
+  (the original planning spec, copied in so it survives outside the maintainer's own machine), and
   <https://docs.github.com/en/rest/copilot/copilot-metrics?apiVersion=2026-03-10>
 
 ## Summary
