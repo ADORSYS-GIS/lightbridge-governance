@@ -44,17 +44,27 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # some members and not others: 0.4.16's cratestack-core added a
 # `TransportStyle::Grpc` variant that the older cratestack-macros did not cover.
 # Bump all five together or none.
-cratestack-core = "0.4.19"
-cratestack-axum = "0.4.19"
+#
+# 0.5.0 is a MINOR bump: it carries a real breaking change
+# (cratestack/cratestack#253) that removed the path-addressed relation filter
+# free functions (`model::relation::field_op(...)`) — that form was itself an
+# exponential-codegen bug (cratestack/cratestack#252, 16-model schemas
+# couldn't build). Checked before bumping: this workspace uses none of that
+# form, only the chained builder (`model::relation().field().op(...)`), which
+# is unaffected — confirmed via
+# `grep -rnE "::[A-Za-z_]+_(eq|ne|in_|lt|lte|gt|gte|contains|starts_with|is_null|is_not_null|is_true|is_false|asc|desc)\("`
+# across `crates/` and `app/` returning zero matches.
+cratestack-core = "0.5.0"
+cratestack-axum = "0.5.0"
 # The server facade (schema codegen + sqlx/axum runtime). Renamed to `cratestack`
 # because `include_server_schema!` emits `::cratestack::*` paths.
-cratestack = { package = "cratestack-pg", version = "0.4.19" }
+cratestack = { package = "cratestack-pg", version = "0.5.0" }
 # CBOR is the wire format for the product API (ADR-0009).
-cratestack-codec-cbor = "0.4.19"
+cratestack-codec-cbor = "0.5.0"
 # JSON is retained for ONE reason: Authorino's `metadata.http` step posts and
 # parses `application/json` and cannot be taught CBOR, so `/internal/v1/resolve`
 # must speak JSON. Do not use it for the product API.
-cratestack-codec-json = "0.4.19"
+cratestack-codec-json = "0.5.0"
 
 # ⚠️ `default-features = false` is load-bearing, not tidiness. The default
 # feature set includes `rustls`, which resolves to
