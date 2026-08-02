@@ -74,7 +74,21 @@ networkPolicy:
   # phase; tighten to a specific caller label once a real client is cut over.
   ingressNamespace: apps
   providerNamespace: envoy-gateway-system
-  providerPort: 443
+  # ⚠️ The POD's targetPort (10443), NOT the Service port (443).
+  #
+  # The app dials the Service at :443 -- `provider.baseUrl` is https with no
+  # port -- but Cilium enforces egress policy POST-DNAT, against the resolved
+  # pod IP and its container port. A rule allowing 443 therefore never matches
+  # and every connection is silently dropped, surfacing as a connect error with
+  # no mention of policy anywhere.
+  #
+  # Verified, do not "correct" to 443:
+  #   kubectl -n envoy-gateway-system get svc core-gateway-internal \
+  #     -o jsonpath='port={.spec.ports[0].port} targetPort={.spec.ports[0].targetPort}'
+  #   -> port=443 targetPort=10443
+  #
+  # Same trap ai-helm's CLAUDE.md records for the Grafana LLM plugin.
+  providerPort: 10443
   otlpNamespace: observability
 
 resources:
