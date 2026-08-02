@@ -48,8 +48,10 @@ pub mod error;
 pub mod payload;
 pub mod profile;
 pub mod secrets;
+pub mod streaming;
 
 pub use engine::{Engine, Verdict};
 pub use error::{Error, Result};
 pub use payload::{ScanReport, scan_request, scan_response};
 pub use profile::{Action, Profile};
+pub use streaming::{StreamOutcome, scan_sse};

@@ -16,10 +16,7 @@
 
 use serde_json::Value;
 
-use crate::{
-    engine::{Engine, Verdict},
-    error::Result,
-};
+use crate::{engine::Engine, error::Result};
 
 /// What a scan of a whole body found.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -40,23 +37,6 @@ impl ScanReport {
     #[must_use]
     pub fn is_blocked(&self) -> bool {
         !self.blocked.is_empty()
-    }
-
-    fn merge(&mut self, verdict: Verdict) -> Option<String> {
-        self.scanned_fields += 1;
-        match verdict {
-            Verdict::Clean => None,
-            Verdict::Redacted { text, count } => {
-                self.redactions += count;
-                Some(text)
-            }
-            Verdict::Blocked { entities } => {
-                self.blocked.extend(entities);
-                self.blocked.sort_unstable();
-                self.blocked.dedup();
-                None
-            }
-        }
     }
 }
 
@@ -126,7 +106,7 @@ fn scan_slot(engine: &Engine, slot: &mut Value, report: &mut ScanReport) -> Resu
     let Some(text) = slot.as_str().map(str::to_owned) else {
         return Ok(());
     };
-    if let Some(new) = report.merge(engine.scan(&text)?) {
+    if let Some(new) = report.merge_verdict(engine.scan(&text)?) {
         *slot = Value::String(new);
     }
     Ok(())
