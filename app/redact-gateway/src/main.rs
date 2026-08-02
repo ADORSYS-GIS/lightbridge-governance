@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
         client,
         provider_base_url: cfg.provider_base_url.clone(),
         metrics: Metrics::new().context("registering metrics")?,
+        max_body_bytes: cfg.max_body_bytes,
     });
 
     let app = Router::new()
