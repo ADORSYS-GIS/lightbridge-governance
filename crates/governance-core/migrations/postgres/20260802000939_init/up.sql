@@ -85,12 +85,11 @@ CREATE TABLE tenants (
 -- cratestack-migrate's emitter for "REFERENCES"/"FOREIGN KEY": zero hits),
 -- and there is no application-level check either (`create_record_with_executor`
 -- validates auth-derived defaults and policies, never that a referenced row
--- exists). Added by hand so `applications.tenant_id` and
--- `integrations.application_id` -- both already declared as `@relation` in
--- the schema -- are actually enforced. Filed upstream:
+-- exists). Added by hand so every `@relation` this schema declares --
+-- `applications.tenant_id`, `integrations.application_id`,
+-- `integrations.tenant_id`, `identity_maps.tenant_id` (#16) -- is actually
+-- enforced. Filed upstream:
 -- https://github.com/cratestack/cratestack/issues/260
--- `identity_maps.tenant_id` and `integrations.tenant_id` have no `@relation`
--- declared yet (#16) -- add their FK constraints here when that lands.
 ALTER TABLE applications
     ADD CONSTRAINT applications_tenant_id_fkey
     FOREIGN KEY (tenant_id) REFERENCES tenants (id);
@@ -98,6 +97,14 @@ ALTER TABLE applications
 ALTER TABLE integrations
     ADD CONSTRAINT integrations_application_id_fkey
     FOREIGN KEY (application_id) REFERENCES applications (id);
+
+ALTER TABLE integrations
+    ADD CONSTRAINT integrations_tenant_id_fkey
+    FOREIGN KEY (tenant_id) REFERENCES tenants (id);
+
+ALTER TABLE identity_maps
+    ADD CONSTRAINT identity_maps_tenant_id_fkey
+    FOREIGN KEY (tenant_id) REFERENCES tenants (id);
 
 -- Same category of emitter gap, caught in review (not by us first): the
 -- Postgres emitter has no code path for a model-level `@@unique([...])`
@@ -108,13 +115,18 @@ ALTER TABLE integrations
 -- IngestManifest's whole idempotent-upsert design (`ON CONFLICT DO UPDATE`
 -- on this exact tuple, #17) cannot work without a real unique index for
 -- Postgres to target. Naming follows cratestack's own single-column
--- convention (`<table>_<columns>_key`, see naming.rs::index_name_unique).
+-- convention (`<table>_<columns>_key`, see naming.rs::index_name_unique) --
+-- shortened to `<table>_natural_key` for the two composite cases, since the
+-- full column-joined name silently truncates past Postgres's 63-byte
+-- NAMEDATALEN (verified: applying the longer names produced a truncation
+-- notice, not an error -- but two names truncating to the same prefix would
+-- collide).
 -- Filed upstream: https://github.com/cratestack/cratestack/issues/262
 CREATE UNIQUE INDEX applications_tenant_id_name_environment_key
     ON applications (tenant_id, name, environment);
 
-CREATE UNIQUE INDEX identity_maps_tenant_id_provider_provider_user_id_valid_from_key
+CREATE UNIQUE INDEX identity_maps_natural_key
     ON identity_maps (tenant_id, provider, provider_user_id, valid_from);
 
-CREATE UNIQUE INDEX ingest_manifests_tenant_id_provider_scope_id_report_day_report_type_key
+CREATE UNIQUE INDEX ingest_manifests_natural_key
     ON ingest_manifests (tenant_id, provider, scope_id, report_day, report_type);
