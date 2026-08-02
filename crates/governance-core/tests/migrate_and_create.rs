@@ -26,12 +26,18 @@
 //! 7. Reprocessing the same `ingest_manifests` natural key genuinely upserts
 //!    -- `ON CONFLICT DO UPDATE` replaces the row in place rather than
 //!    erroring or duplicating (#17, #9's own AC).
+//! 8. `updated_at` actually advances on `UPDATE` (#21) -- the
+//!    `touch_updated_at` trigger `governance_core::migrate::run` installs
+//!    outside the tracked migration (see that module) fires for real.
 //!
 //! Requires `DATABASE_URL` (see `just up`); skips with a message otherwise so
 //! it doesn't silently report green in an environment with no database.
 
 use cratestack::CoolContext;
-use governance_core::schema::cratestack_schema::{Cratestack, inputs::CreateApplicationInput};
+use governance_core::schema::cratestack_schema::{
+    Cratestack,
+    inputs::{CreateApplicationInput, UpdateApplicationInput},
+};
 
 // `#[tokio::test]` functions in this file run concurrently against the same
 // local Postgres. Applying the migration is not safe to race with itself
@@ -384,5 +390,63 @@ async fn ingest_manifest_reprocessing_upserts_rather_than_duplicates() {
     assert_eq!(
         record_count, 42,
         "the upsert must have applied the new record_count"
+    );
+}
+
+#[tokio::test]
+async fn update_touches_updated_at() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let created = db
+        .bind_context(ctx.clone())
+        .application()
+        .create(CreateApplicationInput {
+            id: format!("app-{}", cuid::cuid2()),
+            tenantId: tenant_id,
+            name: "before-rename".to_owned(),
+            owner: None,
+            environment: "dev".to_owned(),
+        })
+        .run()
+        .await
+        .expect("create must succeed");
+
+    // Postgres's `now()` is the current transaction's start time, not
+    // wall-clock-at-statement -- distinct enough between two separate
+    // top-level statements in practice, but a short sleep removes any doubt
+    // rather than relying on that.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let updated = db
+        .bind_context(ctx)
+        .application()
+        .update(created.id.clone())
+        .set(UpdateApplicationInput {
+            tenantId: None,
+            name: Some("after-rename".to_owned()),
+            owner: None,
+            environment: None,
+        })
+        .run()
+        .await
+        .expect("update must succeed");
+
+    assert_eq!(updated.name, "after-rename", "the update itself must apply");
+    assert!(
+        updated.updatedAt > created.updatedAt,
+        "updated_at must advance on UPDATE via the touch_updated_at trigger -- \
+         created: {:?}, updated: {:?}",
+        created.updatedAt,
+        updated.updatedAt
+    );
+    assert_eq!(
+        updated.createdAt, created.createdAt,
+        "createdAt must never change on UPDATE"
     );
 }

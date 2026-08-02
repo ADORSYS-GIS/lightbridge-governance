@@ -22,4 +22,4 @@ argon2.workspace = true
 aws-sdk-s3.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
