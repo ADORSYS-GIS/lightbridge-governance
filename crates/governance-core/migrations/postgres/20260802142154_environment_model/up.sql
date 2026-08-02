@@ -7,10 +7,6 @@
 -- the generated CRUD 500s on a NOT NULL violation:
 --   - environments.created_at / updated_at
 
-ALTER TABLE applications DROP COLUMN environment;
-
-ALTER TABLE integrations DROP COLUMN environment;
-
 CREATE TABLE environments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -21,7 +17,47 @@ CREATE TABLE environments (
     PRIMARY KEY (id)
 );
 
-ALTER TABLE integrations ADD COLUMN environment_id TEXT NOT NULL;
+-- lightbridge-assistant P1 (PR #14 review): the naive column-drop-then-add
+-- sequence this replaced would fail with "column ... contains null values"
+-- on any database that already has `integrations` rows, because
+-- `environment_id TEXT NOT NULL` has no default for pre-existing rows.
+-- Confirmed empirically against a populated table before writing this
+-- backfill. `environments` is created above -- not at the bottom, like the
+-- other new tables -- specifically so this backfill can run before either
+-- old `environment` column is dropped.
+--
+-- One `Environment` row per distinct (tenant_id, application_id, name)
+-- combination that an existing `application` or `integration` references --
+-- the union covers both sides in case they've ever disagreed on a name for
+-- the same application.
+INSERT INTO environments (id, tenant_id, application_id, name, created_at, updated_at)
+SELECT DISTINCT
+    'env_' || md5(tenant_id || application_id || name),
+    tenant_id,
+    application_id,
+    name,
+    now(),
+    now()
+FROM (
+    SELECT tenant_id, id AS application_id, environment AS name FROM applications
+    UNION
+    SELECT tenant_id, application_id, environment AS name FROM integrations
+) AS existing_environments;
+
+ALTER TABLE integrations ADD COLUMN environment_id TEXT;
+
+UPDATE integrations i
+SET environment_id = e.id
+FROM environments e
+WHERE e.tenant_id = i.tenant_id
+  AND e.application_id = i.application_id
+  AND e.name = i.environment;
+
+ALTER TABLE integrations ALTER COLUMN environment_id SET NOT NULL;
+
+ALTER TABLE applications DROP COLUMN environment;
+
+ALTER TABLE integrations DROP COLUMN environment;
 
 -- cratestack's postgres emitter (0.5.1) still does not emit FOREIGN KEY for
 -- declared `@relation` fields (cratestack/cratestack#260) -- same hand-add
