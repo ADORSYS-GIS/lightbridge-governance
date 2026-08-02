@@ -37,6 +37,8 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub provider_base_url: String,
     pub metrics: Metrics,
+    /// Ceiling on an upstream response body. See [`read_capped`].
+    pub max_body_bytes: usize,
 }
 
 /// Why a request was refused.
@@ -151,7 +153,7 @@ pub async fn handle(
         .unwrap_or_default()
         .to_string();
 
-    let upstream_body = match upstream.text().await {
+    let upstream_body = match read_capped(upstream, state.max_body_bytes).await {
         Ok(b) => b,
         Err(e) => {
             return refuse(
@@ -229,6 +231,36 @@ pub async fn handle(
     }
 
     (status, axum::Json(response_json)).into_response()
+}
+
+/// Reads an upstream response body, refusing past `cap` bytes.
+///
+/// ⚠️ Both response paths — buffered SSE and plain JSON — hold the whole
+/// upstream body in memory before scanning it, because detection has to see
+/// complete text. `reqwest`'s `text()`/`bytes()` apply **no limit**, and
+/// axum's `DefaultBodyLimit` bounds only the *inbound request*, not what the
+/// upstream sends back. Without this cap a provider that streams without
+/// stopping — malfunctioning, or hostile — grows the proxy's heap until the
+/// pod is OOM-killed, taking down redaction for everyone.
+///
+/// Capping rather than streaming-through is the deliberate trade: buffered
+/// detection is what stops an entity hiding in a token split, so the memory has
+/// to be spent. What we control is the ceiling.
+async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if buf.len().saturating_add(chunk.len()) > cap {
+                    return Err(format!("upstream response exceeded {cap} bytes"));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    String::from_utf8(buf).map_err(|e| format!("upstream response is not UTF-8: {e}"))
 }
 
 /// Applies a refusal, honouring the profile's fail-closed setting.
