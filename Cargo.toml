@@ -3,6 +3,7 @@ members = [
     "crates/governance-core",
     "crates/governance-copilot",
     "crates/governance-foundry",
+    "crates/governance-redact",
     "app/lightbridge-governance",
     "app/governance-ctl",
 ]
@@ -12,6 +13,7 @@ resolver = "3"
 governance-core = { path = "./crates/governance-core" }
 governance-copilot = { path = "./crates/governance-copilot" }
 governance-foundry = { path = "./crates/governance-foundry" }
+governance-redact = { path = "./crates/governance-redact" }
 
 # --- serde / encoding ---
 serde = { version = "1.0", features = ["derive"] }
