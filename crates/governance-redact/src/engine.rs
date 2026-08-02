@@ -160,8 +160,17 @@ impl Engine {
                 .unwrap_or(pii::anonymize::Operator::Redact),
             per_entity: std::collections::HashMap::new(),
         };
+        // Build one operator per entity TYPE, not per detection. `per_entity`
+        // is keyed by type, so a body with 200 email addresses previously did
+        // 200 identical `action_for` + `operator` round trips (each of which
+        // allocates -- `Operator::HashSha256` owns its salt, and upstream's
+        // field type gives us no way to borrow it) to write the same map entry
+        // 200 times. The occupancy check makes it once per distinct type.
         for detection in &transformable {
             let key = detection.entity_type.as_str();
+            if config.per_entity.contains_key(&key) {
+                continue;
+            }
             if let Some(op) = self
                 .profile
                 .action_for(&detection.entity_type)
