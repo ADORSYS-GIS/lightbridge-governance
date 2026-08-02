@@ -25,9 +25,15 @@ auth Principal {
   id String
 }
 
+// `@readonly` on both: neither must ever appear in a generated create or
+// update input (matching `Integration.credentialHash`'s existing pattern) --
+// without it, a normal PATCH could rewrite a row's own audit history.
+// `updatedAt` still won't advance on its own from this alone (`@readonly`
+// only controls generated input, not DDL) -- see the migration's
+// `touch_updated_at` trigger, hand-added for the same reason (#21).
 mixin AuditFields {
-  createdAt DateTime @default(dbgenerated())
-  updatedAt DateTime @default(dbgenerated())
+  createdAt DateTime @default(dbgenerated()) @readonly
+  updatedAt DateTime @default(dbgenerated()) @readonly
 }
 
 // ────────────────────────────────────────────────────────────────────────────
