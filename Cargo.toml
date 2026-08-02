@@ -6,6 +6,7 @@ members = [
     "crates/governance-redact",
     "app/lightbridge-governance",
     "app/governance-ctl",
+    "app/redact-gateway",
 ]
 resolver = "3"
 
