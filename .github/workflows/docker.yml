@@ -27,6 +27,19 @@ jobs:
           # component that sits fail-closed in front of every AI request.
           - image: ghcr.io/adorsys-gis/redact-gateway
             dockerfile: .docker/Dockerfile.redact-gateway
+          # ADR-0116: redact-gateway's replacement, an Envoy ext_proc sidecar
+          # instead of a front proxy. A third separate image for the same
+          # reason as redact-gateway's own comment above -- its dependency
+          # tree (envoy-types/tonic/prost/pii) overlaps with neither of the
+          # other two. Kept alongside redact-gateway rather than replacing
+          # its matrix entry: ai-helm's cutover to the sidecar hasn't landed
+          # yet, so the front-proxy canary is still the live path. Retire
+          # this repo's redact-gateway entry (image + Dockerfile + app
+          # binary) in the same change that removes ai-helm's
+          # `redact-gateway` app -- hard cutover, not a lingering parallel
+          # image.
+          - image: ghcr.io/adorsys-gis/redact-extproc
+            dockerfile: .docker/Dockerfile.redact-extproc
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
@@ -58,6 +71,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Scoped per image, or the two builds share one cache key and thrash.
+          # Scoped per image, or the builds share one cache key and thrash.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
