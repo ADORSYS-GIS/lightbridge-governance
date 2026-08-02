@@ -17,6 +17,11 @@ const INTEGRATION_CREDENTIAL_FIELDS_UP: &str =
 const INTEGRATION_CREDENTIAL_FIELDS_DOWN: &str =
     include_str!("../migrations/postgres/20260802051051_integration_credential_fields/down.sql");
 
+const ENVIRONMENT_MODEL_UP: &str =
+    include_str!("../migrations/postgres/20260802142154_environment_model/up.sql");
+const ENVIRONMENT_MODEL_DOWN: &str =
+    include_str!("../migrations/postgres/20260802142154_environment_model/down.sql");
+
 // Not one of the tracked `Migration`s below: `apply_pending` splits `up` on
 // every literal `;` before executing each fragment as its own prepared
 // statement (verified in cratestack-sqlx's migrations.rs), which corrupts any
@@ -59,6 +64,11 @@ DROP TRIGGER IF EXISTS tenants_touch_updated_at ON tenants;
 CREATE TRIGGER tenants_touch_updated_at
     BEFORE UPDATE ON tenants
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS environments_touch_updated_at ON environments;
+CREATE TRIGGER environments_touch_updated_at
+    BEFORE UPDATE ON environments
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 "#;
 
 fn migrations() -> Vec<Migration> {
@@ -77,6 +87,14 @@ fn migrations() -> Vec<Migration> {
                 .to_owned(),
             up: INTEGRATION_CREDENTIAL_FIELDS_UP.to_owned(),
             down: Some(INTEGRATION_CREDENTIAL_FIELDS_DOWN.to_owned()),
+        },
+        Migration {
+            id: "20260802142154_environment_model".to_owned(),
+            description: "environment: first-class model, replacing the bare environment \
+                           string on applications/integrations (#15)"
+                .to_owned(),
+            up: ENVIRONMENT_MODEL_UP.to_owned(),
+            down: Some(ENVIRONMENT_MODEL_DOWN.to_owned()),
         },
     ]
 }

@@ -48,6 +48,7 @@ model Tenant {
   name String
 
   applications Application[] @relation(fields:[id],references:[tenantId])
+  environments Environment[] @relation(fields:[id],references:[tenantId])
   integrations Integration[] @relation(fields:[id],references:[tenantId])
   identityMaps IdentityMap[] @relation(fields:[id],references:[tenantId])
 
@@ -61,12 +62,37 @@ model Application {
   tenantId String
   name String
   owner String?
-  environment String
 
   tenant Tenant @relation(fields:[tenantId],references:[id])
-  integrations Integration[] @relation(fields:[id],references:[applicationId])
+  environments Environment[] @relation(fields:[id],references:[applicationId])
 
-  @@unique([tenantId, name, environment])
+  @@unique([tenantId, name])
+  @@paged
+  @@allow("create", auth() != null)
+  @@allow("read", auth() != null)
+  @@allow("update", auth() != null)
+}
+
+// `tenantId` here is derivable through `application.tenantId`, but every
+// model in this registry carries its own `tenantId` (ADR-0001's comment
+// above) so every table has one column to filter on -- Environment is no
+// exception, and its own `@relation` (like Integration/IdentityMap's, #16)
+// is what gets that FK actually enforced (cratestack still doesn't emit one
+// for a bare `tenantId` field -- see the migration comment, cratestack/
+// cratestack#260).
+model Environment {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  applicationId String
+  name String
+
+  tenant Tenant @relation(fields:[tenantId],references:[id])
+  application Application @relation(fields:[applicationId],references:[id])
+  integrations Integration[] @relation(fields:[id],references:[environmentId])
+
+  @@unique([tenantId, applicationId, name])
   @@paged
   @@allow("create", auth() != null)
   @@allow("read", auth() != null)
@@ -101,8 +127,8 @@ model Integration {
   id String @id
   tenantId String
   applicationId String
+  environmentId String
   provider String
-  environment String
   credentialPrefix String @readonly
   credentialHash String @server_only
   status String @readonly
@@ -113,15 +139,21 @@ model Integration {
 
   tenant Tenant @relation(fields:[tenantId],references:[id])
   application Application @relation(fields:[applicationId],references:[id])
+  environment Environment @relation(fields:[environmentId],references:[id])
 
   @@paged
   @@allow("read", auth() != null)
 }
 
+// `environmentId`, not a free-form `environment` string (its shape before
+// the Environment model existed, #10's original design) -- now that
+// Environment is a first-class, registered resource, issuance should
+// reference a real one rather than let a typo mint a credential under an
+// environment nothing else agrees exists.
 type IssueIntegrationCredentialInput {
   applicationId String
   provider String
-  environment String
+  environmentId String
   contentCapture String?
 }
 

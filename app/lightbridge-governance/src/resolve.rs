@@ -294,12 +294,25 @@ mod tests {
                     tenantId: tenant_id.clone(),
                     name: "resolve-test-app".to_owned(),
                     owner: None,
-                    environment: "dev".to_owned(),
                 },
             )
             .run()
             .await
             .expect("application fixture create");
+        let environment = db
+            .bind_context(ctx.clone())
+            .environment()
+            .create(
+                governance_core::schema::cratestack_schema::inputs::CreateEnvironmentInput {
+                    id: format!("env-{}", cuid::cuid2()),
+                    tenantId: tenant_id.clone(),
+                    applicationId: application.id.clone(),
+                    name: "dev".to_owned(),
+                },
+            )
+            .run()
+            .await
+            .expect("environment fixture create");
 
         let issued = governance_core::credential::issue(
             &db,
@@ -307,7 +320,7 @@ mod tests {
             governance_core::schema::cratestack_schema::types::IssueIntegrationCredentialInput {
                 applicationId: application.id.clone(),
                 provider: "github_copilot".to_owned(),
-                environment: "dev".to_owned(),
+                environmentId: environment.id,
                 contentCapture: None,
             },
         )
