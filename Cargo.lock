@@ -2229,6 +2229,7 @@ dependencies = [
  "governance-foundry",
  "mimalloc",
  "moka",
+ "prometheus",
  "rustls",
  "serde",
  "serde_json",
