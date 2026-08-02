@@ -6,8 +6,11 @@
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
 //! and this always-running process derives `governance_connector_*` from them.
 
+mod router;
+
 use anyhow::Result;
 use clap::Parser;
+use governance_core::schema::cratestack_schema::Cratestack;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -33,7 +36,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing::info!(listen_addr = %args.listen_addr, "lightbridge-governance starting");
 
-    // TODO(RFC-0001/RFC-0002): mount the router once the registry lands.
-    let _ = args.database_url;
+    let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+    let db = Cratestack::builder(pool).build();
+    let app = router::build_router(db);
+
+    let listener = tokio::net::TcpListener::bind(&args.listen_addr).await?;
+    tracing::info!(listen_addr = %args.listen_addr, "listening");
+    axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
