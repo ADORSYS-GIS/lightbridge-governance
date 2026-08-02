@@ -1,0 +1,78 @@
+name: Helm OCI Publish
+description: Packages Helm charts and pushes them to GHCR as OCI artifacts under the charts/ prefix.
+inputs:
+  github-token:
+    description: Token to authenticate against GHCR and push the charts
+    required: true
+  charts-dir:
+    description: Directory containing the charts
+    required: false
+    default: charts
+  registry:
+    description: OCI registry host to push charts to
+    required: false
+    default: ghcr.io
+  repository-owner:
+    description: Registry namespace owner (charts are pushed under <owner>/charts)
+    required: false
+    default: ${{ github.repository_owner }}
+runs:
+  using: composite
+  steps:
+    - name: Install Helm
+      uses: azure/setup-helm@v4.3.1
+      env:
+        GITHUB_TOKEN: "${{ inputs.github-token }}"
+
+    - name: Add dependency repos to Helm
+      shell: bash
+      run: |
+        helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+        helm repo update
+
+    - name: Log in to GHCR
+      shell: bash
+      env:
+        GITHUB_TOKEN: "${{ inputs.github-token }}"
+      run: |
+        echo "${GITHUB_TOKEN}" | helm registry login "${{ inputs.registry }}" \
+          --username "${{ github.actor }}" --password-stdin
+
+    - name: Package and push charts
+      shell: bash
+      env:
+        CHARTS_DIR: ${{ inputs.charts-dir }}
+        REGISTRY: ${{ inputs.registry }}
+        OWNER: ${{ inputs.repository-owner }}
+      run: |
+        set -euo pipefail
+
+        owner="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+        oci_repo="oci://${REGISTRY}/${owner}/charts"
+        pkg_dir="$(mktemp -d)"
+
+        has_local_deps() {
+          grep -qE "repository:[[:space:]]*[\"']?file://" "$1/Chart.yaml"
+        }
+
+        for chart in "${CHARTS_DIR}"/*/; do
+          [ -f "${chart}Chart.yaml" ] || continue
+          has_local_deps "${chart%/}" || helm dependency build "${chart}"
+        done
+
+        for chart in "${CHARTS_DIR}"/*/; do
+          [ -f "${chart}Chart.yaml" ] || continue
+          if has_local_deps "${chart%/}"; then
+            helm dependency update "${chart}"
+          fi
+        done
+
+        for chart in "${CHARTS_DIR}"/*/; do
+          [ -f "${chart}Chart.yaml" ] || continue
+          helm package "${chart}" --destination "${pkg_dir}"
+        done
+
+        for pkg in "${pkg_dir}"/*.tgz; do
+          echo "Pushing ${pkg} to ${oci_repo}"
+          helm push "${pkg}" "${oci_repo}"
+        done
