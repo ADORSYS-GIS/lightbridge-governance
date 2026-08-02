@@ -1,0 +1,27 @@
+name: Helm Charts Publish
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-oci.yml'
+      - '.github/actions/helm-oci-publish/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-helm-charts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Publish Helm Charts
+        uses: ./.github/actions/helm-oci-publish
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          charts-dir: charts
