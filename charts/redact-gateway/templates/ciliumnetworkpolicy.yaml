@@ -9,9 +9,15 @@ pod to start -- it is the statement of what this proxy is allowed to reach.
 rather than guessed. An earlier draft used `k8s-app: core-gateway-internal`,
 which matches nothing: the internal listener is a listener inside the SHARED
 core-gateway Envoy Deployment, not a pod of its own, and those pods are labelled
-by owning gateway. A wrong selector here fails open on egress (Cilium simply
-never matches the rule) rather than loudly, so it is worth re-verifying with
-`kubectl -n <ns> get svc <name> -o jsonpath='{.spec.selector}'` before editing.
+by owning gateway. A wrong selector or port here fails CLOSED -- the rule
+simply never matches, the traffic is dropped, and the caller sees a bare connect
+error that names no policy. Re-verify both before editing:
+  kubectl -n <ns> get svc <name> -o jsonpath='{.spec.selector}'
+  kubectl -n <ns> get svc <name> -o jsonpath='{.spec.ports[0].targetPort}'
+
+⚠️ The port must be the POD's targetPort, not the Service port: Cilium enforces
+egress POST-DNAT. core-gateway-internal is :443 on the Service and :10443 on the
+pod, and allowing 443 drops every connection.
 */}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
