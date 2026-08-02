@@ -42,6 +42,8 @@ model Tenant {
   name String
 
   applications Application[] @relation(fields:[id],references:[tenantId])
+  integrations Integration[] @relation(fields:[id],references:[tenantId])
+  identityMaps IdentityMap[] @relation(fields:[id],references:[tenantId])
 
   @@allow("read", auth() != null)
 }
@@ -86,6 +88,7 @@ model Integration {
   contentCapture String
   lastTelemetryAt DateTime?
 
+  tenant Tenant @relation(fields:[tenantId],references:[id])
   application Application @relation(fields:[applicationId],references:[id])
 
   @@paged
@@ -107,6 +110,8 @@ model IdentityMap {
   mappingSource String
   validFrom DateTime @default(dbgenerated())
   validTo DateTime?
+
+  tenant Tenant @relation(fields:[tenantId],references:[id])
 
   @@unique([tenantId, provider, providerUserId, validFrom])
   @@paged
