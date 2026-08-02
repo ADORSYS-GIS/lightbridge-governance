@@ -244,6 +244,25 @@ mod tests {
         assert!(v.is_blocked(), "an AWS key must block, got {v:?}");
     }
 
+    /// Regression: the `coding-assistant` profile once set a 0.7 threshold on
+    /// `Phone`, but upstream's phone recognizer emits a *fixed* score of 0.6,
+    /// so the detector was switched off rather than tightened and no phone
+    /// number was ever redacted. Nothing caught it because the profile tests
+    /// only assert `action_for`, which still correctly returned `Replace` —
+    /// the threshold kills the detection before the action is ever consulted.
+    /// Assert the behaviour, not the policy.
+    #[test]
+    fn phone_number_is_actually_redacted() {
+        let e = engine(Profile::coding_assistant());
+        let v = e.scan("call me on +1-415-555-0142 tomorrow").expect("scan");
+        match v {
+            Verdict::Redacted { text, .. } => {
+                assert!(!text.contains("555-0142"), "phone survived: {text}");
+            }
+            other => panic!("expected the phone number to be redacted, got {other:?}"),
+        }
+    }
+
     #[test]
     fn private_key_header_blocks_the_request() {
         let e = engine(Profile::coding_assistant());

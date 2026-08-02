@@ -147,9 +147,14 @@ impl Profile {
         // during overlap resolution (which prefers the higher score).
         thresholds.insert(EntityType::Domain, 0.95);
         thresholds.insert(EntityType::Hostname, 0.95);
-        // Phone is a bare digit-run pattern at 0.6; in code it collides with
-        // version strings and byte arrays.
-        thresholds.insert(EntityType::Phone, 0.7);
+        // Phone stays at the default 0.6 floor and is deliberately NOT raised.
+        // Upstream's phone recognizer is a `RegexRecognizer`, which emits a
+        // *fixed* score of 0.6 with no context boost, so any threshold above
+        // 0.6 does not tighten the detector — it switches it off entirely.
+        // This previously sat at 0.7, which read as tuning but meant no phone
+        // number was ever redacted in this profile. The pattern does collide
+        // with version strings and byte arrays in code; a mangled digit run in
+        // a code review is the cheaper failure of the two.
 
         Self {
             name: "coding-assistant",
