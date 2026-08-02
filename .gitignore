@@ -2,6 +2,7 @@
 **/*.rs.bk
 .env
 .env.*
+.idea/
 !.env.example
 /config/tls
 *.pem
