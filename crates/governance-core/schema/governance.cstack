@@ -73,14 +73,28 @@ model Application {
   @@allow("update", auth() != null)
 }
 
-// One credential per integration. Only the argon2id HASH is stored -- the token
-// is returned once at creation and is not recoverable. Revocation is a `status`
-// flip that /internal/v1/resolve reads, so it is authoritative and server-side
-// (ADR-0006).
+// One credential per integration. Only a SHA-256 hash is stored -- the
+// plaintext secret is returned once at issuance and is not recoverable.
+// SHA-256 (not argon2id/bcrypt) on purpose: the secret is a 256-bit
+// CSPRNG-generated value, not a human-chosen password, so a slow/memory-hard
+// hash buys nothing against brute-force and only adds latency to every
+// /internal/v1/resolve cache miss (ADR-0006's gateway hot path) -- and SHA-256
+// allows a direct `WHERE credential_hash = sha256(presented)` lookup, since
+// unlike argon2id/bcrypt it has no per-hash random salt. Matches
+// lightbridge-authz's `ApiKey`/`createApiKey` precedent exactly (#10).
 //
-// `credentialHash` is `@readonly`: it must never appear in a generated create or
-// update input, or a caller could set their own hash and mint a token we did not
-// issue. Issuance goes through the `issueIntegrationCredential` procedure.
+// Revocation is a `status` flip that /internal/v1/resolve reads, so it is
+// authoritative and server-side (ADR-0006). That endpoint caches for 60s
+// (ADR-0006, docs/runbooks/revoke-an-integration-token.md) -- that IS the
+// revocation SLA, decided there, not re-litigated here.
+//
+// `credentialHash` is `@server_only`: it must never appear in a generated
+// create/update input OR a read/output response -- a caller could otherwise
+// mint their own token, or the hash could leak over the wire. `credentialPrefix`
+// is `@readonly` (display only, e.g. "token starting with gov_a1b2c3d4" in a
+// listing) -- it plays no role in verification. Issuance and revocation go
+// through the `issueIntegrationCredential`/`revokeIntegrationCredential`
+// procedures, since both need to touch fields no generated create/update can.
 model Integration {
   @use(AuditFields)
 
@@ -89,10 +103,13 @@ model Integration {
   applicationId String
   provider String
   environment String
-  credentialHash String @readonly
+  credentialPrefix String @readonly
+  credentialHash String @server_only
   status String @readonly
   contentCapture String
   lastTelemetryAt DateTime?
+  lastUsedAt DateTime? @readonly
+  revokedAt DateTime? @readonly
 
   tenant Tenant @relation(fields:[tenantId],references:[id])
   application Application @relation(fields:[applicationId],references:[id])
@@ -100,6 +117,38 @@ model Integration {
   @@paged
   @@allow("read", auth() != null)
 }
+
+type IssueIntegrationCredentialInput {
+  applicationId String
+  provider String
+  environment String
+  contentCapture String?
+}
+
+// Nests `Integration` directly (matching `ApiKeySecret`'s shape in
+// lightbridge-authz) -- the caller gets the full record plus the one-time
+// plaintext, never separately re-fetchable after this response.
+type IntegrationCredential {
+  integration Integration
+  secret String
+}
+
+// `tenantId` is deliberately absent from the input -- derived server-side from
+// `applicationId` inside the procedure, never trusted from the request body
+// (same reasoning as `createApiKey`'s `projectId` in lightbridge-authz).
+// `@allow(auth() != null)` only asserts an authenticated caller; there is no
+// ownership/ACL check yet (no equivalent of lightbridge-authz's project-lead
+// gating exists in this registry today) -- any authenticated caller may issue
+// a credential for any application, for now.
+mutation procedure issueIntegrationCredential(args: IssueIntegrationCredentialInput): IntegrationCredential
+  @allow(auth() != null)
+
+type RevokeIntegrationCredentialInput {
+  integrationId String
+}
+
+mutation procedure revokeIntegrationCredential(args: RevokeIntegrationCredentialInput): Integration
+  @allow(auth() != null)
 
 // Provider principal -> internal identity. Deliberately NOT matched on display
 // name: verified email or an explicit mapping only.

@@ -12,6 +12,11 @@ use crate::{Error, Result};
 const INIT_UP: &str = include_str!("../migrations/postgres/20260802000939_init/up.sql");
 const INIT_DOWN: &str = include_str!("../migrations/postgres/20260802000939_init/down.sql");
 
+const INTEGRATION_CREDENTIAL_FIELDS_UP: &str =
+    include_str!("../migrations/postgres/20260802051051_integration_credential_fields/up.sql");
+const INTEGRATION_CREDENTIAL_FIELDS_DOWN: &str =
+    include_str!("../migrations/postgres/20260802051051_integration_credential_fields/down.sql");
+
 // Not one of the tracked `Migration`s below: `apply_pending` splits `up` on
 // every literal `;` before executing each fragment as its own prepared
 // statement (verified in cratestack-sqlx's migrations.rs), which corrupts any
@@ -57,14 +62,23 @@ CREATE TRIGGER tenants_touch_updated_at
 "#;
 
 fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        id: "20260802000939_init".to_owned(),
-        description:
-            "registry: tenants, applications, integrations, identity maps, ingest manifests"
+    vec![
+        Migration {
+            id: "20260802000939_init".to_owned(),
+            description:
+                "registry: tenants, applications, integrations, identity maps, ingest manifests"
+                    .to_owned(),
+            up: INIT_UP.to_owned(),
+            down: Some(INIT_DOWN.to_owned()),
+        },
+        Migration {
+            id: "20260802051051_integration_credential_fields".to_owned(),
+            description: "integration: credential_prefix, last_used_at, revoked_at (#10)"
                 .to_owned(),
-        up: INIT_UP.to_owned(),
-        down: Some(INIT_DOWN.to_owned()),
-    }]
+            up: INTEGRATION_CREDENTIAL_FIELDS_UP.to_owned(),
+            down: Some(INTEGRATION_CREDENTIAL_FIELDS_DOWN.to_owned()),
+        },
+    ]
 }
 
 /// Apply every migration not yet recorded in `cratestack_migrations`, then
