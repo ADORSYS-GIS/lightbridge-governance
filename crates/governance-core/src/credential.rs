@@ -159,11 +159,13 @@ pub async fn revoke(
         .ok_or_else(|| CoolError::NotFound("integration not found".to_owned()))
 }
 
-/// The identity a valid credential resolves to.
+/// The identity a valid credential resolves to (#11's own AC: "returns the
+/// tenant, application, environment and integration").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedIdentity {
     pub tenant_id: String,
     pub application_id: String,
+    pub environment: String,
     pub integration_id: String,
 }
 
@@ -190,8 +192,9 @@ pub async fn resolve(
     presented: &str,
 ) -> Result<ResolvedIdentity, CredentialRejected> {
     let hash = hash_secret(presented);
-    let row: Option<(String, String, String, String)> = sqlx::query_as(
-        "SELECT tenant_id, application_id, id, status FROM integrations WHERE credential_hash = $1",
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT tenant_id, application_id, environment, id, status FROM integrations \
+         WHERE credential_hash = $1",
     )
     .bind(&hash)
     .fetch_optional(pool)
@@ -202,10 +205,13 @@ pub async fn resolve(
     })?;
 
     match row {
-        Some((tenant_id, application_id, integration_id, status)) if status == "active" => {
+        Some((tenant_id, application_id, environment, integration_id, status))
+            if status == "active" =>
+        {
             Ok(ResolvedIdentity {
                 tenant_id,
                 application_id,
+                environment,
                 integration_id,
             })
         }
