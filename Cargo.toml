@@ -3,8 +3,10 @@ members = [
     "crates/governance-core",
     "crates/governance-copilot",
     "crates/governance-foundry",
+    "crates/governance-redact",
     "app/lightbridge-governance",
     "app/governance-ctl",
+    "app/redact-gateway",
 ]
 resolver = "3"
 
@@ -12,6 +14,7 @@ resolver = "3"
 governance-core = { path = "./crates/governance-core" }
 governance-copilot = { path = "./crates/governance-copilot" }
 governance-foundry = { path = "./crates/governance-foundry" }
+governance-redact = { path = "./crates/governance-redact" }
 
 # --- serde / encoding ---
 serde = { version = "1.0", features = ["derive"] }
@@ -25,7 +28,22 @@ serde_yaml = "0.9"
 # explicitly rather than relying on another crate in the graph enabling it —
 # lightbridge-authz was silently depending on authkestra for exactly this.
 jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
-argon2 = "0.5"
+# Integration credentials are 256-bit CSPRNG-generated, not human-chosen --
+# argon2id/bcrypt exist to slow down brute-forcing *low-entropy* secrets, which
+# buys nothing against a uniformly random 256-bit value and only adds real
+# latency to every /internal/v1/resolve cache miss (ADR-0006's hot path). SHA-256
+# with a direct hash lookup matches lightbridge-authz's ApiKey precedent exactly
+# (`crates/lightbridge-authz-rest/src/handlers/mod.rs`) -- decided over argon2id
+# for #10, see that PR.
+sha2 = "0.10"
+getrandom = "0.3"
+base64 = "0.22"
+hex = "0.4"
+# Constant-time comparison for /internal/v1/resolve's shared-secret check
+# (#11) -- already a transitive dependency (sha2/rustls pull it in), so this
+# adds zero new crates to the supply chain, same as #10's sha2/getrandom/
+# base64/hex swap.
+subtle = "2"
 
 # --- async runtime / http ---
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
@@ -56,17 +74,23 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # is unaffected — confirmed via
 # `grep -rnE "::[A-Za-z_]+_(eq|ne|in_|lt|lte|gt|gte|contains|starts_with|is_null|is_not_null|is_true|is_false|asc|desc)\("`
 # across `crates/` and `app/` returning zero matches.
-cratestack-core = "0.5.0"
-cratestack-axum = "0.5.0"
+#
+# 0.5.1 is a plain patch — cratestack/cratestack#257 only adds a relation-
+# connectivity regression test fixture inside cratestack's own test suite
+# (closing the coverage gap #253 left: no example or fixture there was
+# relation-dense enough to have caught #252 before it shipped). No
+# API/schema-surface change.
+cratestack-core = "0.5.1"
+cratestack-axum = "0.5.1"
 # The server facade (schema codegen + sqlx/axum runtime). Renamed to `cratestack`
 # because `include_server_schema!` emits `::cratestack::*` paths.
-cratestack = { package = "cratestack-pg", version = "0.5.0" }
+cratestack = { package = "cratestack-pg", version = "0.5.1" }
 # CBOR is the wire format for the product API (ADR-0009).
-cratestack-codec-cbor = "0.5.0"
+cratestack-codec-cbor = "0.5.1"
 # JSON is retained for ONE reason: Authorino's `metadata.http` step posts and
 # parses `application/json` and cannot be taught CBOR, so `/internal/v1/resolve`
 # must speak JSON. Do not use it for the product API.
-cratestack-codec-json = "0.5.0"
+cratestack-codec-json = "0.5.1"
 
 # ⚠️ `default-features = false` is load-bearing, not tidiness. The default
 # feature set includes `rustls`, which resolves to

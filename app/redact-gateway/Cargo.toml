@@ -1,5 +1,6 @@
 [package]
-name = "lightbridge-governance"
+name = "redact-gateway"
+description = "OpenAI-compatible redaction proxy for the AI request path."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,33 +11,25 @@ publish.workspace = true
 workspace = true
 
 [[bin]]
-name = "lightbridge-governance"
+name = "redact-gateway"
 path = "src/main.rs"
 
 [dependencies]
-governance-core.workspace = true
-governance-copilot.workspace = true
-governance-foundry.workspace = true
+governance-redact.workspace = true
 
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 mimalloc.workspace = true
-moka.workspace = true
-rustls.workspace = true
+prometheus.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-subtle.workspace = true
-cratestack.workspace = true
-cratestack-axum.workspace = true
-cratestack-codec-cbor.workspace = true
-cratestack-codec-json.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-utoipa.workspace = true
 
 [dev-dependencies]
-cuid.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

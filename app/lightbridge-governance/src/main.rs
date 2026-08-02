@@ -6,8 +6,14 @@
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
 //! and this always-running process derives `governance_connector_*` from them.
 
+mod resolve;
+mod router;
+
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
+use governance_core::schema::cratestack_schema::Cratestack;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -23,6 +29,19 @@ struct Args {
     /// Postgres connection string.
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
+
+    /// Shared secret Authorino's `metadata.http` step presents as
+    /// `X-Internal-Token` on `/internal/v1/resolve` (#11, ADR-0006). Never
+    /// logged -- only its presence/absence is, via the request outcome.
+    #[arg(long, env = "INTERNAL_RESOLVE_TOKEN")]
+    internal_resolve_token: String,
+
+    /// Upper bound on `/internal/v1/resolve`'s credential lookup, in
+    /// milliseconds. Deliberately far below sqlx's own 30s pool default --
+    /// this is Authorino's ext_authz hot path, and a dependency's own
+    /// timeout must be shorter than the caller's (ADR-0006).
+    #[arg(long, env = "RESOLVE_TIMEOUT_MS", default_value_t = 500)]
+    resolve_timeout_ms: u64,
 }
 
 #[tokio::main]
@@ -33,7 +52,24 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing::info!(listen_addr = %args.listen_addr, "lightbridge-governance starting");
 
-    // TODO(RFC-0001/RFC-0002): mount the router once the registry lands.
-    let _ = args.database_url;
+    let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+    let resolve_state = resolve::ResolveState {
+        pool: pool.clone(),
+        internal_token: Arc::from(args.internal_resolve_token),
+        resolve_timeout: std::time::Duration::from_millis(args.resolve_timeout_ms),
+    };
+    let db = Cratestack::builder(pool).build();
+    let app = router::build_router(db).merge(
+        axum::Router::new()
+            .route(
+                "/internal/v1/resolve",
+                axum::routing::post(resolve::resolve),
+            )
+            .with_state(resolve_state),
+    );
+
+    let listener = tokio::net::TcpListener::bind(&args.listen_addr).await?;
+    tracing::info!(listen_addr = %args.listen_addr, "listening");
+    axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }

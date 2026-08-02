@@ -10,7 +10,10 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres:18+ manages a major-version-specific subdirectory itself and
+      # expects the volume mounted at the parent -- mounting straight at
+      # .../data (the pre-18 convention) makes the container exit 1 on start.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

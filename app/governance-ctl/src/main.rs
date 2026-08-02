@@ -58,7 +58,22 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing::info!(command = ?args.command, "governance-ctl invoked");
 
-    // TODO(RFC-0001): dispatch once the connector lands.
-    let _ = args.database_url;
+    match args.command {
+        Command::Migrate => {
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let applied = governance_core::migrate::run(&pool).await?;
+            if applied.is_empty() {
+                tracing::info!("no pending migrations; already current");
+            } else {
+                tracing::info!(applied = ?applied, "migrations applied");
+            }
+        }
+        // TODO(RFC-0001): dispatch once the connector lands.
+        Command::Sync
+        | Command::SyncDay { .. }
+        | Command::Replay { .. }
+        | Command::Verify
+        | Command::Status => {}
+    }
     Ok(())
 }

@@ -1,0 +1,29 @@
+[package]
+name = "governance-redact"
+description = "PII detection and redaction policy engine for the AI request path."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The detection/anonymization engine. A LIBRARY, deliberately: we own the
+# request path and the policy, and delegate only "where are the entities in
+# this string" -- see the crate docs in src/lib.rs for why that split matters.
+#
+# ⚠️ NOT on the `candle-ner` feature yet. That feature ships a `CandleNerModel`
+# TRAIT and an adapter, not a working model -- upstream's only concrete
+# implementation lives in its own `tests/candle_ner.rs` (DeBERTa-v2 pulled from
+# HF Hub at test time). Person/Location/Organization therefore do NOT fire until
+# we implement that trait and pin weights ourselves. Tracked as its own stage;
+# `Profile::detects_names()` reports the truth in the meantime so nothing
+# downstream can quietly assume name coverage we do not have.
+pii = "0.1.0"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

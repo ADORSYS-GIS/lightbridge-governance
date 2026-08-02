@@ -36,6 +36,26 @@ jobs:
   test:
     needs: code-checks
     runs-on: ubuntu-latest
+    # Without this, tests/migrate_and_create.rs finds no DATABASE_URL and
+    # skips every case with a log line, while `cargo test` still exits 0 --
+    # a green job that ran none of its DB-backed coverage. Verified: this is
+    # exactly what was happening before this service block existed.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lightbridge_governance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/lightbridge_governance
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
