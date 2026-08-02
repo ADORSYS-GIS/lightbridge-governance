@@ -8,6 +8,8 @@
 #
 # Secrets NEVER leave the process: the App JWT and installation token exist only
 # in shell variables, are never echoed, and never written to the evidence file.
+# Raw response bodies (which contain signed download URLs on a 200) are written
+# to $SPIKE_BODY_FILE for parsing only and removed on every exit path via trap.
 #
 # Prerequisites (checked at start): curl, jq, openssl, and the throwaway GitHub
 # App registered and installed on the org (ticket #7 test plan step 1).
@@ -29,6 +31,12 @@
 #                            (default: $PWD/spike-0007-evidence.txt)
 
 set -euo pipefail
+
+# Raw response bodies hold signed download URLs on a 200 (time-limited
+# credentials) — the file must not survive any exit path, including set -e
+# aborts and Ctrl-C, so removal is a trap, not a happy-path line.
+SPIKE_BODY_FILE="/tmp/spike-body.$$"
+trap 'rm -f "$SPIKE_BODY_FILE"' EXIT
 
 # ── config ────────────────────────────────────────────────────────────────────
 GH_ORG="${GH_ORG:-adorsys-gis}"
@@ -102,13 +110,13 @@ mint_install_token() {
 # ── step 3/4: probe the report endpoint, record status + redacted body ───────
 probe() {
   local endpoint="$1" status body message host url
-  status=$(curl -sS -o /tmp/spike-body.$$ -w '%{http_code}' \
+  status=$(curl -sS -o "$SPIKE_BODY_FILE" -w '%{http_code}' \
     -H "Authorization: Bearer $INSTALL_TOKEN" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: $API_VERSION" \
     "https://api.github.com$endpoint")
-  body=$(cat /tmp/spike-body.$$)
-  rm -f /tmp/spike-body.$$
+  body=$(cat "$SPIKE_BODY_FILE")
+  rm -f "$SPIKE_BODY_FILE"
   message=$(jq -r '.message // empty' <<<"$body" 2>/dev/null || true)
 
   echo "[$LABEL] GET $endpoint -> HTTP $status"
