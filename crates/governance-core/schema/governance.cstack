@@ -98,10 +98,13 @@ model Integration {
   applicationId String
   environmentId String
   provider String
-  credentialHash String @readonly
+  credentialPrefix String @readonly
+  credentialHash String @server_only
   status String @readonly
   contentCapture String
   lastTelemetryAt DateTime?
+  lastUsedAt DateTime? @readonly
+  revokedAt DateTime? @readonly
 
   application Application @relation(fields:[applicationId],references:[id])
   environment Environment @relation(fields:[environmentId],references:[id])
