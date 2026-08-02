@@ -8,11 +8,12 @@
 //! production for other services here. This service trusts that header
 //! because it is only reachable through the gateway, never directly.
 
+use std::future::Future;
+
 use axum::Router;
 use cratestack::{AuthProvider, CoolContext, CoolError, RequestContext, Value};
 use cratestack_codec_cbor::CborCodec;
 use governance_core::schema::cratestack_schema::{self, Cratestack};
-use std::future::Future;
 
 #[derive(Clone)]
 pub struct GatewayAuthProvider;

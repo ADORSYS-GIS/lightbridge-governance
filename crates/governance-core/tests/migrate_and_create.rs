@@ -15,8 +15,7 @@
 //! it doesn't silently report green in an environment with no database.
 
 use cratestack::CoolContext;
-use governance_core::schema::cratestack_schema::Cratestack;
-use governance_core::schema::cratestack_schema::inputs::CreateApplicationInput;
+use governance_core::schema::cratestack_schema::{Cratestack, inputs::CreateApplicationInput};
 
 // `#[tokio::test]` functions in this file run concurrently against the same
 // local Postgres. Applying the migration is not safe to race with itself
