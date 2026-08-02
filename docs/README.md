@@ -5,6 +5,7 @@
 | [`adr/`](./adr/README.md) | Decisions and their consequences. Immutable once accepted. |
 | [`rfc/`](./rfc/README.md) | Proposals and specifications. Revised until agreed. |
 | [`runbooks/`](./runbooks/README.md) | What to do when something breaks, or when a human has to act on purpose. |
+| [`spikes/`](./spikes/) | One-page findings from time-boxed investigations (#7). Evidenced answers, not proposals. |
 | [`architecture.md`](./architecture.md) | The system map: components, data flow, where each choice is recorded. |
 
 ## Which one am I writing?
