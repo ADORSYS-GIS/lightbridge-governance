@@ -42,6 +42,23 @@ impl Verdict {
     }
 }
 
+/// Where one in-scope entity sits in a string, and what the profile does to it.
+///
+/// Produced by [`Engine::detect`]. Carries the entity *type* and never its
+/// value, matching the rule that a blocked-request error names categories only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    /// Byte offset of the first byte, on a UTF-8 boundary.
+    pub start: usize,
+    /// Byte offset one past the last byte, on a UTF-8 boundary.
+    pub end: usize,
+    /// The entity type, e.g. `Email` or our own `Secret`.
+    pub entity: String,
+    /// What this profile does with it. Never [`Action::Allow`] — allowed
+    /// entities are filtered out, since they constrain nothing.
+    pub action: Action,
+}
+
 /// A configured redaction engine.
 ///
 /// Holds an assembled analyzer, so recognizer construction and regex
@@ -100,6 +117,48 @@ impl Engine {
     #[must_use]
     pub const fn profile(&self) -> &Profile {
         &self.profile
+    }
+
+    /// Locates in-scope entities without rewriting anything.
+    ///
+    /// [`Self::scan`] answers "what should this text become"; this answers
+    /// "where are the entities". A streaming caller needs the latter: it must
+    /// decide how much of a buffer is safe to release, and it cannot release
+    /// across a detection that is still growing as more text arrives. Told only
+    /// the rewritten string, it would have no way to know a credential began
+    /// three bytes before its release point, and would emit the first half of
+    /// it — so this exists specifically to make the streaming path safe.
+    ///
+    /// Offsets are byte offsets into `text` and always fall on UTF-8
+    /// boundaries. Spans are sorted by start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Analyze`] if the pipeline fails. A `fail_closed` caller
+    /// must treat that as a rejection, never as "nothing found".
+    pub fn detect(&self, text: &str) -> Result<Vec<Span>> {
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let analyzed = self
+            .analyzer
+            .analyze(text, &self.language)
+            .map_err(|e| Error::Analyze(e.to_string()))?;
+
+        let mut spans: Vec<Span> = analyzed
+            .entities
+            .iter()
+            .map(|d| Span {
+                start: d.start,
+                end: d.end,
+                entity: d.entity_type.as_str(),
+                action: self.profile.action_for(&d.entity_type),
+            })
+            .filter(|s| s.action != Action::Allow)
+            .collect();
+        spans.sort_unstable_by_key(|s| s.start);
+        Ok(spans)
     }
 
     /// Scans and, if needed, rewrites a single string.
