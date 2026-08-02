@@ -29,6 +29,11 @@
 //! 8. `updated_at` actually advances on `UPDATE` (#21) -- the
 //!    `touch_updated_at` trigger `governance_core::migrate::run` installs
 //!    outside the tracked migration (see that module) fires for real.
+//! 9. Integration credential issuance, resolution and revocation (#10):
+//!    issuance round-trips through `resolve`; the plaintext secret never
+//!    appears in a serialized `Integration` (`credentialHash` is
+//!    `@server_only`); revocation makes `resolve` reject and is idempotent;
+//!    an unknown credential is rejected the same opaque way.
 //!
 //! Requires `DATABASE_URL` (see `just up`); skips with a message otherwise so
 //! it doesn't silently report green in an environment with no database.
@@ -37,6 +42,7 @@ use cratestack::CoolContext;
 use governance_core::schema::cratestack_schema::{
     Cratestack,
     inputs::{CreateApplicationInput, UpdateApplicationInput},
+    types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
 };
 
 // `#[tokio::test]` functions in this file run concurrently against the same
@@ -448,5 +454,226 @@ async fn update_touches_updated_at() {
     assert_eq!(
         updated.createdAt, created.createdAt,
         "createdAt must never change on UPDATE"
+    );
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture helper, not a #[test] fn itself, so clippy's test carve-out in \
+              clippy.toml doesn't cover it; a failure here means the test setup broke, not the \
+              code under test"
+)]
+async fn create_application(
+    db: &Cratestack,
+    ctx: &CoolContext,
+    tenant_id: &str,
+) -> governance_core::schema::cratestack_schema::models::Application {
+    db.bind_context(ctx.clone())
+        .application()
+        .create(CreateApplicationInput {
+            id: format!("app-{}", cuid::cuid2()),
+            tenantId: tenant_id.to_owned(),
+            name: "credential-fixture-app".to_owned(),
+            owner: None,
+            environment: "dev".to_owned(),
+        })
+        .run()
+        .await
+        .expect("application fixture create must succeed")
+}
+
+#[tokio::test]
+async fn issue_then_resolve_round_trips() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environment: "dev".to_owned(),
+            contentCapture: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    assert_eq!(issued.integration.status, "active");
+    assert_eq!(issued.integration.applicationId, application.id);
+    assert_eq!(issued.integration.tenantId, tenant_id);
+
+    let resolved = governance_core::credential::resolve(&pool, &issued.secret)
+        .await
+        .expect("a freshly issued credential must resolve");
+
+    assert_eq!(resolved.tenant_id, tenant_id);
+    assert_eq!(resolved.application_id, application.id);
+    assert_eq!(resolved.integration_id, issued.integration.id);
+}
+
+#[tokio::test]
+async fn issued_secret_never_appears_in_the_serialized_integration() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id,
+            provider: "github_copilot".to_owned(),
+            environment: "dev".to_owned(),
+            contentCapture: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let serialized =
+        serde_json::to_string(&issued.integration).expect("Integration must serialize");
+
+    assert!(
+        !serialized.contains(&issued.secret),
+        "the plaintext secret must never appear in a serialized Integration"
+    );
+    assert!(
+        !serialized.to_lowercase().contains("credentialhash"),
+        "credentialHash must be @server_only -- absent from serialized output entirely, got: \
+         {serialized}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_rejects_a_revoked_credential() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id,
+            provider: "github_copilot".to_owned(),
+            environment: "dev".to_owned(),
+            contentCapture: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    governance_core::credential::resolve(&pool, &issued.secret)
+        .await
+        .expect("must resolve before revocation");
+
+    let revoked = governance_core::credential::revoke(
+        &db,
+        &ctx,
+        RevokeIntegrationCredentialInput {
+            integrationId: issued.integration.id.clone(),
+        },
+    )
+    .await
+    .expect("revoke must succeed");
+    assert_eq!(revoked.status, "revoked");
+    assert!(revoked.revokedAt.is_some());
+
+    let result = governance_core::credential::resolve(&pool, &issued.secret).await;
+    assert!(
+        result.is_err(),
+        "a revoked credential must be rejected by resolve"
+    );
+}
+
+#[tokio::test]
+async fn revoke_is_idempotent_under_a_repeat_call() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id,
+            provider: "github_copilot".to_owned(),
+            environment: "dev".to_owned(),
+            contentCapture: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let first = governance_core::credential::revoke(
+        &db,
+        &ctx,
+        RevokeIntegrationCredentialInput {
+            integrationId: issued.integration.id.clone(),
+        },
+    )
+    .await
+    .expect("first revoke must succeed");
+
+    let second = governance_core::credential::revoke(
+        &db,
+        &ctx,
+        RevokeIntegrationCredentialInput {
+            integrationId: issued.integration.id,
+        },
+    )
+    .await
+    .expect("revoking an already-revoked integration must be a no-op, not an error");
+
+    assert_eq!(second.status, "revoked");
+    assert_eq!(
+        first.revokedAt, second.revokedAt,
+        "the second revoke must not disturb the original revokedAt -- the WHERE status = \
+         'active' guard should have made it a no-op"
+    );
+}
+
+#[tokio::test]
+async fn resolve_rejects_an_unknown_credential() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+
+    let result = governance_core::credential::resolve(
+        &pool,
+        &format!("gov_does-not-exist-{}", cuid::cuid2()),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an unknown credential must be rejected, not accepted"
     );
 }

@@ -38,13 +38,32 @@ impl AuthProvider for GatewayAuthProvider {
     }
 }
 
-/// No `procedure` blocks in `governance.cstack` yet -- this registry is empty
-/// until one lands (e.g. `issueIntegrationCredential`, per the `Integration`
-/// model's doc comment).
+/// The real logic lives in `governance_core::credential` -- this impl is just
+/// the wiring cratestack's generated router calls into (#10).
 #[derive(Clone)]
 pub struct Procedures;
 
-impl cratestack_schema::procedures::ProcedureRegistry for Procedures {}
+impl cratestack_schema::procedures::ProcedureRegistry for Procedures {
+    async fn issue_integration_credential(
+        &self,
+        db: &Cratestack,
+        ctx: &CoolContext,
+        args: cratestack_schema::procedures::issue_integration_credential::Args,
+    ) -> Result<cratestack_schema::procedures::issue_integration_credential::Output, CoolError>
+    {
+        governance_core::credential::issue(db, ctx, args.args).await
+    }
+
+    async fn revoke_integration_credential(
+        &self,
+        db: &Cratestack,
+        ctx: &CoolContext,
+        args: cratestack_schema::procedures::revoke_integration_credential::Args,
+    ) -> Result<cratestack_schema::procedures::revoke_integration_credential::Output, CoolError>
+    {
+        governance_core::credential::revoke(db, ctx, args.args).await
+    }
+}
 
 pub fn build_router(db: Cratestack) -> Router {
     cratestack_schema::axum::router(db, Procedures, CborCodec, GatewayAuthProvider)

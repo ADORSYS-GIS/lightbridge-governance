@@ -25,7 +25,17 @@ serde_yaml = "0.9"
 # explicitly rather than relying on another crate in the graph enabling it —
 # lightbridge-authz was silently depending on authkestra for exactly this.
 jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
-argon2 = "0.5"
+# Integration credentials are 256-bit CSPRNG-generated, not human-chosen --
+# argon2id/bcrypt exist to slow down brute-forcing *low-entropy* secrets, which
+# buys nothing against a uniformly random 256-bit value and only adds real
+# latency to every /internal/v1/resolve cache miss (ADR-0006's hot path). SHA-256
+# with a direct hash lookup matches lightbridge-authz's ApiKey precedent exactly
+# (`crates/lightbridge-authz-rest/src/handlers/mod.rs`) -- decided over argon2id
+# for #10, see that PR.
+sha2 = "0.10"
+getrandom = "0.3"
+base64 = "0.22"
+hex = "0.4"
 
 # --- async runtime / http ---
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
