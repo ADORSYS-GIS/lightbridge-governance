@@ -39,7 +39,7 @@ use serde_json::Value;
 use crate::{engine::Engine, error::Result, payload::ScanReport};
 
 /// The sentinel terminating an OpenAI SSE stream.
-const DONE: &str = "[DONE]";
+pub(crate) const DONE: &str = "[DONE]";
 
 /// One parsed SSE line: either a JSON data payload we may rewrite, or a line
 /// we pass through verbatim.
@@ -50,6 +50,31 @@ enum Line {
     /// Anything else: `event:`, `id:`, `retry:`, comments, blank lines, and
     /// `data: [DONE]`. Preserved byte-for-byte.
     Passthrough(String),
+}
+
+/// One line classified the way [`scan_sse`] and [`crate::sse::SseHoldBack`]
+/// both need to: a parsed `data:` JSON payload, or raw text to pass through
+/// unexamined.
+///
+/// Shared so the two hold-back strategies agree on what counts as
+/// redactable content — a divergence here would mean the buffered and
+/// incremental paths redact different things from the same stream.
+pub(crate) enum ClassifiedLine {
+    Data(Value),
+    Passthrough,
+}
+
+/// Classifies one raw SSE line (including its trailing newline, or none at
+/// end-of-stream). `[DONE]`, non-JSON data, and every non-`data:` line pass
+/// through untouched.
+pub(crate) fn classify_line(raw: &str) -> ClassifiedLine {
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
+    let payload = trimmed.strip_prefix("data:").map(str::trim);
+    match payload {
+        Some(p) if p != DONE && !p.is_empty() => serde_json::from_str::<Value>(p)
+            .map_or(ClassifiedLine::Passthrough, ClassifiedLine::Data),
+        _ => ClassifiedLine::Passthrough,
+    }
 }
 
 /// The result of redacting a stream.
@@ -80,21 +105,15 @@ pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
     // shape as the original. SSE frames are separated by blank lines, which
     // land in `Passthrough` and are reproduced.
     for raw in body.split_inclusive('\n') {
-        let trimmed = raw.trim_end_matches(['\n', '\r']);
-        let payload = trimmed.strip_prefix("data:").map(str::trim);
-
-        match payload {
-            Some(p) if p != DONE && !p.is_empty() => {
-                if let Ok(parsed) = serde_json::from_str::<Value>(p) {
-                    chunks.push(parsed);
-                    lines.push(Line::Data(chunks.len().saturating_sub(1)));
-                } else {
-                    // Not JSON we understand. Pass it through rather than
-                    // dropping it — a provider extension is not our business.
-                    lines.push(Line::Passthrough(raw.to_string()));
-                }
+        match classify_line(raw) {
+            ClassifiedLine::Data(parsed) => {
+                chunks.push(parsed);
+                lines.push(Line::Data(chunks.len().saturating_sub(1)));
             }
-            _ => lines.push(Line::Passthrough(raw.to_string())),
+            // Not JSON we understand, or not a `data:` line at all. Pass it
+            // through rather than dropping it — a provider extension is not
+            // our business.
+            ClassifiedLine::Passthrough => lines.push(Line::Passthrough(raw.to_string())),
         }
     }
 
@@ -160,7 +179,11 @@ pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
 }
 
 /// Extracts `(choice_index, content)` pairs from one chunk.
-fn delta_contents(chunk: &Value) -> Vec<(u64, String)> {
+///
+/// `pub(crate)`: [`crate::sse::SseHoldBack`] needs the identical extraction
+/// rule the buffered path uses, so the two never disagree about what counts
+/// as redactable content in a chunk.
+pub(crate) fn delta_contents(chunk: &Value) -> Vec<(u64, String)> {
     let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -208,6 +231,34 @@ fn rewrite_deltas(
             written.insert(index, true);
         }
     }
+}
+
+/// Sets the `delta.content` string for one choice within a chunk, if that
+/// slot exists and is a string. Returns whether it did anything.
+///
+/// `pub(crate)`: unlike [`rewrite_deltas`], which resolves every choice
+/// across a whole buffered stream in one pass, [`crate::sse::SseHoldBack`]
+/// resolves one choice's contribution to one frame at a time, as the
+/// incremental redactor decides each frame is safe to release.
+pub(crate) fn set_delta_content(chunk: &mut Value, index: u64, text: &str) -> bool {
+    let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    for choice in choices.iter_mut() {
+        let choice_index = choice.get("index").and_then(Value::as_u64).unwrap_or(0);
+        if choice_index != index {
+            continue;
+        }
+        let Some(slot) = choice.get_mut("delta").and_then(|d| d.get_mut("content")) else {
+            return false;
+        };
+        if !slot.is_string() {
+            return false;
+        }
+        *slot = Value::String(text.to_string());
+        return true;
+    }
+    false
 }
 
 impl ScanReport {

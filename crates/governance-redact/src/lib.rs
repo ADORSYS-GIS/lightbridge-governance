@@ -49,6 +49,7 @@ pub mod holdback;
 pub mod payload;
 pub mod profile;
 pub mod secrets;
+pub mod sse;
 pub mod streaming;
 
 pub use engine::{Engine, Span, Verdict};
@@ -56,4 +57,5 @@ pub use error::{Error, Result};
 pub use holdback::{DEFAULT_WINDOW, Emit, HoldBack};
 pub use payload::{ScanReport, scan_request, scan_response};
 pub use profile::{Action, Profile};
+pub use sse::{SseEmit, SseHoldBack};
 pub use streaming::{StreamOutcome, scan_sse};

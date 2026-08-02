@@ -190,21 +190,40 @@ impl HoldBack {
     /// Starts at "everything except the window", then walks back so the cut
     /// never lands inside a detection that is still open at the boundary.
     fn safe_cut(&self, spans: &[Span]) -> usize {
-        let mut cut = self.pending.len().saturating_sub(self.window);
-        if cut == 0 {
-            return 0;
-        }
-        for s in spans {
-            if s.start < cut && s.end > cut {
-                cut = s.start;
-            }
-        }
-        // `Span` offsets are boundaries already; `len - window` may not be.
-        while cut > 0 && !self.pending.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        cut
+        safe_prefix(&self.pending, spans, self.window, self.pending.len())
     }
+}
+
+/// The shared cut-selection rule: how far into `pending` it is safe to
+/// release, given a hold-back `window` and an optional `ceiling` no cut may
+/// exceed.
+///
+/// Factored out of [`HoldBack`] so [`crate::sse`] can reuse the exact same
+/// span-safety walk-back while additionally constraining the cut to a whole
+/// SSE frame boundary via `ceiling` — duplicating this algorithm would risk
+/// the two hold-back strategies silently drifting apart on the one rule that
+/// makes either of them safe.
+///
+/// `ceiling` lets a caller cap the cut below the window-implied point (an SSE
+/// frame boundary, say) without duplicating the span walk-back. Passing
+/// `pending.len()` imposes no extra constraint, matching plain byte-oriented
+/// hold-back.
+pub(crate) fn safe_prefix(pending: &str, spans: &[Span], window: usize, ceiling: usize) -> usize {
+    let mut cut = pending.len().saturating_sub(window).min(ceiling);
+    if cut == 0 {
+        return 0;
+    }
+    for s in spans {
+        if s.start < cut && s.end > cut {
+            cut = s.start;
+        }
+    }
+    // `Span` offsets are boundaries already; the window/ceiling arithmetic
+    // above may not have landed on one.
+    while cut > 0 && !pending.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
 }
 
 impl Default for HoldBack {

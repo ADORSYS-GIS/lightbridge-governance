@@ -8,27 +8,19 @@
 //!   payload). Identical logic to `redact-gateway`'s request path, since the
 //!   input shape is identical.
 //! - **Response** — scanned incrementally via
-//!   [`governance_redact::HoldBack`] as chunks arrive under
+//!   [`governance_redact::SseHoldBack`] as chunks arrive under
 //!   `processingMode.response.body: Streamed`, so output lags input by a
 //!   bounded window rather than by the length of the completion.
+//!   `SseHoldBack` is frame-aware: it extracts exactly `delta.content` before
+//!   redacting anything (the same rule
+//!   [`governance_redact::scan_sse`]'s buffered path uses) and snaps every
+//!   release to a whole SSE frame boundary, so a redaction operator's
+//!   replacement can never land partway through a frame's JSON — the
+//!   front-proxy-era limitation this module used to carry (a raw-byte
+//!   [`governance_redact::HoldBack`] with no notion of SSE structure) is
+//!   closed.
 //!
-//! ⚠️ **Known limitation, not yet closed.** [`HoldBack`] operates on raw text
-//! and knows nothing about SSE framing or the OpenAI delta-content JSON
-//! shape that [`governance_redact::scan_sse`] is built around. It scans and
-//! rewrites spans directly in the raw byte stream — including the JSON
-//! structure surrounding `delta.content`, not just the content itself. That
-//! is *not* a framing-corruption risk (SSE is spec'd as an arbitrarily
-//! chunkable byte stream; clients reassemble on `\n\n`, not on HTTP chunk
-//! boundaries), but it IS a correctness gap: a redaction operator's
-//! replacement text (e.g. `<EMAIL>`) can land partway through a JSON string
-//! if the detected span straddles non-content bytes, which would corrupt
-//! that SSE frame's JSON for the client to parse. Follow-up is an
-//! SSE-frame-aware hold-back that extracts only `delta.content` substrings
-//! (reusing `streaming::delta_contents`/`rewrite_deltas`) before feeding them
-//! to [`HoldBack`], holding a frame until its whole content span is
-//! releasable. Tracked against governance epic #873; not yet its own ticket.
-//!
-//! ⚠️ **Also not yet handled**: a response chunk boundary landing mid-UTF-8
+//! ⚠️ **Still not handled**: a response chunk boundary landing mid-UTF-8
 //! codepoint. Real streamed non-ASCII text will hit this. Current behaviour
 //! is to fail closed rather than silently misdecode — see
 //! [`handle_response_chunk`].
@@ -45,7 +37,7 @@ use envoy_types::pb::envoy::{
     },
     r#type::v3::{HttpStatus, StatusCode},
 };
-use governance_redact::{Emit, Engine, HoldBack, ScanReport, scan_request};
+use governance_redact::{Engine, ScanReport, SseEmit, SseHoldBack, scan_request};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -92,9 +84,9 @@ enum Phase {
     RequestBody(Vec<u8>),
     /// Request handling is done; now accumulating the streamed response.
     /// The `usize` is redactions reported as of the last chunk, so the
-    /// cumulative counter `HoldBack::redactions` can be turned into a
+    /// cumulative counter `SseHoldBack::redactions` can be turned into a
     /// per-chunk delta for the Prometheus counter.
-    ResponseBody(HoldBack, usize),
+    ResponseBody(Box<SseHoldBack>, usize),
 }
 
 #[tonic::async_trait]
@@ -141,7 +133,7 @@ impl ExternalProcessor for RedactProcessor {
                         }
                         metrics.requests_total.inc();
                         let result = handle_request_body(&engine, &metrics, buf);
-                        phase = Phase::ResponseBody(HoldBack::with_window(window), 0);
+                        phase = Phase::ResponseBody(Box::new(SseHoldBack::with_window(window)), 0);
                         result
                     }
 
@@ -257,7 +249,7 @@ fn handle_request_body(engine: &Engine, metrics: &Metrics, raw: &[u8]) -> Proces
 fn handle_response_chunk(
     engine: &Engine,
     metrics: &Metrics,
-    hold: &mut HoldBack,
+    hold: &mut SseHoldBack,
     last_redactions: &mut usize,
     chunk: &[u8],
     end_of_stream: bool,
@@ -281,18 +273,18 @@ fn handle_response_chunk(
             // text so far is never silently discarded in favour of a block
             // that arrives from the SAME chunk it was derived from.
             let first = match first {
-                Emit::Blocked(entities) => return Ok(Emit::Blocked(entities)),
+                SseEmit::Blocked(entities) => return Ok(SseEmit::Blocked(entities)),
                 other => other,
             };
             let last = hold.flush(engine)?;
             Ok(match (first, last) {
-                (Emit::Release(mut a), Emit::Release(b)) => {
+                (SseEmit::Release(mut a), SseEmit::Release(b)) => {
                     a.push_str(&b);
-                    Emit::Release(a)
+                    SseEmit::Release(a)
                 }
-                (Emit::Release(a), Emit::Nothing) => Emit::Release(a),
-                (Emit::Nothing, other) => other,
-                (Emit::Blocked(_), _) => unreachable!("Blocked already returned above"),
+                (SseEmit::Release(a), SseEmit::Nothing) => SseEmit::Release(a),
+                (SseEmit::Nothing, other) => other,
+                (SseEmit::Blocked(_), _) => unreachable!("Blocked already returned above"),
                 // `HoldBack::advance` checks the WHOLE pending buffer for a
                 // block before computing any cut, in both `push` and
                 // `flush`. Since `first` (this push) was not `Blocked`, no
@@ -303,7 +295,7 @@ fn handle_response_chunk(
                 // surfacing only here would mean the same text was clean
                 // moments ago and is not now, with nothing appended between
                 // the two calls.
-                (Emit::Release(_), Emit::Blocked(_)) => {
+                (SseEmit::Release(_), SseEmit::Blocked(_)) => {
                     unreachable!("flush cannot find a block that push's scan of the same pending buffer did not")
                 }
             })
@@ -319,9 +311,9 @@ fn handle_response_chunk(
     }
 
     match emit {
-        Ok(Emit::Nothing) => body_response(Direction::Response, Vec::new()),
-        Ok(Emit::Release(out)) => body_response(Direction::Response, out.into_bytes()),
-        Ok(Emit::Blocked(entities)) => {
+        Ok(SseEmit::Nothing) => body_response(Direction::Response, Vec::new()),
+        Ok(SseEmit::Release(out)) => body_response(Direction::Response, out.into_bytes()),
+        Ok(SseEmit::Blocked(entities)) => {
             metrics.blocked_total.inc();
             tracing::warn!(?entities, "blocked response: prohibited content");
             immediate_response(
