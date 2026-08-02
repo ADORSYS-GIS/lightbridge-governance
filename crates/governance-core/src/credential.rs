@@ -93,6 +93,25 @@ pub async fn issue(
         .await?
         .ok_or_else(|| CoolError::Validation("application not found".to_owned()))?;
 
+    // `environmentId` must be a real, registered `Environment` under *this*
+    // application -- not just any environment, or a caller could mint a
+    // credential attributed to another application's environment while
+    // `application_id` still points at the one they asked for. The FK on
+    // `integrations.environment_id` (see the migration comment) only
+    // guarantees the environment exists somewhere, not that it belongs here.
+    let environment = db
+        .bind_context(ctx.clone())
+        .environment()
+        .find_unique(args.environmentId.clone())
+        .run()
+        .await?
+        .ok_or_else(|| CoolError::Validation("environment not found".to_owned()))?;
+    if environment.applicationId != args.applicationId {
+        return Err(CoolError::Validation(
+            "environment does not belong to the given application".to_owned(),
+        ));
+    }
+
     let id = cuid::cuid2();
     let secret = generate_secret()?;
     let prefix = display_prefix(secret.expose());
@@ -103,15 +122,15 @@ pub async fn issue(
 
     sqlx::query(
         "INSERT INTO integrations \
-         (id, tenant_id, application_id, provider, environment, credential_prefix, \
+         (id, tenant_id, application_id, environment_id, provider, credential_prefix, \
           credential_hash, status, content_capture) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8)",
     )
     .bind(&id)
     .bind(&application.tenantId)
     .bind(&args.applicationId)
+    .bind(&args.environmentId)
     .bind(&args.provider)
-    .bind(&args.environment)
     .bind(&prefix)
     .bind(&hash)
     .bind(&content_capture)
@@ -192,9 +211,14 @@ pub async fn resolve(
     presented: &str,
 ) -> Result<ResolvedIdentity, CredentialRejected> {
     let hash = hash_secret(presented);
+    // `environment` here is the registered Environment's *name* (e.g. "prod"),
+    // matching the shape this returned before Environment existed as its own
+    // model (#10's original design) -- joined, not a bare column, now that
+    // `integrations.environment_id` is a real FK (see the migration comment).
     let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT tenant_id, application_id, environment, id, status FROM integrations \
-         WHERE credential_hash = $1",
+        "SELECT i.tenant_id, i.application_id, e.name, i.id, i.status \
+         FROM integrations i JOIN environments e ON e.id = i.environment_id \
+         WHERE i.credential_hash = $1",
     )
     .bind(&hash)
     .fetch_optional(pool)

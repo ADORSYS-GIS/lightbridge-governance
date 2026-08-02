@@ -14,8 +14,10 @@
 //!    0.5.0 does not emit one for a declared `@relation` -- see the migration
 //!    comment) -- creating an `Application` under a tenant that does not
 //!    exist is rejected, not silently orphaned (#9's own AC).
-//! 4. `applications`' hand-added `@@unique([tenantId, name, environment])`
-//!    index is real -- a second create with the same tuple is rejected.
+//! 4. `applications`' hand-added `@@unique([tenantId, name])` index is real
+//!    -- a second create with the same tuple is rejected. (Was
+//!    `[tenantId, name, environment]` before Environment became a first-class
+//!    model, #15.)
 //! 5. `ingest_manifests`' hand-added `@@unique(...)` natural-key index is
 //!    real -- required for #17's `ON CONFLICT DO UPDATE` design to have
 //!    anything to conflict on (cratestack emits no index for a model-level
@@ -173,7 +175,6 @@ async fn create_application_round_trips_under_a_real_tenant() {
             tenantId: tenant_id,
             name: "test-app".to_owned(),
             owner: None,
-            environment: "dev".to_owned(),
         })
         .run()
         .await
@@ -200,7 +201,6 @@ async fn create_application_under_a_nonexistent_tenant_is_rejected() {
             tenantId: format!("tenant-does-not-exist-{}", cuid::cuid2()),
             name: "orphan-app".to_owned(),
             owner: None,
-            environment: "dev".to_owned(),
         })
         .run()
         .await;
@@ -213,7 +213,7 @@ async fn create_application_under_a_nonexistent_tenant_is_rejected() {
 }
 
 #[tokio::test]
-async fn create_application_rejects_duplicate_tenant_name_environment() {
+async fn create_application_rejects_duplicate_tenant_name() {
     let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
@@ -227,7 +227,6 @@ async fn create_application_rejects_duplicate_tenant_name_environment() {
         tenantId: tenant_id.clone(),
         name: "dup-app".to_owned(),
         owner: None,
-        environment: "dev".to_owned(),
     };
 
     db.bind_context(ctx.clone())
@@ -246,8 +245,9 @@ async fn create_application_rejects_duplicate_tenant_name_environment() {
 
     assert!(
         second.is_err(),
-        "a second application with the same (tenant_id, name, environment) must be rejected by \
-         applications_tenant_id_name_environment_key, not silently duplicated"
+        "a second application with the same (tenant_id, name) must be rejected by \
+         applications_tenant_id_name_key, not silently duplicated -- Environment (#15) is now \
+         where per-environment distinction lives, not Application"
     );
 }
 
@@ -298,34 +298,36 @@ async fn create_integration_under_a_nonexistent_tenant_is_rejected() {
     insert_tenant(&pool, &tenant_id).await;
 
     let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
     let application = db
-        .bind_context(authenticated_ctx())
+        .bind_context(ctx.clone())
         .application()
         .create(CreateApplicationInput {
             id: format!("app-{}", cuid::cuid2()),
             tenantId: tenant_id,
             name: "integration-fixture-app".to_owned(),
             owner: None,
-            environment: "dev".to_owned(),
         })
         .run()
         .await
         .expect("application fixture create must succeed");
+    let environment = create_environment(&db, &ctx, &application).await;
 
     // Integration has no `@@allow("create", ...)` policy (issuance goes
     // through the `issueIntegrationCredential` procedure, per the model's
     // own schema comment), so this goes in directly, same as the tenant
-    // fixture. A real, valid `application_id` isolates the failure to the
-    // `tenant_id` FK specifically.
+    // fixture. Real, valid `application_id`/`environment_id` isolate the
+    // failure to the `tenant_id` FK specifically.
     let result = cratestack::sqlx::query(
         "INSERT INTO integrations \
-         (id, tenant_id, application_id, provider, environment, credential_hash, status, \
+         (id, tenant_id, application_id, environment_id, provider, credential_hash, status, \
           content_capture) \
-         VALUES ($1, $2, $3, 'github_copilot', 'dev', 'hash', 'active', 'metadata_only')",
+         VALUES ($1, $2, $3, $4, 'github_copilot', 'hash', 'active', 'metadata_only')",
     )
     .bind(format!("integration-{}", cuid::cuid2()))
     .bind(format!("tenant-does-not-exist-{}", cuid::cuid2()))
     .bind(&application.id)
+    .bind(&environment.id)
     .execute(&pool)
     .await;
 
@@ -454,7 +456,6 @@ async fn update_touches_updated_at() {
             tenantId: tenant_id,
             name: "before-rename".to_owned(),
             owner: None,
-            environment: "dev".to_owned(),
         })
         .run()
         .await
@@ -474,7 +475,6 @@ async fn update_touches_updated_at() {
             tenantId: None,
             name: Some("after-rename".to_owned()),
             owner: None,
-            environment: None,
         })
         .run()
         .await
@@ -512,11 +512,36 @@ async fn create_application(
             tenantId: tenant_id.to_owned(),
             name: "credential-fixture-app".to_owned(),
             owner: None,
-            environment: "dev".to_owned(),
         })
         .run()
         .await
         .expect("application fixture create must succeed")
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "test fixture helper, not a #[test] fn itself, so clippy's test carve-out in \
+              clippy.toml doesn't cover it; a failure here means the test setup broke, not the \
+              code under test"
+)]
+async fn create_environment(
+    db: &Cratestack,
+    ctx: &CoolContext,
+    application: &governance_core::schema::cratestack_schema::models::Application,
+) -> governance_core::schema::cratestack_schema::models::Environment {
+    db.bind_context(ctx.clone())
+        .environment()
+        .create(
+            governance_core::schema::cratestack_schema::inputs::CreateEnvironmentInput {
+                id: format!("env-{}", cuid::cuid2()),
+                tenantId: application.tenantId.clone(),
+                applicationId: application.id.clone(),
+                name: "dev".to_owned(),
+            },
+        )
+        .run()
+        .await
+        .expect("environment fixture create must succeed")
 }
 
 #[tokio::test]
@@ -530,6 +555,7 @@ async fn issue_then_resolve_round_trips() {
     let db = Cratestack::builder(pool.clone()).build();
     let ctx = authenticated_ctx();
     let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
 
     let issued = governance_core::credential::issue(
         &db,
@@ -537,7 +563,7 @@ async fn issue_then_resolve_round_trips() {
         IssueIntegrationCredentialInput {
             applicationId: application.id.clone(),
             provider: "github_copilot".to_owned(),
-            environment: "dev".to_owned(),
+            environmentId: environment.id,
             contentCapture: None,
         },
     )
@@ -554,6 +580,7 @@ async fn issue_then_resolve_round_trips() {
 
     assert_eq!(resolved.tenant_id, tenant_id);
     assert_eq!(resolved.application_id, application.id);
+    assert_eq!(resolved.environment, "dev");
     assert_eq!(resolved.integration_id, issued.integration.id);
 }
 
@@ -568,6 +595,7 @@ async fn issued_secret_never_appears_in_the_serialized_integration() {
     let db = Cratestack::builder(pool).build();
     let ctx = authenticated_ctx();
     let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
 
     let issued = governance_core::credential::issue(
         &db,
@@ -575,7 +603,7 @@ async fn issued_secret_never_appears_in_the_serialized_integration() {
         IssueIntegrationCredentialInput {
             applicationId: application.id,
             provider: "github_copilot".to_owned(),
-            environment: "dev".to_owned(),
+            environmentId: environment.id,
             contentCapture: None,
         },
     )
@@ -607,6 +635,7 @@ async fn resolve_rejects_a_revoked_credential() {
     let db = Cratestack::builder(pool.clone()).build();
     let ctx = authenticated_ctx();
     let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
 
     let issued = governance_core::credential::issue(
         &db,
@@ -614,7 +643,7 @@ async fn resolve_rejects_a_revoked_credential() {
         IssueIntegrationCredentialInput {
             applicationId: application.id,
             provider: "github_copilot".to_owned(),
-            environment: "dev".to_owned(),
+            environmentId: environment.id,
             contentCapture: None,
         },
     )
@@ -655,6 +684,7 @@ async fn revoke_is_idempotent_under_a_repeat_call() {
     let db = Cratestack::builder(pool).build();
     let ctx = authenticated_ctx();
     let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
 
     let issued = governance_core::credential::issue(
         &db,
@@ -662,7 +692,7 @@ async fn revoke_is_idempotent_under_a_repeat_call() {
         IssueIntegrationCredentialInput {
             applicationId: application.id,
             provider: "github_copilot".to_owned(),
-            environment: "dev".to_owned(),
+            environmentId: environment.id,
             contentCapture: None,
         },
     )
