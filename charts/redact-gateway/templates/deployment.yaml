@@ -38,8 +38,15 @@ spec:
               value: {{ .Values.provider.timeoutSecs | quote }}
             - name: REDACT_PROFILE
               value: {{ .Values.profile | quote }}
+            # ⚠️ `int64` is load-bearing, not decoration. Helm parses a large
+            # integer from values.yaml as a float, so a bare `| quote` renders
+            # 33554432 as "3.3554432e+07" -- which clap rejects at startup with
+            # `invalid digit found in string`, crash-looping the pod. It does
+            # NOT reproduce via `--set` (that parses as int64), so a values-file
+            # default is the only place it bites. Same family as the ai-helm
+            # ADR-0109 `"n": 1` YAML-boolean trap.
             - name: MAX_BODY_BYTES
-              value: {{ .Values.maxBodyBytes | quote }}
+              value: {{ .Values.maxBodyBytes | int64 | quote }}
             {{- if .Values.internalCaTrust.enabled }}
             - name: PROVIDER_CA_FILE
               value: "{{ .Values.internalCaTrust.mountPath }}/ca.crt"
