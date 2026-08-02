@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+#
+# A SEPARATE image from lightbridge-governance, deliberately.
+#
+# The two binaries share a workspace but not a dependency profile: the
+# governance API pulls cratestack/sqlx/aws-sdk-s3, and redact-gateway pulls none
+# of them. Shipping one image would put that whole tree into the scan surface of
+# the component sitting fail-closed in front of every AI request -- so a CVE in
+# an S3 SDK the proxy never calls would light up as a finding on the proxy, and
+# real findings would be harder to see among them. Trivy scans images, not
+# processes, so the split is what keeps this image's scan result meaningful.
+
+# ⚠️ cargo-auditable is NOT optional. Without it Trivy scans only the base OS and
+# reports a clean result that means "it never looked at your Rust dependencies".
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+RUN cargo install cargo-auditable --locked
+COPY . .
+RUN cargo auditable build --profile prod --bin redact-gateway
+
+# Distroless: no shell in the runtime image.
+#
+# ⚠️ The base MUST stay in step with the builder's glibc. censgate/redact's
+# published gateway image could not start at all -- it built on a newer Rust
+# base and ran on distroless/cc-debian12, and every container exited with
+# `GLIBC_2.38 not found` (censgate/redact#114). `rust:1-bookworm` is Debian 12,
+# matching `cc-debian12`. Changing either one without the other reproduces
+# exactly that failure, and it fails at runtime, not at build time.
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=builder /src/target/prod/redact-gateway /usr/local/bin/
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/redact-gateway"]

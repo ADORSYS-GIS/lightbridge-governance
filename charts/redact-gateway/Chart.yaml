@@ -1,0 +1,25 @@
+apiVersion: v2
+name: redact-gateway
+description: |
+  PII redaction proxy for the AI request path. Sits in front of the AI gateway
+  and scans prompts on the way out and model output on the way back:
+
+    client -> redact-gateway -> core-gateway-internal (authorino -> AIEG)
+
+  A front proxy rather than an Envoy ext_proc filter, so there is no
+  filter-chain ordering dependency and no fork of the AI Gateway
+  (ai-helm ADR-0113), and first-party rather than off-the-shelf, because the
+  component sitting fail-closed in front of every AI request has to be one we
+  build and can fix (ai-helm ADR-0114).
+
+  Published to OCI on merge and consumed by ai-helm, matching the
+  lightbridge-authz convention (charts live with the code they deploy).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - redaction
+  - pii
+  - gateway
+maintainers:
+  - name: adorsys-gis

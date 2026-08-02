@@ -1,0 +1,76 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Defence in depth. The `apps` namespace carries no default-deny-EGRESS baseline
+today (verified live: only default-deny-ingress, allow-dns, allow-ingress-to-apps
+and allow-apps-egress-data exist there), so this is not a prerequisite for the
+pod to start -- it is the statement of what this proxy is allowed to reach.
+
+⚠️ Every `toEndpoints` selector below was read off the live Service selectors
+rather than guessed. An earlier draft used `k8s-app: core-gateway-internal`,
+which matches nothing: the internal listener is a listener inside the SHARED
+core-gateway Envoy Deployment, not a pod of its own, and those pods are labelled
+by owning gateway. A wrong selector here fails open on egress (Cilium simply
+never matches the rule) rather than loudly, so it is worth re-verifying with
+`kubectl -n <ns> get svc <name> -o jsonpath='{.spec.selector}'` before editing.
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Values.name }}-allow
+  labels:
+    app: {{ .Values.name }}
+spec:
+  description: >-
+    {{ .Values.name }} may be called from the {{ .Values.networkPolicy.ingressNamespace }}
+    namespace, and may reach DNS, the AI gateway's internal listener, and the
+    Alloy OTLP collector. Nothing else.
+  endpointSelector:
+    matchLabels:
+      app: {{ .Values.name }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.ingressNamespace }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.port | quote }}
+              protocol: TCP
+    # Kubelet probes arrive with `host`/`remote-node` identity, NOT from a pod
+    # namespace. Any CNP with ingress rules makes the selected pods
+    # deny-by-default for ingress, so without this every readiness probe fails
+    # and the pod never goes Ready -- which reads exactly like a crash-looping
+    # process. (Same trap as charts/inference-server in ai-helm.)
+    - fromEntities: [host, remote-node, health]
+  egress:
+    # DNS, with L7 visibility.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    # The AI gateway. Matches the pods actually behind core-gateway-internal.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.providerNamespace }}
+            k8s:gateway.envoyproxy.io/owning-gateway-name: core-gateway
+      toPorts:
+        - ports:
+            - port: {{ .Values.networkPolicy.providerPort | quote }}
+              protocol: TCP
+    # Alloy, for OTLP.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.otlpNamespace }}
+            k8s:app.kubernetes.io/name: alloy
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+{{- end }}

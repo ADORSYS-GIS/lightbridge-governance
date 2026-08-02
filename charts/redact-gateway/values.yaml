@@ -1,0 +1,94 @@
+# Structural defaults only. Deployed values live in ai-helm-values
+# (environments/<env>/values/redact-gateway.yaml) -- values-repo-FIRST: the file
+# must exist on main before the ai-helm change merges, or
+# ignoreMissingValueFiles silently falls back to these defaults.
+
+name: redact-gateway
+
+image:
+  repository: ghcr.io/adorsys-gis/redact-gateway
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+replicas: 1
+port: 8080
+
+# The upstream every request is forwarded to. Verified live:
+# `kubectl -n envoy-gateway-system get svc core-gateway-internal` -> 443/TCP.
+# (The :10443 seen in gateway access logs is the pod's container port, not the
+# Service port an in-cluster caller dials.)
+provider:
+  baseUrl: https://core-gateway-internal.envoy-gateway-system.svc.cluster.local
+  timeoutSecs: 600
+
+# Which policy to enforce. `coding-assistant` blocks credentials outright and
+# deliberately allows Url/Domain/Hostname/Uuid, because upstream scores those
+# 0.5-0.7 on regexes matching anything dotted and they fire on every import and
+# file path in the traffic this gateway actually carries.
+#
+# ⚠️ An unknown name is REJECTED at startup, never resolved to a weaker
+# profile. Known: coding-assistant, secrets-only, observe-only.
+profile: coding-assistant
+
+# Ceiling on both the inbound request and the upstream response body. Detection
+# is buffered (that is what stops an entity hiding in a token split), so the
+# memory is spent by design -- this is the ceiling on it. Without a cap an
+# upstream that streams without stopping OOM-kills the pod.
+maxBodyBytes: 33554432
+
+# Salt for the hash action, from ESO. Must be stable for the deployment's
+# lifetime and secret: a digest of an email address is otherwise trivially
+# brute-forced from a known address list.
+#
+# ⚠️ Never `optional: true` on a secretKeyRef env: env vars bind once at pod
+# start and never refresh, so an optional ref lets a pod that beats ESO capture
+# an EMPTY value and run with it forever (the context7 MCP_TOKEN incident).
+# Required means the pod waits in ContainerCreating until ESO has synced.
+externalSecret:
+  enabled: true
+  storeRef: ssegning-aws
+  remoteKey: ai/camer/digital/prod/env
+  # Property in the remote key holding the salt.
+  saltProperty: redact_gateway_hash_salt
+
+# Internal-CA trust for the upstream TLS connection.
+#
+# ⚠️ This is a MOUNTED PEM passed by flag, not SSL_CERT_FILE. The predecessor
+# service was OpenSSL-linked and got trust from that variable; this binary's
+# HTTP client is rustls, which does not read it. Setting SSL_CERT_FILE here
+# would look right and fail at connect time on the first request.
+internalCaTrust:
+  enabled: true
+  secretName: redact-gateway-internal-ca
+  mountPath: /etc/internal-ca
+  caIssuer: self-signed-ca
+  caIssuerKind: ClusterIssuer
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+networkPolicy:
+  enabled: true
+  # Namespace whose pods may call this proxy. Deliberately narrow for the canary
+  # phase; tighten to a specific caller label once a real client is cut over.
+  ingressNamespace: apps
+  providerNamespace: envoy-gateway-system
+  providerPort: 443
+  otlpNamespace: observability
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }

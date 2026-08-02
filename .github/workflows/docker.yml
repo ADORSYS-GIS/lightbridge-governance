@@ -7,15 +7,26 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  IMAGE: ghcr.io/adorsys-gis/lightbridge-governance
-
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The governance API + CLI.
+          - image: ghcr.io/adorsys-gis/lightbridge-governance
+            dockerfile: .docker/Dockerfile
+          # The redaction proxy. A separate image on purpose -- see the comment
+          # at the top of its Dockerfile: it shares a workspace with the API but
+          # not a dependency tree, and bundling them would put the API's
+          # cratestack/sqlx/aws-sdk-s3 surface into the Trivy result for the
+          # component that sits fail-closed in front of every AI request.
+          - image: ghcr.io/adorsys-gis/redact-gateway
+            dockerfile: .docker/Dockerfile.redact-gateway
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
@@ -31,21 +42,22 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ matrix.image }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=sha,format=short
 
-      # The Dockerfile builds with cargo-auditable. Without it a Trivy scan of
-      # this image reports zero Rust packages and a meaningless clean result.
+      # The Dockerfiles build with cargo-auditable. Without it a Trivy scan of
+      # these images reports zero Rust packages and a meaningless clean result.
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: .docker/Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped per image, or the two builds share one cache key and thrash.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

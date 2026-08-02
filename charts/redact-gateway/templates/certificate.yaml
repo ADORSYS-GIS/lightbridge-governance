@@ -1,0 +1,21 @@
+{{- if .Values.internalCaTrust.enabled }}
+# Internal-CA trust bundle for the upstream TLS client. We issue a throwaway
+# leaf from the internal `self-signed-ca` ClusterIssuer and use only the
+# `ca.crt` it carries (the Home Root CA itself) -- never the leaf's own
+# tls.crt/key. We need to TRUST that CA, not present a client cert.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.internalCaTrust.secretName }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  secretName: {{ .Values.internalCaTrust.secretName }}
+  commonName: {{ .Values.internalCaTrust.secretName }}
+  dnsNames:
+    - {{ .Values.internalCaTrust.secretName }}
+  issuerRef:
+    name: {{ .Values.internalCaTrust.caIssuer }}
+    kind: {{ .Values.internalCaTrust.caIssuerKind }}
+    group: cert-manager.io
+{{- end }}
