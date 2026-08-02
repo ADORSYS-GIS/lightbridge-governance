@@ -6,6 +6,7 @@
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
 //! and this always-running process derives `governance_connector_*` from them.
 
+mod metrics;
 mod resolve;
 mod router;
 
@@ -59,13 +60,26 @@ async fn main() -> Result<()> {
         resolve_timeout: std::time::Duration::from_millis(args.resolve_timeout_ms),
     };
     let db = Cratestack::builder(pool).build();
+    let metrics = Arc::new(metrics::Metrics::new());
     let app = router::build_router(db).merge(
         axum::Router::new()
             .route(
                 "/internal/v1/resolve",
                 axum::routing::post(resolve::resolve),
             )
-            .with_state(resolve_state),
+            .with_state(resolve_state)
+            // Health and metrics are unauthenticated and deliberately outside
+            // the registry/resolve auth paths, so an orchestrator can probe a
+            // service that is otherwise refusing traffic.
+            .route("/livez", axum::routing::get(|| async { "ok" }))
+            .route("/readyz", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/metrics",
+                axum::routing::get(move || {
+                    let metrics = Arc::clone(&metrics);
+                    async move { metrics.render() }
+                }),
+            ),
     );
 
     let listener = tokio::net::TcpListener::bind(&args.listen_addr).await?;

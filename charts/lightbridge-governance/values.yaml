@@ -2,6 +2,8 @@
 # (environments/<env>/values/lightbridge-governance.yaml) -- values-repo-FIRST:
 # the file must exist on main before the ai-helm change merges, or
 # ignoreMissingValueFiles silently falls back to these defaults.
+name: lightbridge-governance
+
 image:
   repository: ghcr.io/adorsys-gis/lightbridge-governance
   tag: ""            # defaults to .Chart.AppVersion
@@ -9,6 +11,7 @@ image:
 
 api:
   replicas: 1
+  port: 8080
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: 500m, memory: 256Mi }
@@ -31,10 +34,17 @@ serviceMonitor:
 # and never refresh, so an optional ref lets a pod that beats ESO capture an EMPTY
 # credential and fail auth forever (the context7 MCP_TOKEN incident). Required
 # means the pod waits in ContainerCreating until ESO has synced.
+#
+# NOTE: `databaseUrlProperty`/`internalResolveTokenProperty` name properties
+# inside `remoteKey` that this chart assumes but has not verified live against
+# the actual secret store entry (unlike redact-gateway's `saltProperty`, which
+# was) -- confirm they match before relying on this in a real environment.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
   remoteKey: ai/camer/digital/prod/env
+  databaseUrlProperty: governance_database_url
+  internalResolveTokenProperty: governance_internal_resolve_token
 
 podSecurityContext:
   runAsNonRoot: true
