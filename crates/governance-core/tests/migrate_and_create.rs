@@ -1,4 +1,4 @@
-//! Proves three things against a real Postgres (#18):
+//! Proves five things against a real Postgres (#18):
 //!
 //! 1. `governance_core::migrate::run` applies cleanly from empty and is
 //!    idempotent on a second call.
@@ -10,6 +10,12 @@
 //!    0.5.0 does not emit one for a declared `@relation` -- see the migration
 //!    comment) -- creating an `Application` under a tenant that does not
 //!    exist is rejected, not silently orphaned (#9's own AC).
+//! 4. `applications`' hand-added `@@unique([tenantId, name, environment])`
+//!    index is real -- a second create with the same tuple is rejected.
+//! 5. `ingest_manifests`' hand-added `@@unique(...)` natural-key index is
+//!    real -- required for #17's `ON CONFLICT DO UPDATE` design to have
+//!    anything to conflict on (cratestack emits no index for a model-level
+//!    `@@unique` at all; see the migration comment).
 //!
 //! Requires `DATABASE_URL` (see `just up`); skips with a message otherwise so
 //! it doesn't silently report green in an environment with no database.
@@ -144,5 +150,82 @@ async fn create_application_under_a_nonexistent_tenant_is_rejected() {
         result.is_err(),
         "creating an application under a nonexistent tenant must be rejected by the \
          applications_tenant_id_fkey constraint, not silently orphaned"
+    );
+}
+
+#[tokio::test]
+async fn create_application_rejects_duplicate_tenant_name_environment() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let input = || CreateApplicationInput {
+        id: format!("app-{}", cuid::cuid2()),
+        tenantId: tenant_id.clone(),
+        name: "dup-app".to_owned(),
+        owner: None,
+        environment: "dev".to_owned(),
+    };
+
+    db.bind_context(ctx.clone())
+        .application()
+        .create(input())
+        .run()
+        .await
+        .expect("first create must succeed");
+
+    let second = db
+        .bind_context(ctx)
+        .application()
+        .create(input())
+        .run()
+        .await;
+
+    assert!(
+        second.is_err(),
+        "a second application with the same (tenant_id, name, environment) must be rejected by \
+         applications_tenant_id_name_environment_key, not silently duplicated"
+    );
+}
+
+#[tokio::test]
+async fn ingest_manifest_rejects_duplicate_natural_key() {
+    let Some(pool) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // IngestManifest has no `@@allow("create", ...)` policy (it's populated by
+    // connectors through a procedure, not the public API yet -- see the model's
+    // own schema comment), so this goes in directly, same as the tenant fixture.
+    let insert = || {
+        cratestack::sqlx::query(
+            "INSERT INTO ingest_manifests \
+             (id, tenant_id, provider, scope_id, report_day, report_type, status, \
+              record_count, schema_version) \
+             VALUES ($1, $2, 'github_copilot', 'org-adorsys', '2026-08-01', \
+             'user_teams_1_day', 'completed', 10, 1)",
+        )
+        .bind(format!("manifest-{}", cuid::cuid2()))
+        .bind(&tenant_id)
+    };
+
+    insert()
+        .execute(&pool)
+        .await
+        .expect("first ingest manifest insert must succeed");
+
+    let second = insert().execute(&pool).await;
+
+    assert!(
+        second.is_err(),
+        "a second ingest manifest with the same (tenant_id, provider, scope_id, report_day, \
+         report_type) must be rejected by ingest_manifests_tenant_id_provider_scope_id_report_day_report_type_key \
+         -- without it, #17's ON CONFLICT DO UPDATE reprocessing design has nothing to conflict on"
     );
 }

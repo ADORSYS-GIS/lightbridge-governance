@@ -98,3 +98,23 @@ ALTER TABLE applications
 ALTER TABLE integrations
     ADD CONSTRAINT integrations_application_id_fkey
     FOREIGN KEY (application_id) REFERENCES applications (id);
+
+-- Same category of emitter gap, caught in review (not by us first): the
+-- Postgres emitter has no code path for a model-level `@@unique([...])`
+-- composite constraint at all -- verified by inspection, `convert.rs`'s
+-- `field_has_unique` only recognizes the single-field `@unique` attribute,
+-- there is no equivalent for `@@unique`. Every `@@unique` this schema
+-- declares was silently dropped on the floor. This is more than cosmetic:
+-- IngestManifest's whole idempotent-upsert design (`ON CONFLICT DO UPDATE`
+-- on this exact tuple, #17) cannot work without a real unique index for
+-- Postgres to target. Naming follows cratestack's own single-column
+-- convention (`<table>_<columns>_key`, see naming.rs::index_name_unique).
+-- Filed upstream: https://github.com/cratestack/cratestack/issues/262
+CREATE UNIQUE INDEX applications_tenant_id_name_environment_key
+    ON applications (tenant_id, name, environment);
+
+CREATE UNIQUE INDEX identity_maps_tenant_id_provider_provider_user_id_valid_from_key
+    ON identity_maps (tenant_id, provider, provider_user_id, valid_from);
+
+CREATE UNIQUE INDEX ingest_manifests_tenant_id_provider_scope_id_report_day_report_type_key
+    ON ingest_manifests (tenant_id, provider, scope_id, report_day, report_type);
