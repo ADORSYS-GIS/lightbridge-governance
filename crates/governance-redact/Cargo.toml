@@ -22,10 +22,8 @@ publish.workspace = true
 pii = "0.1.0"
 
 serde = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

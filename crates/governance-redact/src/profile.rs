@@ -11,9 +11,7 @@
 
 use std::collections::HashMap;
 
-use pii::anonymize::Operator;
-use pii::config::PolicyConfig;
-use pii::types::EntityType;
+use pii::{anonymize::Operator, config::PolicyConfig, types::EntityType};
 
 use crate::secrets::{private_key_entity, secret_entity};
 
@@ -227,9 +225,10 @@ impl Profile {
 
 #[cfg(test)]
 mod tests {
+    use pii::types::EntityType;
+
     use super::{Action, Profile};
     use crate::secrets::{private_key_entity, secret_entity};
-    use pii::types::EntityType;
 
     #[test]
     fn coding_assistant_blocks_credentials() {

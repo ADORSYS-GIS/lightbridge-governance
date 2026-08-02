@@ -1,14 +1,18 @@
 //! The redaction engine: scan a string, decide, transform.
 
-use pii::anonymize::{AnonymizeConfig, Anonymizer};
-use pii::nlp::SimpleNlpEngine;
-use pii::presets::default_recognizers;
-use pii::types::{Detection, Language};
-use pii::{Analyzer, PolicyConfig};
+use pii::{
+    Analyzer, PolicyConfig,
+    anonymize::{AnonymizeConfig, Anonymizer},
+    nlp::SimpleNlpEngine,
+    presets::default_recognizers,
+    types::{Detection, Language},
+};
 
-use crate::error::{Error, Result};
-use crate::profile::{Action, Profile};
-use crate::secrets::secret_recognizers;
+use crate::{
+    error::{Error, Result},
+    profile::{Action, Profile},
+    secrets::secret_recognizers,
+};
 
 /// What the engine decided about one piece of text.
 #[derive(Debug, Clone, PartialEq, Eq)]

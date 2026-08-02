@@ -22,9 +22,10 @@
 //! distinctive: when `ghp_` is followed by 36 base62 characters, it is a GitHub
 //! token, not a coincidence.
 
-use pii::recognizers::Recognizer;
-use pii::recognizers::regex::RegexRecognizer;
-use pii::types::EntityType;
+use pii::{
+    recognizers::{Recognizer, regex::RegexRecognizer},
+    types::EntityType,
+};
 
 /// Entity type emitted for a detected credential.
 ///
