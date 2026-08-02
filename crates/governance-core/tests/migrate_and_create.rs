@@ -37,6 +37,32 @@
 //!
 //! Requires `DATABASE_URL` (see `just up`); skips with a message otherwise so
 //! it doesn't silently report green in an environment with no database.
+//!
+//! ## `DDL_ISOLATION` (#27)
+//!
+//! `migrate_is_idempotent`'s whole point is calling `governance_core::migrate::
+//! run` a second time, directly, outside `MIGRATED`'s one-time guard. Since
+//! #21, that function unconditionally reinstalls the `touch_updated_at`
+//! triggers on every call (`AccessExclusiveLock` via `DROP TRIGGER`/`CREATE
+//! TRIGGER` on every `AuditFields` table) -- previously harmless when `run`
+//! was just a cheap tracked-migration check (#18), but not anymore.
+//!
+//! With 14 `#[tokio::test]`s genuinely concurrent in one binary, that second
+//! call could interleave with another test's `INSERT` into `applications`/
+//! `integrations` (which takes a `RowShareLock` on the parent table for FK
+//! validation), producing a real Postgres deadlock between the DDL and the
+//! DML. Confirmed, not assumed: reproduced locally (2 failures in 15 loop
+//! iterations) with `log_lock_waits`/`deadlock_timeout` enabled, and the
+//! captured lock graph showed exactly this -- `AccessExclusiveLock` on
+//! `applications` (held by the trigger-reinstall DDL) blocking a concurrent
+//! `INSERT INTO integrations` FK check, and vice versa. Not the FK-lock-
+//! ordering bug #27 speculated about; `credential::issue` has no explicit
+//! transaction and needed no change.
+//!
+//! `DDL_ISOLATION` fixes the actual race: every test holds a *read* guard for
+//! its ordinary DML, and `migrate_is_idempotent` takes the *write* guard
+//! before its second `run` call, so the DDL reinstall can never overlap
+//! another test's insert.
 
 use cratestack::CoolContext;
 use governance_core::schema::cratestack_schema::{
@@ -45,12 +71,9 @@ use governance_core::schema::cratestack_schema::{
     types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
 };
 
-// `#[tokio::test]` functions in this file run concurrently against the same
-// local Postgres. Applying the migration is not safe to race with itself
-// (parallel `CREATE TABLE`/`CREATE TYPE` from separate connections), so the
-// initial apply is deduplicated here -- `migrate_is_idempotent` still proves
-// a genuine second `run` call is a no-op by calling it directly afterward.
 static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+static DDL_ISOLATION: std::sync::LazyLock<std::sync::Arc<tokio::sync::RwLock<()>>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::RwLock::new(())));
 
 #[expect(
     clippy::expect_used,
@@ -58,7 +81,10 @@ static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
               clippy.toml doesn't cover it (see that file's note on tests/support/mod.rs); a \
               failure here means the test setup broke, not the code under test"
 )]
-async fn connect_and_migrate() -> Option<cratestack::sqlx::PgPool> {
+async fn connect_and_migrate() -> Option<(
+    cratestack::sqlx::PgPool,
+    tokio::sync::OwnedRwLockReadGuard<()>,
+)> {
     let database_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -76,7 +102,11 @@ async fn connect_and_migrate() -> Option<cratestack::sqlx::PgPool> {
                 .expect("migrate run");
         })
         .await;
-    Some(pool)
+    // Held for the rest of the calling test's lifetime -- see `DDL_ISOLATION`
+    // above. `migrate_is_idempotent` drops this immediately; every other test
+    // keeps it until its own scope ends.
+    let guard = DDL_ISOLATION.clone().read_owned().await;
+    Some((pool, guard))
 }
 
 fn authenticated_ctx() -> CoolContext {
@@ -107,9 +137,16 @@ async fn insert_tenant(pool: &cratestack::sqlx::PgPool, id: &str) {
 
 #[tokio::test]
 async fn migrate_is_idempotent() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, read_guard)) = connect_and_migrate().await else {
         return;
     };
+    // Drop the read guard before requesting the write guard -- holding one
+    // while awaiting the other on the same lock, in the same task, deadlocks
+    // at the Rust level (not just the Postgres level this whole mechanism
+    // exists to avoid).
+    drop(read_guard);
+    let _write_guard = DDL_ISOLATION.clone().write_owned().await;
+
     let second = governance_core::migrate::run(&pool)
         .await
         .expect("second migrate run must be a no-op, not an error");
@@ -121,7 +158,7 @@ async fn migrate_is_idempotent() {
 
 #[tokio::test]
 async fn create_application_round_trips_under_a_real_tenant() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -150,7 +187,7 @@ async fn create_application_round_trips_under_a_real_tenant() {
 
 #[tokio::test]
 async fn create_application_under_a_nonexistent_tenant_is_rejected() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let db = Cratestack::builder(pool).build();
@@ -177,7 +214,7 @@ async fn create_application_under_a_nonexistent_tenant_is_rejected() {
 
 #[tokio::test]
 async fn create_application_rejects_duplicate_tenant_name_environment() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -216,7 +253,7 @@ async fn create_application_rejects_duplicate_tenant_name_environment() {
 
 #[tokio::test]
 async fn ingest_manifest_rejects_duplicate_natural_key() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -254,7 +291,7 @@ async fn ingest_manifest_rejects_duplicate_natural_key() {
 
 #[tokio::test]
 async fn create_integration_under_a_nonexistent_tenant_is_rejected() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -301,7 +338,7 @@ async fn create_integration_under_a_nonexistent_tenant_is_rejected() {
 
 #[tokio::test]
 async fn create_identity_map_under_a_nonexistent_tenant_is_rejected() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
 
@@ -326,7 +363,7 @@ async fn create_identity_map_under_a_nonexistent_tenant_is_rejected() {
 
 #[tokio::test]
 async fn ingest_manifest_reprocessing_upserts_rather_than_duplicates() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -401,7 +438,7 @@ async fn ingest_manifest_reprocessing_upserts_rather_than_duplicates() {
 
 #[tokio::test]
 async fn update_touches_updated_at() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -484,7 +521,7 @@ async fn create_application(
 
 #[tokio::test]
 async fn issue_then_resolve_round_trips() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -522,7 +559,7 @@ async fn issue_then_resolve_round_trips() {
 
 #[tokio::test]
 async fn issued_secret_never_appears_in_the_serialized_integration() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -561,7 +598,7 @@ async fn issued_secret_never_appears_in_the_serialized_integration() {
 
 #[tokio::test]
 async fn resolve_rejects_a_revoked_credential() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -609,7 +646,7 @@ async fn resolve_rejects_a_revoked_credential() {
 
 #[tokio::test]
 async fn revoke_is_idempotent_under_a_repeat_call() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
     let tenant_id = format!("tenant-{}", cuid::cuid2());
@@ -662,7 +699,7 @@ async fn revoke_is_idempotent_under_a_repeat_call() {
 
 #[tokio::test]
 async fn resolve_rejects_an_unknown_credential() {
-    let Some(pool) = connect_and_migrate().await else {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
 
