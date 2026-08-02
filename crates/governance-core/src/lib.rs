@@ -11,6 +11,7 @@
 //! Money is ALWAYS integer micro-USD (ADR-0008). There is no float in this crate.
 
 pub mod error;
+pub mod migrate;
 pub mod money;
 pub mod registry;
 
