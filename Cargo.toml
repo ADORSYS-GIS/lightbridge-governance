@@ -7,6 +7,7 @@ members = [
     "app/lightbridge-governance",
     "app/governance-ctl",
     "app/redact-gateway",
+    "app/redact-extproc",
 ]
 resolver = "3"
 

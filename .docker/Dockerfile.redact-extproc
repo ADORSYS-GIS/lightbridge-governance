@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+#
+# A SEPARATE image from lightbridge-governance and redact-gateway, deliberately
+# — same reasoning as Dockerfile.redact-gateway, sharpened. This binary's own
+# dependency tree (envoy-types, tonic, prost, pii) has zero overlap with either
+# the governance API's cratestack/sqlx/aws-sdk-s3 tree or redact-gateway's own
+# axum/reqwest one. Bundling any of them into the component that sits
+# fail-closed inside the gateway's own filter chain (ADR-0116) would put CVEs
+# it never calls into its Trivy scan surface, burying real findings among them.
+#
+# ⚠️ cargo-auditable is NOT optional. Without it Trivy scans only the base OS and
+# reports a clean result that means "it never looked at your Rust dependencies".
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+RUN cargo install cargo-auditable --locked
+COPY . .
+RUN cargo auditable build --profile prod --bin redact-extproc
+
+# Distroless: no shell in the runtime image.
+#
+# ⚠️ The base MUST stay in step with the builder's glibc. censgate/redact's
+# published gateway image could not start at all -- it built on a newer Rust
+# base and ran on distroless/cc-debian12, and every container exited with
+# `GLIBC_2.38 not found` (censgate/redact#114). `rust:1-bookworm` is Debian 12,
+# matching `cc-debian12`. Changing either one without the other reproduces
+# exactly that failure, and it fails at runtime, not at build time.
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=builder /src/target/prod/redact-extproc /usr/local/bin/
+USER nonroot:nonroot
+# 9500: the ext_proc gRPC listener. Loopback-only by default (LISTEN_ADDR) --
+# reached solely by Envoy in the same pod (ADR-0116's whole point is that this
+# never crosses a pod boundary), so EXPOSE here documents the port, it does not
+# imply cross-pod reachability.
+EXPOSE 9500
+# 9501: Prometheus /metrics, scraped cross-pod by Alloy (METRICS_LISTEN_ADDR
+# binds 0.0.0.0, unlike the gRPC port above).
+EXPOSE 9501
+ENTRYPOINT ["/usr/local/bin/redact-extproc"]
