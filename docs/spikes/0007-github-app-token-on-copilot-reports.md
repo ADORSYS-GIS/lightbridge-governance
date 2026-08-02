@@ -1,7 +1,7 @@
 # Spike 0007 — GitHub App installation tokens on Copilot report endpoints
 
 - Status: Findings recorded; decision made. Empirical run pending — blocked on org-admin
-  rights (App creation, org install, and the policy toggle are UI-only); PR #41 is green.
+  rights (App creation, org install, and the policy toggle are UI-only).
 - Ticket: [#7](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/7) · Epic: [#5](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/5)
 - Owner: @stephane-segning · Date: 2026-08-02
 
