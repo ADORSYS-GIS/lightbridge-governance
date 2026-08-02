@@ -510,7 +510,7 @@ async fn create_application(
         .create(CreateApplicationInput {
             id: format!("app-{}", cuid::cuid2()),
             tenantId: tenant_id.to_owned(),
-            name: "credential-fixture-app".to_owned(),
+            name: format!("credential-fixture-app-{}", cuid::cuid2()),
             owner: None,
         })
         .run()
@@ -742,5 +742,146 @@ async fn resolve_rejects_an_unknown_credential() {
     assert!(
         result.is_err(),
         "an unknown credential must be rejected, not accepted"
+    );
+}
+
+#[tokio::test]
+async fn create_environment_under_a_nonexistent_application_is_rejected() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Environment has an `@@allow("create", ...)` policy, so this goes
+    // through the generated CRUD, unlike Integration/IdentityMap's raw-SQL
+    // fixtures elsewhere in this file.
+    let db = Cratestack::builder(pool).build();
+    let result = db
+        .bind_context(authenticated_ctx())
+        .environment()
+        .create(
+            governance_core::schema::cratestack_schema::inputs::CreateEnvironmentInput {
+                id: format!("env-{}", cuid::cuid2()),
+                tenantId: tenant_id,
+                applicationId: format!("app-does-not-exist-{}", cuid::cuid2()),
+                name: "dev".to_owned(),
+            },
+        )
+        .run()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "creating an environment under a nonexistent application must be rejected by \
+         environments_application_id_fkey, not silently orphaned"
+    );
+}
+
+#[tokio::test]
+async fn create_environment_rejects_duplicate_natural_key() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let input = || governance_core::schema::cratestack_schema::inputs::CreateEnvironmentInput {
+        id: format!("env-{}", cuid::cuid2()),
+        tenantId: tenant_id.clone(),
+        applicationId: application.id.clone(),
+        name: "dev".to_owned(),
+    };
+
+    db.bind_context(ctx.clone())
+        .environment()
+        .create(input())
+        .run()
+        .await
+        .expect("first create must succeed");
+
+    let second = db
+        .bind_context(ctx)
+        .environment()
+        .create(input())
+        .run()
+        .await;
+
+    assert!(
+        second.is_err(),
+        "a second environment with the same (tenant_id, application_id, name) must be rejected \
+         by environments_natural_key, not silently duplicated"
+    );
+}
+
+#[tokio::test]
+async fn issue_credential_under_a_nonexistent_environment_is_rejected() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+
+    let result = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id,
+            provider: "github_copilot".to_owned(),
+            environmentId: format!("env-does-not-exist-{}", cuid::cuid2()),
+            contentCapture: None,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "issuing a credential against a nonexistent environment must be rejected, not silently \
+         accepted -- issue() validates the environment exists before ever reaching \
+         integrations_environment_id_fkey"
+    );
+}
+
+#[tokio::test]
+async fn issue_credential_under_an_environment_from_a_different_application_is_rejected() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool).build();
+    let ctx = authenticated_ctx();
+    let application_a = create_application(&db, &ctx, &tenant_id).await;
+    let application_b = create_application(&db, &ctx, &tenant_id).await;
+    let environment_b = create_environment(&db, &ctx, &application_b).await;
+
+    // application_a is real, environment_b is real -- but environment_b
+    // belongs to application_b. The FK alone can't catch this (it only
+    // proves environment_b exists somewhere); issue()'s own cross-check must.
+    let result = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application_a.id,
+            provider: "github_copilot".to_owned(),
+            environmentId: environment_b.id,
+            contentCapture: None,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "issuing a credential for application_a using an environment that belongs to \
+         application_b must be rejected"
     );
 }
