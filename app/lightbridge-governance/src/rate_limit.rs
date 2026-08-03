@@ -46,8 +46,7 @@ impl RateLimiter {
     pub fn allow(&self, key: &str) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let window = now / self.window_secs;
 
         let mut state = match self.state.lock() {
