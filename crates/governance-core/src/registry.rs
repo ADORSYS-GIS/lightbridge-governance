@@ -14,6 +14,49 @@ pub enum Provider {
     GithubCopilot,
     /// Microsoft Foundry hosted agents over OTLP (RFC-0002).
     MicrosoftFoundry,
+    /// Claude Code CLI with native OTLP exporter (#30, #32).
+    ClaudeCode,
+    /// OpenAI Codex CLI with native OTLP exporter (#30, #33).
+    Codex,
+}
+
+impl Provider {
+    /// The wire string the schema stores in `integrations.provider` and the
+    /// collector sends in the `governance.source` header.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GithubCopilot => "github_copilot",
+            Self::MicrosoftFoundry => "microsoft_foundry",
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+impl std::str::FromStr for Provider {
+    /// Dedicated parse error: parsing a wire string is a pure string concern
+    /// and must not couple the domain [`crate::Error`] (which carries
+    /// persistence details) to a string parser.
+    type Err = ProviderParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "github_copilot" => Ok(Self::GithubCopilot),
+            "microsoft_foundry" => Ok(Self::MicrosoftFoundry),
+            "claude_code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            other => Err(ProviderParseError::Unknown(other.to_owned())),
+        }
+    }
+}
+
+/// A provider string that does not match any known provider.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProviderParseError {
+    /// The wire string is not a recognized provider.
+    #[error("unknown provider: {0}")]
+    Unknown(String),
 }
 
 /// How much of a request/response body an integration is allowed to retain.

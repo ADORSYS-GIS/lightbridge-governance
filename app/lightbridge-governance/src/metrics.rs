@@ -1,19 +1,84 @@
 //! Prometheus metrics for the ServiceMonitor (ADR-0007).
 //!
-//! Empty for now: deriving `governance_connector_*` from `ingest_manifest` is
-//! ADR-0007's own decision, not yet implemented. This exists so `/metrics` is
-//! a real, scrapeable endpoint rather than a 404 -- the ServiceMonitor this
-//! chart adds needs somewhere true to point at.
+//! Two kinds of counter live here:
+//! - `governance_connector_*` derived from `ingest_manifest` (ADR-0007's own
+//!   decision, not yet implemented -- see below).
+//! - `governance_ingest_*` for the `/internal/v1/ingest` telemetry path, so an
+//!   ingest outage (auth failures, malformed OTLP, storage errors, rate
+//!   limiting) is observable, not a silent 500 in a log that nobody reads.
+
+use prometheus::{IntCounter, IntCounterVec, Registry, opts};
 
 pub struct Metrics {
-    registry: prometheus::Registry,
+    registry: Registry,
+    /// Total requests to `/internal/v1/ingest`, keyed by outcome. `total` is
+    /// used by Prometheus rate() dashboards, so the counter must never reset
+    /// across a redeploy in a way that corrupts the series -- the same
+    /// counter is registered once at startup, never rebuilt.
+    pub ingest_requests_total: IntCounterVec,
+    /// Executions, model calls and tool calls persisted by ingest.
+    pub ingest_executions_total: IntCounter,
+    pub ingest_model_calls_total: IntCounter,
+    pub ingest_tool_calls_total: IntCounter,
 }
 
 impl Metrics {
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "impossibility proof: metric construction only fails on duplicate names or \
+                  invalid help text, and both are compile-time string literals here"
+    )]
     pub fn new() -> Self {
-        Self {
-            registry: prometheus::Registry::new(),
+        let ingest_requests_total = IntCounterVec::new(
+            opts!(
+                "governance_ingest_requests_total",
+                "ingest requests by outcome"
+            ),
+            &["outcome"],
+        )
+        .expect("static metric definition, name/help are fixed strings");
+        let ingest_executions_total = IntCounter::new(
+            "governance_ingest_executions_total",
+            "executions upserted by /internal/v1/ingest",
+        )
+        .expect("static metric definition");
+        let ingest_model_calls_total = IntCounter::new(
+            "governance_ingest_model_calls_total",
+            "model calls upserted by /internal/v1/ingest",
+        )
+        .expect("static metric definition");
+        let ingest_tool_calls_total = IntCounter::new(
+            "governance_ingest_tool_calls_total",
+            "tool calls upserted by /internal/v1/ingest",
+        )
+        .expect("static metric definition");
+
+        let metrics = Self {
+            registry: Registry::new(),
+            ingest_requests_total: ingest_requests_total.clone(),
+            ingest_executions_total: ingest_executions_total.clone(),
+            ingest_model_calls_total: ingest_model_calls_total.clone(),
+            ingest_tool_calls_total: ingest_tool_calls_total.clone(),
+        };
+
+        // Registry::register fails only on a name collision or an already
+        // registered collector -- impossible here since each is registered
+        // exactly once. Logged, not fatal: a missing metric is worse than a
+        // 500 on startup.
+        let collectors: [Box<dyn prometheus::core::Collector>; 4] = [
+            Box::new(ingest_requests_total),
+            Box::new(ingest_executions_total),
+            Box::new(ingest_model_calls_total),
+            Box::new(ingest_tool_calls_total),
+        ];
+        for collector in collectors {
+            if let Err(error) = metrics.registry.register(collector) {
+                tracing::warn!(error = %error, "metric registration failed");
+            }
         }
+
+        metrics
     }
 
     #[must_use]
@@ -39,8 +104,26 @@ mod tests {
     use super::Metrics;
 
     #[test]
-    fn empty_registry_still_renders_valid_output() {
+    fn counters_render_after_recording() {
+        let metrics = Metrics::new();
+        metrics
+            .ingest_requests_total
+            .with_label_values(&["success"])
+            .inc();
+        metrics.ingest_executions_total.inc();
+
+        let out = metrics.render();
+        assert!(out.contains("governance_ingest_requests_total{outcome=\"success\"} 1"));
+        assert!(out.contains("governance_ingest_executions_total 1"));
+    }
+
+    #[test]
+    fn render_of_an_untouched_registry_is_well_formed() {
+        // Smoke test of the render path with an untouched registry: the
+        // Prometheus text format must not contain a NaN value (which would
+        // mean a counter was left in a broken state), and the render call
+        // itself must succeed.
         let out = Metrics::new().render();
-        assert_eq!(out, "", "no counters registered yet, so nothing to render");
+        assert!(!out.contains("NaN"), "rendered output must not contain NaN");
     }
 }

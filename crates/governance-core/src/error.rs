@@ -12,6 +12,12 @@ pub enum Error {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    /// A caller-supplied value failed validation before any persistence
+    /// happened. Distinct from `Forbidden`: this is "malformed input", not
+    /// "you may not do this".
+    #[error("invalid input: {0}")]
+    Validation(String),
+
     /// A persistence or transport operation failed inside cratestack.
     ///
     /// Deliberately opaque: the inner error can carry query text and parameter
