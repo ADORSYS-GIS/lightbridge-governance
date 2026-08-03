@@ -165,8 +165,9 @@ pub fn span_string(span: &Value, key: &str) -> Result<Option<String>, Normalizer
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn attr_string_reads_real_otlp_shape() {

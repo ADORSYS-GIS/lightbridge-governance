@@ -7,8 +7,7 @@
 //! The dispatch function routes incoming telemetry to the correct normalizer
 //! based on the `provider` field from the authenticated integration credential.
 
-use governance_core::ingest::ExecutionInput;
-use governance_core::registry::Provider;
+use governance_core::{ingest::ExecutionInput, registry::Provider};
 
 pub mod claude_code;
 pub mod codex;

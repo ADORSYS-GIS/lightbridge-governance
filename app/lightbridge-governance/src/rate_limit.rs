@@ -10,9 +10,11 @@
 //! (ADR-0001), and a fixed window is a coarse throttle, not a billing meter.
 //! Good enough to keep an accidental loop from melting the write path.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub struct RateLimiter {
     /// Max requests allowed per `window_secs`, per key.
