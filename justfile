@@ -46,3 +46,21 @@ nuke:
 # there are no hand-written migration files to edit (ADR-0009).
 migrate:
 	cargo run --bin governance-ctl -- migrate
+
+# Build the redact-gateway / redact-extproc images. Requires PROVIDER_BASE_URL
+# in .env (copy from .env.example) -- a real OpenAI-compatible LLM, not a mock.
+redact-build:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact build
+
+# Bring up redact-gateway (and redact-extproc) against a real upstream LLM
+redact-up:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact up -d --remove-orphans {{c}}
+
+# Tear down the redact stack, keeping volumes
+redact-down:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact down
+
+# Health check redact-gateway and redact-extproc
+redact-test:
+	@echo "Checking redact-gateway (/livez)..." && curl -sf http://localhost:8080/livez && echo " OK" || echo " FAILED"
+	@echo "Checking redact-extproc (/livez)..." && curl -sf http://localhost:9501/livez && echo " OK" || echo " FAILED"
