@@ -40,7 +40,12 @@ const COPILOT_USAGE_MODELS_DOWN: &str =
 // `sqlx::raw_sql` sends the whole block as one (simple-protocol) query
 // instead, so Postgres itself handles the dollar-quoting. Written
 // idempotently (`CREATE OR REPLACE`, `DROP ... IF EXISTS`) since it isn't
-// tracked in `cratestack_migrations` and runs on every call to `run` (#21).
+// tracked in `cratestack_migrations`. It runs only when a trigger is
+// missing (see `TRIGGERS_INSTALLED`): `DROP TRIGGER`/`CREATE TRIGGER` take
+// AccessExclusiveLock on the table, and re-running them on every call raced
+// another process's inserts into a 40P01 deadlock (CI, two test binaries
+// migrating one shared database at once; same race in production when two
+// pods boot together).
 const TOUCH_UPDATED_AT: &str = r#"
 CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS trigger AS $$
 BEGIN
@@ -168,18 +173,69 @@ fn migrations() -> Vec<Migration> {
     ]
 }
 
+/// Serialize migration runs across processes.
+///
+/// `run` executes DDL whenever it finds unrecorded migrations or missing
+/// triggers, so two concurrent callers could interleave CREATE TABLE /
+/// CREATE TRIGGER with another process's inserts and deadlock (40P01). Seen
+/// in CI, where the governance-core and governance-copilot test binaries
+/// migrate one shared database at once; the same race exists in production
+/// when two pods boot together against a fresh database. Arbitrary
+/// per-workspace key.
+const MIGRATE_LOCK_KEY: i64 = 0x4C42_4D49_4700_0001;
+
+/// Count of `*_touch_updated_at` triggers `TOUCH_UPDATED_AT` installs; keep
+/// in step with the trigger statements in that block.
+const EXPECTED_TOUCH_TRIGGERS: i64 = 15;
+
+/// True when every `touch_updated_at` trigger exists. One cheap catalog
+/// read that keeps the steady-state `run` free of table-level DDL.
+const TRIGGERS_INSTALLED: &str =
+    "SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%_touch_updated_at'";
+
 /// Apply every migration not yet recorded in `cratestack_migrations`, then
 /// (re-)install the `touch_updated_at` triggers `apply_pending` can't carry.
 /// Returns the migration ids that were newly applied (empty if already
 /// current) -- the trigger step isn't reflected in the return value, since
-/// it isn't a tracked migration and always runs.
+/// it isn't a tracked migration.
+///
+/// Concurrent calls are serialized with a session-scoped advisory lock so
+/// the DDL steps cannot interleave with another process's inserts. The lock
+/// lives on a dedicated connection that is killed (`close_on_drop`) at the
+/// end of this call: if anything panics before the explicit unlock, the
+/// session dies with the connection instead of leaking a held lock back
+/// into the pool, where it would wedge every later caller that borrows that
+/// connection.
 pub async fn run(pool: &PgPool) -> Result<Vec<String>> {
+    let mut lock_conn = pool
+        .acquire()
+        .await
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    lock_conn.close_on_drop();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(MIGRATE_LOCK_KEY)
+        .execute(&mut *lock_conn)
+        .await
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+
     let applied = apply_pending(pool, &migrations())
         .await
         .map_err(Error::Storage)?;
-    sqlx::raw_sql(TOUCH_UPDATED_AT)
-        .execute(pool)
+    let (installed,): (i64,) = sqlx::query_as(TRIGGERS_INSTALLED)
+        .fetch_one(pool)
         .await
-        .map_err(|error| Error::Storage(cool_error_from_sqlx(error)))?;
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    if installed < EXPECTED_TOUCH_TRIGGERS {
+        sqlx::raw_sql(TOUCH_UPDATED_AT)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    }
+
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(MIGRATE_LOCK_KEY)
+        .execute(&mut *lock_conn)
+        .await
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
     Ok(applied)
 }
