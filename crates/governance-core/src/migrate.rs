@@ -22,6 +22,11 @@ const ENVIRONMENT_MODEL_UP: &str =
 const ENVIRONMENT_MODEL_DOWN: &str =
     include_str!("../migrations/postgres/20260802142154_environment_model/down.sql");
 
+const TELEMETRY_MODELS_UP: &str =
+    include_str!("../migrations/postgres/20260803000001_telemetry_models/up.sql");
+const TELEMETRY_MODELS_DOWN: &str =
+    include_str!("../migrations/postgres/20260803000001_telemetry_models/down.sql");
+
 // Not one of the tracked `Migration`s below: `apply_pending` splits `up` on
 // every literal `;` before executing each fragment as its own prepared
 // statement (verified in cratestack-sqlx's migrations.rs), which corrupts any
@@ -69,6 +74,26 @@ DROP TRIGGER IF EXISTS environments_touch_updated_at ON environments;
 CREATE TRIGGER environments_touch_updated_at
     BEFORE UPDATE ON environments
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS executions_touch_updated_at ON executions;
+CREATE TRIGGER executions_touch_updated_at
+    BEFORE UPDATE ON executions
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS model_calls_touch_updated_at ON model_calls;
+CREATE TRIGGER model_calls_touch_updated_at
+    BEFORE UPDATE ON model_calls
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS tool_calls_touch_updated_at ON tool_calls;
+CREATE TRIGGER tool_calls_touch_updated_at
+    BEFORE UPDATE ON tool_calls
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS model_pricing_touch_updated_at ON model_pricing;
+CREATE TRIGGER model_pricing_touch_updated_at
+    BEFORE UPDATE ON model_pricing
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 "#;
 
 fn migrations() -> Vec<Migration> {
@@ -95,6 +120,13 @@ fn migrations() -> Vec<Migration> {
                 .to_owned(),
             up: ENVIRONMENT_MODEL_UP.to_owned(),
             down: Some(ENVIRONMENT_MODEL_DOWN.to_owned()),
+        },
+        Migration {
+            id: "20260803000001_telemetry_models".to_owned(),
+            description: "telemetry: executions, model_calls, tool_calls, model_pricing (#30)"
+                .to_owned(),
+            up: TELEMETRY_MODELS_UP.to_owned(),
+            down: Some(TELEMETRY_MODELS_DOWN.to_owned()),
         },
     ]
 }

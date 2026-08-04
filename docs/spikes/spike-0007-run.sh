@@ -96,7 +96,7 @@ mint_install_token() {
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: $API_VERSION" \
     "https://api.github.com/app/installations" \
-    | jq -r --arg org "$GH_ORG" '.[] | select(.account.login == $org) | .id' | head -1)
+    | jq -r --arg org "$GH_ORG" '.[] | select((.account.login | ascii_downcase) == ($org | ascii_downcase)) | .id' | head -1)
   [[ -n "$installation_id" ]] || fail "no App installation found for org $GH_ORG (is the App installed there?)"
 
   token_json=$(curl -sS -f -X POST \
