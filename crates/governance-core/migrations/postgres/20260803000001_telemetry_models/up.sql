@@ -26,7 +26,9 @@ CREATE TABLE executions (
     user_email TEXT,
     started_at TIMESTAMPTZ NOT NULL,
     duration_ms BIGINT NOT NULL,
-    estimated_cost_micro_usd BIGINT NOT NULL,
+    -- NULL = cost unknown (no pricing row, or a model call with unknown token
+    -- counts). Unknown is honest: a zero would read as "free" on a dashboard.
+    estimated_cost_micro_usd BIGINT,
     raw_backend TEXT,
     raw_schema_version BIGINT NOT NULL,
     PRIMARY KEY (id)
@@ -40,9 +42,11 @@ CREATE TABLE model_calls (
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
     model TEXT NOT NULL,
-    input_tokens BIGINT NOT NULL,
-    output_tokens BIGINT NOT NULL,
-    cost_micro_usd BIGINT NOT NULL,
+    -- NULL = unknown (the payload did not report token counts): the cost is
+    -- then also NULL, never a zero that a dashboard would read as "free".
+    input_tokens BIGINT,
+    output_tokens BIGINT,
+    cost_micro_usd BIGINT,
     PRIMARY KEY (id)
 );
 

@@ -30,13 +30,18 @@ pub struct ExecutionInput {
 }
 
 /// One LLM call within an execution.
+///
+/// `input_tokens`/`output_tokens` are optional: a provider may omit token
+/// counts, in which case the call is still recorded but its cost is stored as
+/// *unknown* (`None`), never a zero -- a zero is indistinguishable from "free"
+/// on a dashboard (story #31 AC6).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelCallInput {
     pub trace_id: String,
     pub span_id: String,
     pub model: String,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
 }
 
 /// One tool invocation within an execution.
@@ -91,9 +96,14 @@ fn validate_input(executions: &[ExecutionInput]) -> Result<()> {
             if model_call.trace_id.is_empty() || model_call.span_id.is_empty() {
                 return reject("trace_id and span_id are required on every model call".to_owned());
             }
-            if model_call.input_tokens < 0 || model_call.output_tokens < 0 {
+            // A missing token count is "unknown", which is stored as unknown
+            // cost -- not malformed. A *negative* count is malformed input,
+            // not a zero-cost call.
+            if model_call.input_tokens.is_some_and(|n| n < 0)
+                || model_call.output_tokens.is_some_and(|n| n < 0)
+            {
                 return reject(format!(
-                    "token counts must be non-negative, got input={} output={} for model {}",
+                    "token counts must be non-negative, got input={:?} output={:?} for model {}",
                     model_call.input_tokens, model_call.output_tokens, model_call.model
                 ));
             }
@@ -153,11 +163,21 @@ pub async fn ingest_telemetry(
         // Compute each model call's cost once, reuse it for both the child row
         // and the execution total. The pricing lookup is cheap but not free --
         // never query it twice for the same call (the pre-fix code did).
+        // A call whose cost is unknown (missing token counts, or no pricing
+        // row) makes the whole execution's estimate unknown too: summing the
+        // known costs would silently understate, which reads as "cheaper than
+        // it was" on a dashboard.
         let mut model_call_costs = Vec::with_capacity(execution.model_calls.len());
-        let mut total_cost = MicroUsd(0);
+        let mut total_cost: Option<i64> = Some(0);
         for model_call in &execution.model_calls {
             let cost = calculate_model_cost(&mut tx, model_call).await?;
-            total_cost.0 += cost.0;
+            if let Some(known) = cost {
+                if let Some(total) = &mut total_cost {
+                    *total += known.0;
+                }
+            } else {
+                total_cost = None;
+            }
             model_call_costs.push(cost);
         }
 
@@ -168,7 +188,7 @@ pub async fn ingest_telemetry(
             integration_id,
             provider,
             execution,
-            total_cost.0,
+            total_cost,
         )
         .await?;
 
@@ -176,7 +196,7 @@ pub async fn ingest_telemetry(
 
         for (model_call, cost) in execution.model_calls.iter().zip(model_call_costs) {
             let model_call_id = deterministic_id("mc", &model_call.trace_id, &model_call.span_id);
-            upsert_model_call(&mut tx, &model_call_id, &execution_id, model_call, cost.0).await?;
+            upsert_model_call(&mut tx, &model_call_id, &execution_id, model_call, cost).await?;
             result.model_calls_upserted += 1;
         }
 
@@ -214,7 +234,7 @@ async fn upsert_execution(
     integration_id: &str,
     provider: &str,
     execution: &ExecutionInput,
-    total_cost: i64,
+    total_cost: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO executions
@@ -223,6 +243,9 @@ async fn upsert_execution(
             raw_backend, raw_schema_version)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, 1)
            ON CONFLICT (trace_id, span_id) DO UPDATE SET
+            tenant_id = EXCLUDED.tenant_id,
+            integration_id = EXCLUDED.integration_id,
+            provider = EXCLUDED.provider,
             user_email = EXCLUDED.user_email,
             duration_ms = EXCLUDED.duration_ms,
             -- cost is deliberately NOT refreshed: history stays stable once
@@ -250,7 +273,7 @@ async fn upsert_model_call(
     model_call_id: &str,
     execution_id: &str,
     model_call: &ModelCallInput,
-    cost: i64,
+    cost: Option<MicroUsd>,
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO model_calls
@@ -258,6 +281,7 @@ async fn upsert_model_call(
             output_tokens, cost_micro_usd)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (trace_id, span_id) DO UPDATE SET
+            model = EXCLUDED.model,
             input_tokens = EXCLUDED.input_tokens,
             output_tokens = EXCLUDED.output_tokens,
             -- cost is deliberately NOT refreshed: history stays stable once
@@ -271,7 +295,7 @@ async fn upsert_model_call(
     .bind(&model_call.model)
     .bind(model_call.input_tokens)
     .bind(model_call.output_tokens)
-    .bind(cost)
+    .bind(cost.map(|c| c.0))
     .execute(&mut **tx)
     .await
     .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
@@ -308,13 +332,21 @@ async fn upsert_tool_call(
 /// Calculates the cost of a model call from the pricing table.
 ///
 /// Uses the most recent pricing entry for the model that is effective at the
-/// time of the call. If no pricing exists, returns zero cost (the call is
-/// still ingested, just unpriced -- better to have incomplete cost data than
-/// to reject telemetry).
+/// time of the call. Returns `None` -- cost *unknown* -- when the call has no
+/// token counts, or when no pricing exists for the model. Unknown is honest:
+/// a zero would be indistinguishable from "free" on a dashboard (story #31
+/// AC6). The call is still ingested, just unpriced.
 async fn calculate_model_cost(
     tx: &mut Transaction<'_, Postgres>,
     model_call: &ModelCallInput,
-) -> Result<MicroUsd> {
+) -> Result<Option<MicroUsd>> {
+    let (Some(input_tokens), Some(output_tokens)) =
+        (model_call.input_tokens, model_call.output_tokens)
+    else {
+        // No token counts -> no way to price the call. Unknown, not zero.
+        return Ok(None);
+    };
+
     let pricing: Option<(i64, i64)> = sqlx::query_as(
         r#"SELECT input_per_million_micro_usd, output_per_million_micro_usd
            FROM model_pricing
@@ -329,19 +361,20 @@ async fn calculate_model_cost(
     .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
 
     let Some((input_rate, output_rate)) = pricing else {
-        return Ok(MicroUsd(0));
+        // No pricing row for this model -> cost unknown, not zero.
+        return Ok(None);
     };
 
     // Compute in i128: token counts are attacker-controlled telemetry and the
     // rates are i64, so the product can overflow i64 and wrap silently in
     // release builds (overflow checks are off). The division happens before
     // narrowing, so the intermediate stays exact for any realistic input.
-    let input_cost = (i128::from(model_call.input_tokens) * i128::from(input_rate)) / 1_000_000;
-    let output_cost = (i128::from(model_call.output_tokens) * i128::from(output_rate)) / 1_000_000;
+    let input_cost = (i128::from(input_tokens) * i128::from(input_rate)) / 1_000_000;
+    let output_cost = (i128::from(output_tokens) * i128::from(output_rate)) / 1_000_000;
 
-    Ok(MicroUsd(
+    Ok(Some(MicroUsd(
         i64::try_from(input_cost + output_cost).unwrap_or(i64::MAX),
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -380,8 +413,8 @@ mod tests {
                 trace_id: "trace-123".to_owned(),
                 span_id: "mc-789".to_owned(),
                 model: "claude-3-sonnet".to_owned(),
-                input_tokens: 1000,
-                output_tokens: 500,
+                input_tokens: Some(1000),
+                output_tokens: Some(500),
             }],
             tool_calls: vec![],
         };
@@ -416,8 +449,8 @@ mod tests {
                 trace_id: "trace-1".to_owned(),
                 span_id: "span-1:mc".to_owned(),
                 model: "claude-3-sonnet".to_owned(),
-                input_tokens: 10,
-                output_tokens: 5,
+                input_tokens: Some(10),
+                output_tokens: Some(5),
             }],
             tool_calls: vec![],
         }
@@ -451,11 +484,21 @@ mod tests {
     #[test]
     fn validation_rejects_negative_token_counts() {
         let mut execution = valid_execution();
-        execution.model_calls[0].input_tokens = -1;
+        execution.model_calls[0].input_tokens = Some(-1);
         assert!(matches!(
             validate_input(&[execution]),
             Err(Error::Validation(_))
         ));
+    }
+
+    #[test]
+    fn validation_accepts_missing_token_counts() {
+        // A missing token count is "unknown", not malformed -- the call is
+        // stored with unknown cost (story #31 AC6), never rejected.
+        let mut execution = valid_execution();
+        execution.model_calls[0].input_tokens = None;
+        execution.model_calls[0].output_tokens = None;
+        assert!(validate_input(&[execution]).is_ok());
     }
 
     #[test]
@@ -498,8 +541,9 @@ mod tests {
     /// Inserts the minimal tenant + application + environment + integration
     /// fixture `ingest_telemetry` needs (it writes
     /// `integrations.last_telemetry_at`, and integrations has FK constraints
-    /// to applications and environments).
-    async fn fixture(pool: &PgPool) -> (String, String) {
+    /// to applications and environments). `provider` is the integration's
+    /// stored provider string (the data the ingest path dispatches on).
+    async fn fixture(pool: &PgPool, provider: &str) -> (String, String) {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -537,7 +581,7 @@ mod tests {
         .bind(&tenant_id)
         .bind(&application_id)
         .bind(&environment_id)
-        .bind("claude_code")
+        .bind(provider)
         .bind("prefix")
         .bind("hash")
         .bind("active")
@@ -546,6 +590,79 @@ mod tests {
         .await
         .expect("insert integration fixture");
         (tenant_id, integration_id)
+    }
+
+    /// Like `fixture`, but creates two integrations under the same tenant.
+    /// Used by the two-providers test to verify cross-provider queries.
+    async fn fixture_two_providers(
+        pool: &PgPool,
+        provider_a: &str,
+        provider_b: &str,
+    ) -> (String, String, String) {
+        let tenant_id = format!("tenant-{}", cuid::cuid2());
+        let application_id = format!("app-{}", cuid::cuid2());
+        let environment_id = format!("env-{}", cuid::cuid2());
+        let integration_a = format!("integration-{}", cuid::cuid2());
+        let integration_b = format!("integration-{}", cuid::cuid2());
+        sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2)")
+            .bind(&tenant_id)
+            .bind("ingest-test-tenant")
+            .execute(pool)
+            .await
+            .expect("insert tenant fixture");
+        sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
+            .bind(&application_id)
+            .bind(&tenant_id)
+            .bind("ingest-test-app")
+            .execute(pool)
+            .await
+            .expect("insert application fixture");
+        sqlx::query(
+            "INSERT INTO environments (id, tenant_id, application_id, name) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&environment_id)
+        .bind(&tenant_id)
+        .bind(&application_id)
+        .bind("dev")
+        .execute(pool)
+        .await
+        .expect("insert environment fixture");
+        sqlx::query(
+            "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
+             credential_prefix, credential_hash, status, content_capture) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&integration_a)
+        .bind(&tenant_id)
+        .bind(&application_id)
+        .bind(&environment_id)
+        .bind(provider_a)
+        .bind("prefix")
+        .bind("hash")
+        .bind("active")
+        .bind("none")
+        .execute(pool)
+        .await
+        .expect("insert integration fixture");
+        sqlx::query(
+            "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
+             credential_prefix, credential_hash, status, content_capture) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&integration_b)
+        .bind(&tenant_id)
+        .bind(&application_id)
+        .bind(&environment_id)
+        .bind(provider_b)
+        .bind("prefix")
+        .bind("hash")
+        .bind("active")
+        .bind("none")
+        .execute(pool)
+        .await
+        .expect("insert integration fixture");
+        (tenant_id, integration_a, integration_b)
     }
 
     /// The idempotency contract, against the real database: reprocessing the
@@ -559,23 +676,27 @@ mod tests {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
-        let (tenant_id, integration_id) = fixture(&pool).await;
+        let (tenant_id, integration_id) = fixture(&pool, "claude_code").await;
 
         let pricing = MicroUsd(7_000_000); // $7.00 per million tokens
+        // A model name no other DB test prices, so parallel tests cannot
+        // interleave a competing pricing row into this test's lookup.
+        const MODEL: &str = "idem-sonnet";
         sqlx::query(
             "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
              output_per_million_micro_usd, effective_from) \
              VALUES ($1, $2, $3, $4, now())",
         )
         .bind(format!("price-{}", cuid::cuid2()))
-        .bind("claude-3-sonnet")
+        .bind(MODEL)
         .bind(pricing.0)
         .bind(pricing.0)
         .execute(&pool)
         .await
         .expect("insert pricing fixture");
 
-        let execution = valid_execution(); // 10 in, 5 out
+        let mut execution = valid_execution(); // 10 in, 5 out
+        execution.model_calls[0].model = MODEL.to_owned();
         let executions = vec![execution.clone()];
         let first = ingest_telemetry(
             &pool,
@@ -616,7 +737,7 @@ mod tests {
 
         // The stored cost on the first write is what history must keep. A
         // future pricing change re-prices new rows, never existing ones.
-        let (execution_id, execution_cost): (String, i64) = sqlx::query_as(
+        let (execution_id, execution_cost): (String, Option<i64>) = sqlx::query_as(
             "SELECT id, estimated_cost_micro_usd FROM executions \
              WHERE trace_id = $1 AND span_id = $2",
         )
@@ -630,7 +751,7 @@ mod tests {
             "deterministic id must be stable"
         );
 
-        let (model_call_cost,): (i64,) =
+        let (model_call_cost,): (Option<i64>,) =
             sqlx::query_as("SELECT cost_micro_usd FROM model_calls WHERE execution_id = $1")
                 .bind(&execution_id)
                 .fetch_one(&pool)
@@ -639,8 +760,12 @@ mod tests {
 
         // $7.00 per million: 10 input tokens = 70, 5 output tokens = 35,
         // total 105 micro-USD for the execution. Two ingests must agree.
-        assert_eq!(model_call_cost, 105, "10*7 + 5*7");
-        assert_eq!(execution_cost, 105, "execution total = sum of model calls");
+        assert_eq!(model_call_cost, Some(105), "10*7 + 5*7");
+        assert_eq!(
+            execution_cost,
+            Some(105),
+            "execution total = sum of model calls"
+        );
     }
 
     /// Re-ingesting with a *changed* pricing row must re-price only new rows:
@@ -652,8 +777,10 @@ mod tests {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
-        let (tenant_id, integration_id) = fixture(&pool).await;
-        let model = "claude-3-sonnet";
+        let (tenant_id, integration_id) = fixture(&pool, "claude_code").await;
+        // A model name no other DB test prices, so parallel tests cannot
+        // interleave a competing pricing row into this test's lookup.
+        const MODEL: &str = "reprice-sonnet";
 
         async fn insert_price(pool: &PgPool, model: &str, id: &str, rate: i64) {
             sqlx::query(
@@ -669,8 +796,10 @@ mod tests {
             .await
             .expect("insert pricing fixture");
         }
-        insert_price(&pool, model, &format!("price-{}", cuid::cuid2()), 7_000_000).await;
-        let executions = vec![valid_execution()];
+        insert_price(&pool, MODEL, &format!("price-{}", cuid::cuid2()), 7_000_000).await;
+        let mut execution = valid_execution();
+        execution.model_calls[0].model = MODEL.to_owned();
+        let executions = vec![execution];
         ingest_telemetry(
             &pool,
             &tenant_id,
@@ -684,7 +813,7 @@ mod tests {
         // Pricing changes after the first write.
         insert_price(
             &pool,
-            model,
+            MODEL,
             &format!("price-{}", cuid::cuid2()),
             21_000_000,
         )
@@ -700,7 +829,7 @@ mod tests {
         .await
         .expect("reprocess succeeds");
 
-        let (execution_cost,): (i64,) = sqlx::query_as(
+        let (execution_cost,): (Option<i64>,) = sqlx::query_as(
             "SELECT estimated_cost_micro_usd FROM executions \
              WHERE trace_id = $1 AND span_id = $2",
         )
@@ -710,8 +839,223 @@ mod tests {
         .await
         .expect("execution row exists");
         assert_eq!(
-            execution_cost, 105,
+            execution_cost,
+            Some(105),
             "a pricing change must not rewrite already-stored costs"
+        );
+    }
+
+    /// Story #31 AC6, negative case: a model call with *missing* token counts
+    /// is stored with cost explicitly unknown (NULL), never a zero that a
+    /// dashboard would read as "free".
+    #[tokio::test]
+    async fn missing_token_counts_are_stored_as_unknown_cost() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, integration_id) = fixture(&pool, "claude_code").await;
+
+        // No pricing row at all: the cost must come out unknown either way, so
+        // the assertion isolates "missing tokens" from "missing pricing".
+        // Unique ids: valid_execution() defaults to trace-1/span-1, which the
+        // other DB tests also use -- parallel tests must not collide on rows.
+        let mut execution = valid_execution();
+        execution.trace_id = "trace-unknown-tokens".to_owned();
+        execution.span_id = "span-unknown-tokens".to_owned();
+        execution.model_calls[0].trace_id = "trace-unknown-tokens".to_owned();
+        execution.model_calls[0].span_id = "span-unknown-tokens:mc".to_owned();
+        execution.model_calls[0].input_tokens = None;
+        execution.model_calls[0].output_tokens = None;
+        let executions = vec![execution.clone()];
+
+        let result = ingest_telemetry(
+            &pool,
+            &tenant_id,
+            &integration_id,
+            "claude_code",
+            &executions,
+        )
+        .await
+        .expect("ingest with missing tokens succeeds");
+
+        assert_eq!(
+            (result.executions_upserted, result.model_calls_upserted),
+            (1, 1),
+            "the call is still recorded, just unpriced"
+        );
+
+        let (execution_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind(&execution.trace_id)
+        .bind(&execution.span_id)
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+        assert_eq!(
+            execution_cost, None,
+            "execution cost must be unknown, not zero"
+        );
+
+        let (model_call_cost, input_tokens, output_tokens): (
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ) = sqlx::query_as(
+            "SELECT cost_micro_usd, input_tokens, output_tokens FROM model_calls \
+                 WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind(&execution.model_calls[0].trace_id)
+        .bind(&execution.model_calls[0].span_id)
+        .fetch_one(&pool)
+        .await
+        .expect("model call row exists");
+        assert_eq!(
+            (model_call_cost, input_tokens, output_tokens),
+            (None, None, None),
+            "unknown tokens must yield unknown cost, never 0/0"
+        );
+    }
+
+    /// Story #31 AC6, negative case: token counts *present* but no pricing row
+    /// for the model is also cost unknown, not zero -- the previous
+    /// `MicroUsd(0)` default was exactly the "zero is indistinguishable from
+    /// free" hazard the story calls out.
+    #[tokio::test]
+    async fn missing_pricing_is_stored_as_unknown_not_zero() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, integration_id) = fixture(&pool, "claude_code").await;
+
+        // valid_execution() has tokens (Some(10)/Some(5)) but no pricing row
+        // is inserted for its model -- a unique model name, so a parallel test
+        // inserting "claude-3-sonnet" pricing cannot accidentally price it.
+        let mut execution = valid_execution();
+        execution.trace_id = "trace-no-pricing".to_owned();
+        execution.span_id = "span-no-pricing".to_owned();
+        execution.model_calls[0].trace_id = "trace-no-pricing".to_owned();
+        execution.model_calls[0].span_id = "span-no-pricing:mc".to_owned();
+        execution.model_calls[0].model = "never-priced-model".to_owned();
+        let executions = vec![execution];
+        let result = ingest_telemetry(
+            &pool,
+            &tenant_id,
+            &integration_id,
+            "claude_code",
+            &executions,
+        )
+        .await
+        .expect("ingest succeeds");
+
+        assert_eq!(result.model_calls_upserted, 1);
+
+        let (execution_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind("trace-no-pricing")
+        .bind("span-no-pricing")
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+        assert_eq!(
+            execution_cost, None,
+            "no pricing row means unknown cost, never a zero default"
+        );
+    }
+
+    /// Story #31 AC3: telemetry from two different providers, ingested through
+    /// the one shared persistence path, is queryable together with directly
+    /// comparable costs (all micro-USD).
+    #[tokio::test]
+    async fn two_providers_ingest_through_one_path_and_query_together() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, claude_integration, codex_integration) =
+            fixture_two_providers(&pool, "claude_code", "codex").await;
+
+        // Same per-token price for both models so the comparison is direct.
+        async fn insert_price(pool: &PgPool, model: &str, rate: i64) {
+            sqlx::query(
+                "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
+                 output_per_million_micro_usd, effective_from) \
+                 VALUES ($1, $2, $3, $4, now())",
+            )
+            .bind(format!("price-{}", cuid::cuid2()))
+            .bind(model)
+            .bind(rate)
+            .bind(rate)
+            .execute(pool)
+            .await
+            .expect("insert pricing fixture");
+        }
+        // Unique model names so parallel tests cannot interleave competing
+        // pricing rows into this test's lookup.
+        const CLAUDE_MODEL: &str = "claude-probe";
+        const CODEX_MODEL: &str = "gpt-probe";
+        insert_price(&pool, CLAUDE_MODEL, 7_000_000).await;
+        insert_price(&pool, CODEX_MODEL, 7_000_000).await;
+
+        // claude_code execution: 10 in / 5 out = 105 micro-USD. Unique ids so
+        // it cannot collide with the other DB tests' trace-1/span-1 rows.
+        let mut claude = valid_execution();
+        claude.trace_id = "trace-claude".to_owned();
+        claude.span_id = "span-claude".to_owned();
+        claude.model_calls[0].trace_id = "trace-claude".to_owned();
+        claude.model_calls[0].span_id = "span-claude:mc".to_owned();
+        claude.model_calls[0].model = CLAUDE_MODEL.to_owned();
+        // codex execution: same token counts against gpt-probe, different ids.
+        let mut codex = valid_execution();
+        codex.trace_id = "trace-codex".to_owned();
+        codex.span_id = "span-codex".to_owned();
+        codex.model_calls[0].trace_id = "trace-codex".to_owned();
+        codex.model_calls[0].span_id = "span-codex:mc".to_owned();
+        codex.model_calls[0].model = CODEX_MODEL.to_owned();
+
+        ingest_telemetry(
+            &pool,
+            &tenant_id,
+            &claude_integration,
+            "claude_code",
+            std::slice::from_ref(&claude),
+        )
+        .await
+        .expect("claude ingest succeeds");
+        ingest_telemetry(
+            &pool,
+            &tenant_id,
+            &codex_integration,
+            "codex",
+            std::slice::from_ref(&codex),
+        )
+        .await
+        .expect("codex ingest succeeds");
+
+        // One query across both providers: provider, model and cost side by
+        // side, all micro-USD and therefore directly comparable.
+        let rows: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT e.provider, mc.model, mc.cost_micro_usd \
+             FROM model_calls mc JOIN executions e ON e.id = mc.execution_id \
+             WHERE e.tenant_id = $1 ORDER BY e.provider",
+        )
+        .bind(&tenant_id)
+        .fetch_all(&pool)
+        .await
+        .expect("joined query runs");
+
+        assert_eq!(rows.len(), 2, "both providers' model calls must be stored");
+        assert_eq!(rows[0].0, "claude_code");
+        assert_eq!(rows[0].1, CLAUDE_MODEL);
+        assert_eq!(rows[0].2, Some(105), "10*7 + 5*7, same pricing as codex");
+        assert_eq!(rows[1].0, "codex");
+        assert_eq!(rows[1].1, CODEX_MODEL);
+        assert_eq!(
+            rows[1].2, rows[0].2,
+            "identical token counts at identical pricing must be equal and comparable"
         );
     }
 }

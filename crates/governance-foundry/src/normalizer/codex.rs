@@ -72,10 +72,10 @@ fn normalize_span(
     attr_string(span, "session.id", "span")?;
     let model_name = attr_string(span, "model.name", "span")?
         .ok_or_else(|| NormalizerError::MissingField("model.name".to_owned()))?;
-    let input_tokens = attr_i64(span, "codex.turn.input_tokens", "span")?
-        .ok_or_else(|| NormalizerError::MissingField("codex.turn.input_tokens".to_owned()))?;
-    let output_tokens = attr_i64(span, "codex.turn.output_tokens", "span")?
-        .ok_or_else(|| NormalizerError::MissingField("codex.turn.output_tokens".to_owned()))?;
+    // Token counts are optional: a span that omits them yields a model call
+    // with unknown cost (story #31 AC6), not a rejection.
+    let input_tokens = attr_i64(span, "codex.turn.input_tokens", "span")?;
+    let output_tokens = attr_i64(span, "codex.turn.output_tokens", "span")?;
 
     let start_time_unix_nano = span_i64(span, "startTimeUnixNano")?;
     let end_time_unix_nano = span_i64(span, "endTimeUnixNano")?;
@@ -179,8 +179,8 @@ mod tests {
         assert_eq!(exec.duration_ms, 5000);
         assert_eq!(exec.model_calls.len(), 1);
         assert_eq!(exec.model_calls[0].model, "gpt-4");
-        assert_eq!(exec.model_calls[0].input_tokens, 1000);
-        assert_eq!(exec.model_calls[0].output_tokens, 500);
+        assert_eq!(exec.model_calls[0].input_tokens, Some(1000));
+        assert_eq!(exec.model_calls[0].output_tokens, Some(500));
         assert_eq!(exec.tool_calls.len(), 1);
         assert_eq!(exec.tool_calls[0].tool_name, "bash");
         assert_eq!(exec.tool_calls[0].duration_ms, 1500);
@@ -194,16 +194,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_token_counts() {
+    fn missing_token_counts_map_to_unknown_not_rejection() {
+        // Story #31 AC6: a payload missing token counts is stored with cost
+        // explicitly unknown, not rejected and not defaulted to zero.
         let mut payload = valid_payload();
         let attributes = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
             .as_array_mut()
             .expect("attributes array");
         attributes
             .retain(|a| a.get("key").and_then(|k| k.as_str()) != Some("codex.turn.input_tokens"));
+        attributes
+            .retain(|a| a.get("key").and_then(|k| k.as_str()) != Some("codex.turn.output_tokens"));
 
         let normalizer = CodexNormalizer;
-        let result = normalizer.normalize(&payload);
-        assert!(matches!(result, Err(NormalizerError::MissingField(_))));
+        let result = normalizer
+            .normalize(&payload)
+            .expect("normalize must succeed");
+        let exec = &result.executions[0];
+        assert_eq!(exec.model_calls[0].input_tokens, None);
+        assert_eq!(exec.model_calls[0].output_tokens, None);
     }
 }

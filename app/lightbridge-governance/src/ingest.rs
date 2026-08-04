@@ -28,7 +28,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use governance_core::registry::Provider;
 use serde::Serialize;
 use subtle::ConstantTimeEq;
 
@@ -117,11 +116,13 @@ async fn handle(
         header(headers, "governance.tenant.id").ok_or(RejectReason::MissingTenantHeader)?;
     let integration_id = header(headers, "governance.integration.id")
         .ok_or(RejectReason::MissingIntegrationHeader)?;
+    // The provider is data on the registered integration, stamped here by
+    // Authorino as the integration row's provider string. The ingest path
+    // dispatches on that string and never enumerates the provider list (story
+    // #31 AC1/AC4) -- an unknown string is a normalizer lookup miss, not a
+    // compile-time branch.
     let provider =
         header(headers, "governance.source").ok_or(RejectReason::MissingProviderHeader)?;
-    let provider: Provider = provider
-        .parse()
-        .map_err(|_| RejectReason::UnsupportedProvider)?;
 
     if !state.rate_limiter.allow(integration_id) {
         return Err(RejectReason::RateLimited);
@@ -145,7 +146,7 @@ async fn handle(
         &state.pool,
         tenant_id,
         integration_id,
-        provider.as_str(),
+        provider,
         &payload.executions,
     )
     .await

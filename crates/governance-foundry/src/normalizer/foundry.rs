@@ -68,10 +68,10 @@ fn normalize_span(
     attr_string(span, "session.id", "span")?;
     let model_name = attr_string(span, "model.name", "span")?
         .ok_or_else(|| NormalizerError::MissingField("model.name".to_owned()))?;
-    let input_tokens = attr_i64(span, "tokens.input", "span")?
-        .ok_or_else(|| NormalizerError::MissingField("tokens.input".to_owned()))?;
-    let output_tokens = attr_i64(span, "tokens.output", "span")?
-        .ok_or_else(|| NormalizerError::MissingField("tokens.output".to_owned()))?;
+    // Token counts are optional: a span that omits them yields a model call
+    // with unknown cost (story #31 AC6), not a rejection.
+    let input_tokens = attr_i64(span, "tokens.input", "span")?;
+    let output_tokens = attr_i64(span, "tokens.output", "span")?;
 
     let start_time_unix_nano = span_i64(span, "startTimeUnixNano")?;
     let end_time_unix_nano = span_i64(span, "endTimeUnixNano")?;
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(exec.duration_ms, 5000);
         assert_eq!(exec.model_calls.len(), 1);
         assert_eq!(exec.model_calls[0].model, "gpt-4");
-        assert_eq!(exec.model_calls[0].input_tokens, 1000);
-        assert_eq!(exec.model_calls[0].output_tokens, 500);
+        assert_eq!(exec.model_calls[0].input_tokens, Some(1000));
+        assert_eq!(exec.model_calls[0].output_tokens, Some(500));
     }
 }

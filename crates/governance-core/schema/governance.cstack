@@ -262,7 +262,9 @@ model Execution {
   userEmail String?
   startedAt DateTime
   durationMs Int
-  estimatedCostMicroUsd Int
+  // NULL = cost unknown (no pricing row, or a model call with unknown token
+  // counts). Unknown is honest; a zero would be indistinguishable from "free".
+  estimatedCostMicroUsd Int?
   rawBackend String?
   rawSchemaVersion Int
 
@@ -276,7 +278,10 @@ model Execution {
 
 // One LLM call within an execution. Token counts and cost live here.
 // `executionId` is the parent Execution; `traceId` + `spanId` are the
-// OpenTelemetry identity for idempotent upsert.
+// OpenTelemetry identity for idempotent upsert. `inputTokens`/`outputTokens`
+// and `costMicroUsd` are nullable: a call whose token counts are unknown is
+// stored with NULL cost (unknown), never a zero (which a dashboard would read
+// as "free").
 model ModelCall {
   @use(AuditFields)
 
@@ -285,9 +290,9 @@ model ModelCall {
   traceId String
   spanId String
   model String
-  inputTokens Int
-  outputTokens Int
-  costMicroUsd Int
+  inputTokens Int?
+  outputTokens Int?
+  costMicroUsd Int?
 
   execution Execution @relation(fields:[executionId],references:[id])
 
