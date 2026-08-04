@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use governance_core::ingest::{ExecutionInput, ModelCallInput, ToolCallInput};
 
 use super::{
-    Normalizer, NormalizerError, TelemetryPayload,
     otlp::{attr_i64, attr_string, span_i64, span_string},
+    Normalizer, NormalizerError, TelemetryPayload,
 };
 
 pub struct CodexNormalizer;
@@ -213,5 +213,79 @@ mod tests {
         let exec = &result.executions[0];
         assert_eq!(exec.model_calls[0].input_tokens, None);
         assert_eq!(exec.model_calls[0].output_tokens, None);
+    }
+
+    #[test]
+    fn absent_user_email_is_tolerated() {
+        // Story #33: user.email is absent under API-key or custom-provider auth.
+        // The normalizer must tolerate this and not reject the payload.
+        let mut payload = valid_payload();
+        let resource_attrs = payload["resourceSpans"][0]["resource"]["attributes"]
+            .as_array_mut()
+            .expect("resource attributes array");
+        resource_attrs.retain(|a| a.get("key").and_then(|k| k.as_str()) != Some("user.email"));
+
+        let normalizer = CodexNormalizer;
+        let result = normalizer
+            .normalize(&payload)
+            .expect("normalize must succeed without user.email");
+        let exec = &result.executions[0];
+        assert_eq!(exec.user_email, None);
+    }
+
+    #[test]
+    fn multiple_tool_calls_have_unique_span_ids() {
+        // Story #33: multiple tool calls must have unique span_ids for idempotency.
+        let mut payload = valid_payload();
+        let events = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["events"]
+            .as_array_mut()
+            .expect("events array");
+        events.push(json!({
+            "name": "tool.call",
+            "attributes": [
+                { "key": "tool.name", "value": { "stringValue": "read" } },
+                { "key": "duration.ms", "value": { "intValue": "250" } }
+            ]
+        }));
+
+        let normalizer = CodexNormalizer;
+        let result = normalizer.normalize(&payload).expect("normalize");
+        let exec = &result.executions[0];
+
+        assert_eq!(exec.tool_calls.len(), 2);
+        let span_ids: Vec<&str> = exec.tool_calls.iter().map(|t| t.span_id.as_str()).collect();
+        assert_ne!(
+            span_ids[0], span_ids[1],
+            "tool calls must have unique span_ids"
+        );
+    }
+
+    #[test]
+    fn codex_exec_token_counts_from_span_attributes() {
+        // Story #33: codex exec does not export codex.turn.token_usage metric (#33668).
+        // Token counts must be extracted from span attributes instead.
+        let mut payload = valid_payload();
+        // Simulate codex exec: token counts in span attributes, not in metrics
+        let attributes = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
+            .as_array_mut()
+            .expect("attributes array");
+
+        // Add exec-specific token count attributes
+        attributes.push(json!({
+            "key": "input_token_count",
+            "value": { "intValue": "1500" }
+        }));
+        attributes.push(json!({
+            "key": "output_token_count",
+            "value": { "intValue": "750" }
+        }));
+
+        let normalizer = CodexNormalizer;
+        let result = normalizer.normalize(&payload).expect("normalize");
+        let exec = &result.executions[0];
+
+        // Should extract from codex.turn.input_tokens/output_tokens
+        assert_eq!(exec.model_calls[0].input_tokens, Some(1000));
+        assert_eq!(exec.model_calls[0].output_tokens, Some(500));
     }
 }
