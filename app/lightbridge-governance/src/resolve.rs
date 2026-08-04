@@ -322,6 +322,7 @@ mod tests {
                 provider: "github_copilot".to_owned(),
                 environmentId: environment.id,
                 contentCapture: None,
+                internalUserId: None,
             },
         )
         .await

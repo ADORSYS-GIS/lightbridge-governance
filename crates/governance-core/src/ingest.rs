@@ -59,6 +59,8 @@ pub struct IngestResult {
     pub executions_upserted: i64,
     pub model_calls_upserted: i64,
     pub tool_calls_upserted: i64,
+    /// Whether identity mismatch detection query failed (best-effort).
+    pub identity_mismatch_detection_failed: bool,
 }
 
 /// Derives a deterministic id from `(trace_id, span_id)` so the same
@@ -155,10 +157,44 @@ pub async fn ingest_telemetry(
         executions_upserted: 0,
         model_calls_upserted: 0,
         tool_calls_upserted: 0,
+        identity_mismatch_detection_failed: false,
     };
 
-    for execution in executions {
+    // Resolve the integration's bound identity once per batch (#35).
+    // Identity comes from the ingest token, not from the payload's user.email
+    // (which is self-asserted and may be absent).
+    let internal_user_id =
+        crate::identity::get_integration_identity(pool, tenant_id, integration_id).await?;
+
+    // Check for mismatches between token identity and payload emails (#35).
+    // Batch query to avoid N+1 problem.
+    let payload_emails: Vec<Option<&str>> =
+        executions.iter().map(|e| e.user_email.as_deref()).collect();
+    let (token_identity, mismatches, query_failed) = crate::identity::check_email_mismatches(
+        pool,
+        tenant_id,
+        provider,
+        internal_user_id.as_deref(),
+        &payload_emails,
+    )
+    .await;
+
+    // Store the query failure flag in the result for the app layer to handle metrics.
+    result.identity_mismatch_detection_failed = query_failed;
+
+    for (execution, mismatch) in executions.iter().zip(mismatches.iter()) {
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
+
+        if *mismatch {
+            // Log mismatch without PII: only log that a mismatch occurred, not the email itself.
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                integration_id = %integration_id,
+                provider = %provider,
+                internal_user_id = ?token_identity,
+                "identity mismatch: payload email does not match token-derived identity"
+            );
+        }
 
         // Compute each model call's cost once, reuse it for both the child row
         // and the execution total. The pricing lookup is cheap but not free --
@@ -189,6 +225,7 @@ pub async fn ingest_telemetry(
             provider,
             execution,
             total_cost,
+            internal_user_id.as_deref(),
         )
         .await?;
 
@@ -235,18 +272,20 @@ async fn upsert_execution(
     provider: &str,
     execution: &ExecutionInput,
     total_cost: Option<i64>,
+    internal_user_id: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO executions
            (id, tenant_id, integration_id, provider, trace_id, span_id,
-            user_email, started_at, duration_ms, estimated_cost_micro_usd,
+            user_email, internal_user_id, started_at, duration_ms, estimated_cost_micro_usd,
             raw_backend, raw_schema_version)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, 1)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, 1)
            ON CONFLICT (trace_id, span_id) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
             integration_id = EXCLUDED.integration_id,
             provider = EXCLUDED.provider,
             user_email = EXCLUDED.user_email,
+            internal_user_id = EXCLUDED.internal_user_id,
             duration_ms = EXCLUDED.duration_ms,
             -- cost is deliberately NOT refreshed: history stays stable once
             -- written (a pricing change re-prices future ingests only)
@@ -259,6 +298,7 @@ async fn upsert_execution(
     .bind(&execution.trace_id)
     .bind(&execution.span_id)
     .bind(&execution.user_email)
+    .bind(internal_user_id)
     .bind(execution.started_at)
     .bind(execution.duration_ms)
     .bind(total_cost)
@@ -430,12 +470,14 @@ mod tests {
             executions_upserted: 5,
             model_calls_upserted: 10,
             tool_calls_upserted: 3,
+            identity_mismatch_detection_failed: false,
         };
 
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("\"executions_upserted\":5"));
         assert!(json.contains("\"model_calls_upserted\":10"));
         assert!(json.contains("\"tool_calls_upserted\":3"));
+        assert!(json.contains("\"identity_mismatch_detection_failed\":false"));
     }
 
     fn valid_execution() -> ExecutionInput {

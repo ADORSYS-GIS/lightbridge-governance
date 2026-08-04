@@ -123,8 +123,8 @@ pub async fn issue(
     sqlx::query(
         "INSERT INTO integrations \
          (id, tenant_id, application_id, environment_id, provider, credential_prefix, \
-          credential_hash, status, content_capture) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8)",
+          credential_hash, status, content_capture, internal_user_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9)",
     )
     .bind(&id)
     .bind(&application.tenantId)
@@ -134,6 +134,7 @@ pub async fn issue(
     .bind(&prefix)
     .bind(&hash)
     .bind(&content_capture)
+    .bind(&args.internalUserId)
     .execute(db.pool())
     .await
     .map_err(cool_error_from_sqlx)?;

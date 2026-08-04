@@ -133,6 +133,9 @@ model Integration {
   credentialHash String @server_only
   status String @readonly
   contentCapture String
+  // Developer identity binding (#35): the internal user ID (Keycloak sub) this
+  // token is bound to. Used for attribution and mismatch detection.
+  internalUserId String?
   lastTelemetryAt DateTime?
   lastUsedAt DateTime? @readonly
   revokedAt DateTime? @readonly
@@ -150,11 +153,14 @@ model Integration {
 // Environment is a first-class, registered resource, issuance should
 // reference a real one rather than let a typo mint a credential under an
 // environment nothing else agrees exists.
+// `internalUserId` binds the token to a specific developer (#35): the internal
+// user ID (Keycloak sub). This enables per-developer attribution.
 type IssueIntegrationCredentialInput {
   applicationId String
   provider String
   environmentId String
   contentCapture String?
+  internalUserId String?
 }
 
 // Nests `Integration` directly (matching `ApiKeySecret`'s shape in
@@ -260,6 +266,10 @@ model Execution {
   traceId String
   spanId String
   userEmail String?
+  // The Keycloak sub (internal user ID) derived from the ingest token via
+  // IdentityMap. This is the authoritative identity for attribution (#35),
+  // never the payload's user.email (which is self-asserted and may be absent).
+  internalUserId String?
   startedAt DateTime
   durationMs Int
   // NULL = cost unknown (no pricing row, or a model call with unknown token

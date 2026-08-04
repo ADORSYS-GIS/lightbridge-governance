@@ -203,6 +203,11 @@ pub async fn ingest(
                 .ingest_tool_calls_total
                 .inc_by(result.tool_calls_upserted as u64);
 
+            // Increment metric if identity mismatch detection failed (best-effort).
+            if result.identity_mismatch_detection_failed {
+                state.metrics.ingest_identity_mismatch_failures_total.inc();
+            }
+
             tracing::info!(
                 executions = result.executions_upserted,
                 model_calls = result.model_calls_upserted,

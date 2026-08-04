@@ -67,10 +67,13 @@
 //! another test's insert.
 
 use cratestack::CoolContext;
-use governance_core::schema::cratestack_schema::{
-    Cratestack,
-    inputs::{CreateApplicationInput, UpdateApplicationInput},
-    types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
+use governance_core::{
+    ingest::ExecutionInput,
+    schema::cratestack_schema::{
+        Cratestack,
+        inputs::{CreateApplicationInput, UpdateApplicationInput},
+        types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
+    },
 };
 
 static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -565,6 +568,7 @@ async fn issue_then_resolve_round_trips() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -605,6 +609,7 @@ async fn issued_secret_never_appears_in_the_serialized_integration() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -645,6 +650,7 @@ async fn resolve_rejects_a_revoked_credential() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -694,6 +700,7 @@ async fn revoke_is_idempotent_under_a_repeat_call() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -838,6 +845,7 @@ async fn issue_credential_under_a_nonexistent_environment_is_rejected() {
             provider: "github_copilot".to_owned(),
             environmentId: format!("env-does-not-exist-{}", cuid::cuid2()),
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await;
@@ -875,6 +883,7 @@ async fn issue_credential_under_an_environment_from_a_different_application_is_r
             provider: "github_copilot".to_owned(),
             environmentId: environment_b.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await;
@@ -883,5 +892,333 @@ async fn issue_credential_under_an_environment_from_a_different_application_is_r
         result.is_err(),
         "issuing a credential for application_a using an environment that belongs to \
          application_b must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn get_integration_identity_returns_token_derived_identity() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    let internal_user_id = "keycloak-sub-12345";
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: Some(internal_user_id.to_owned()),
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let resolved = governance_core::identity::get_integration_identity(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+    )
+    .await
+    .expect("identity resolution must succeed");
+
+    assert_eq!(
+        resolved,
+        Some(internal_user_id.to_owned()),
+        "token-derived identity must be returned"
+    );
+}
+
+#[tokio::test]
+async fn get_integration_identity_handles_unbound_integration() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let resolved = governance_core::identity::get_integration_identity(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+    )
+    .await
+    .expect("identity resolution must succeed");
+
+    assert_eq!(
+        resolved, None,
+        "unbound integration must have no internal_user_id"
+    );
+}
+
+#[tokio::test]
+async fn check_email_mismatches_detects_identity_conflict() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Create an identity map: email "alice@example.com" -> internal_user_id "alice-keycloak-id"
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .bind("github_copilot")
+    .bind("alice@example.com")
+    .bind("alice-keycloak-id")
+    .bind("verified_email")
+    .execute(&pool)
+    .await
+    .expect("identity map insert must succeed");
+
+    // Token is bound to "bob-keycloak-id", but payload claims "alice@example.com"
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[Some("alice@example.com")],
+        )
+        .await;
+
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(
+        token_identity,
+        Some("bob-keycloak-id".to_owned()),
+        "token identity must be preserved"
+    );
+    assert!(
+        mismatches[0],
+        "mismatch must be detected when payload email maps to different user"
+    );
+    assert!(!query_failed, "query should not fail");
+}
+
+#[tokio::test]
+async fn check_email_mismatches_no_conflict_when_email_matches_token() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Create an identity map: email "alice@example.com" -> internal_user_id "alice-keycloak-id"
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .bind("github_copilot")
+    .bind("alice@example.com")
+    .bind("alice-keycloak-id")
+    .bind("verified_email")
+    .execute(&pool)
+    .await
+    .expect("identity map insert must succeed");
+
+    // Token is bound to "alice-keycloak-id", payload claims "alice@example.com" (same user)
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("alice-keycloak-id"),
+            &[Some("alice@example.com")],
+        )
+        .await;
+
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(
+        token_identity,
+        Some("alice-keycloak-id".to_owned()),
+        "token identity must be preserved"
+    );
+    assert!(
+        !mismatches[0],
+        "no mismatch when payload email maps to same user as token"
+    );
+    assert!(!query_failed, "query should not fail");
+}
+
+#[tokio::test]
+async fn check_email_mismatches_no_conflict_when_email_unknown() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Token is bound to "bob-keycloak-id", payload claims "unknown@example.com" (not in identity_maps)
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[Some("unknown@example.com")],
+        )
+        .await;
+
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(
+        token_identity,
+        Some("bob-keycloak-id".to_owned()),
+        "token identity must be preserved"
+    );
+    assert!(
+        !mismatches[0],
+        "no mismatch when payload email is not in identity_maps"
+    );
+    assert!(!query_failed, "query should not fail");
+}
+
+#[tokio::test]
+async fn check_email_mismatches_no_conflict_when_no_payload_email() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Token is bound to "bob-keycloak-id", no payload email
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[None],
+        )
+        .await;
+
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(
+        token_identity,
+        Some("bob-keycloak-id".to_owned()),
+        "token identity must be preserved"
+    );
+    assert!(!mismatches[0], "no mismatch when payload has no email");
+    assert!(!query_failed, "query should not fail");
+}
+
+#[tokio::test]
+async fn end_to_end_identity_binding_with_mismatch_detection() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    // Step 1: Issue token bound to "alice-keycloak-id"
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: Some("alice-keycloak-id".to_owned()),
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    // Step 2: Populate identity_maps (simulating OAuth flow)
+    // "bob@example.com" maps to "bob-keycloak-id" (different from token)
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .bind("github_copilot")
+    .bind("bob@example.com")
+    .bind("bob-keycloak-id")
+    .bind("verified_email")
+    .execute(&pool)
+    .await
+    .expect("identity map insert must succeed");
+
+    // Step 3: Ingest telemetry with payload claiming "bob@example.com"
+    let execution = ExecutionInput {
+        trace_id: "trace-e2e-001".to_owned(),
+        span_id: "span-e2e-001".to_owned(),
+        user_email: Some("bob@example.com".to_owned()),
+        started_at: chrono::Utc::now(),
+        duration_ms: 1000,
+        model_calls: vec![],
+        tool_calls: vec![],
+    };
+
+    let result = governance_core::ingest::ingest_telemetry(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+        "github_copilot",
+        &[execution],
+    )
+    .await
+    .expect("ingest must succeed");
+
+    assert_eq!(result.executions_upserted, 1);
+    assert!(
+        !result.identity_mismatch_detection_failed,
+        "mismatch detection should not fail in normal operation"
+    );
+
+    // Step 4: Verify the execution was stored with token-derived identity
+    let row: (Option<String>,) = cratestack::sqlx::query_as(
+        "SELECT internal_user_id FROM executions WHERE trace_id = $1 AND tenant_id = $2",
+    )
+    .bind("trace-e2e-001")
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("execution must exist");
+
+    assert_eq!(
+        row.0,
+        Some("alice-keycloak-id".to_owned()),
+        "execution must be attributed to token-derived identity, not payload email"
     );
 }
