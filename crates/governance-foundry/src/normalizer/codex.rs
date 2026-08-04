@@ -74,8 +74,19 @@ fn normalize_span(
         .ok_or_else(|| NormalizerError::MissingField("model.name".to_owned()))?;
     // Token counts are optional: a span that omits them yields a model call
     // with unknown cost (story #31 AC6), not a rejection.
-    let input_tokens = attr_i64(span, "codex.turn.input_tokens", "span")?;
-    let output_tokens = attr_i64(span, "codex.turn.output_tokens", "span")?;
+    //
+    // Codex uses different attribute names depending on the execution mode:
+    // - Interactive: codex.turn.input_tokens / codex.turn.output_tokens
+    // - Exec mode: input_token_count / output_token_count (issue #33668)
+    // We check both to handle all cases.
+    let input_tokens = match attr_i64(span, "codex.turn.input_tokens", "span")? {
+        Some(v) => Some(v),
+        None => attr_i64(span, "input_token_count", "span")?,
+    };
+    let output_tokens = match attr_i64(span, "codex.turn.output_tokens", "span")? {
+        Some(v) => Some(v),
+        None => attr_i64(span, "output_token_count", "span")?,
+    };
 
     let start_time_unix_nano = span_i64(span, "startTimeUnixNano")?;
     let end_time_unix_nano = span_i64(span, "endTimeUnixNano")?;
@@ -263,12 +274,18 @@ mod tests {
     #[test]
     fn codex_exec_token_counts_from_span_attributes() {
         // Story #33: codex exec does not export codex.turn.token_usage metric (#33668).
-        // Token counts must be extracted from span attributes instead.
+        // Token counts appear as input_token_count / output_token_count attributes instead.
+        // The normalizer must extract from these fallback attribute names.
         let mut payload = valid_payload();
-        // Simulate codex exec: token counts in span attributes, not in metrics
         let attributes = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
             .as_array_mut()
             .expect("attributes array");
+
+        // Remove the interactive codex attributes
+        attributes.retain(|a| {
+            a.get("key").and_then(|k| k.as_str()) != Some("codex.turn.input_tokens")
+                && a.get("key").and_then(|k| k.as_str()) != Some("codex.turn.output_tokens")
+        });
 
         // Add exec-specific token count attributes
         attributes.push(json!({
@@ -284,8 +301,8 @@ mod tests {
         let result = normalizer.normalize(&payload).expect("normalize");
         let exec = &result.executions[0];
 
-        // Should extract from codex.turn.input_tokens/output_tokens
-        assert_eq!(exec.model_calls[0].input_tokens, Some(1000));
-        assert_eq!(exec.model_calls[0].output_tokens, Some(500));
+        // Should extract from input_token_count/output_token_count
+        assert_eq!(exec.model_calls[0].input_tokens, Some(1500));
+        assert_eq!(exec.model_calls[0].output_tokens, Some(750));
     }
 }
