@@ -17,3 +17,8 @@ chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
+jsonwebtoken.workspace = true
+cratestack.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
