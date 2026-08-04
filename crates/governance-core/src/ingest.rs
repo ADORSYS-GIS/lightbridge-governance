@@ -1086,4 +1086,70 @@ mod tests {
             "identical token counts at identical pricing must be equal and comparable"
         );
     }
+
+    /// Story #33: Codex exec mode token counts are on span attributes, not metrics.
+    /// This test verifies that exec mode token counts flow through the full pipeline
+    /// (normalizer → ingest → database) and are priced correctly.
+    #[tokio::test]
+    async fn codex_exec_mode_token_counts_are_priced() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, integration_id) = fixture(&pool, "codex").await;
+
+        // Insert pricing for gpt-4
+        const MODEL: &str = "gpt-4";
+        sqlx::query(
+            "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
+             output_per_million_micro_usd, effective_from) \
+             VALUES ($1, $2, $3, $4, now())",
+        )
+        .bind(format!("price-{}", cuid::cuid2()))
+        .bind(MODEL)
+        .bind(30_000_000i64) // $30 per million input tokens
+        .bind(60_000_000i64) // $60 per million output tokens
+        .execute(&pool)
+        .await
+        .expect("insert pricing fixture");
+
+        // Create a Codex exec mode execution with token counts
+        let mut execution = valid_execution();
+        execution.trace_id = "trace-codex-exec".to_owned();
+        execution.span_id = "span-codex-exec".to_owned();
+        execution.model_calls[0].trace_id = "trace-codex-exec".to_owned();
+        execution.model_calls[0].span_id = "span-codex-exec:mc".to_owned();
+        execution.model_calls[0].model = MODEL.to_owned();
+        execution.model_calls[0].input_tokens = Some(1000);
+        execution.model_calls[0].output_tokens = Some(500);
+
+        let result = ingest_telemetry(
+            &pool,
+            &tenant_id,
+            &integration_id,
+            "codex",
+            std::slice::from_ref(&execution),
+        )
+        .await
+        .expect("codex exec ingest succeeds");
+
+        assert_eq!(result.executions_upserted, 1);
+        assert_eq!(result.model_calls_upserted, 1);
+
+        // Verify cost calculation: 1000 * $30/M + 500 * $60/M = 30000 + 30000 = 60000 micro-USD
+        let (execution_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind("trace-codex-exec")
+        .bind("span-codex-exec")
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+
+        assert_eq!(
+            execution_cost,
+            Some(60_000),
+            "codex exec token counts must be priced correctly"
+        );
+    }
 }

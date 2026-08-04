@@ -1,13 +1,40 @@
 //! OpenAI Codex normalizer (#33).
 //!
-//! Codex emits OTLP spans with the following structure:
-//! - Resource attributes: `user.email`, `service.name` = "codex"
-//! - Span attributes: `session.id`, `model.name`, `codex.turn.input_tokens`, `codex.turn.output_tokens`
-//! - Events: `tool.call` with `tool.name` and `duration.ms`
+//! ## Token Count Extraction
 //!
-//! Note: Codex token counts appear as span attributes, not as metrics (#33668).
-//! This normalizer extracts them from the span attributes. Attributes arrive as
-//! real OTLP proto3 JSON (attribute arrays, string encoded ints).
+//! Codex emits token counts differently depending on execution mode:
+//!
+//! - **Interactive mode**: Token counts are on **metrics** (`codex.turn.token_usage`), not spans.
+//!   Metrics don't carry identity (`user.email`), so we cannot join them to spans.
+//!   Interactive sessions will have **unknown cost** until we implement metric-span joining.
+//!
+//! - **Exec mode**: Token counts are on spans as `input_token_count`, `output_token_count`
+//!   (verified in source: `codex-rs/otel/src/events/shared.rs:13-17`).
+//!
+//! This normalizer attempts to extract token counts from span attributes using multiple
+//! possible names to handle both cases:
+//! 1. `input_token_count` / `output_token_count` (verified for exec mode)
+//! 2. `codex.turn.input_tokens` / `codex.turn.output_tokens` (fallback, unverified)
+//!
+//! ## Identity
+//!
+//! Codex emits `user.email` on **log events only**, not on spans or metrics.
+//! Identity must come from the per-developer ingest token, not the payload.
+//! The payload's `user.email` is a cross-check, not the source of truth.
+//!
+//! ## What This Normalizer Does
+//!
+//! - Extracts execution metadata from spans (trace_id, span_id, model, duration)
+//! - Extracts token counts from span attributes (works for exec mode)
+//! - Extracts tool calls from span events
+//! - Tolerates missing `user.email` (API-key auth)
+//!
+//! ## What This Normalizer Cannot Do (Yet)
+//!
+//! - Extract token counts for interactive sessions (they're on metrics, not spans)
+//! - Join metrics to spans by trace_id (not implemented)
+//!
+//! Attributes arrive as real OTLP proto3 JSON (attribute arrays, string encoded ints).
 
 use chrono::{DateTime, Utc};
 use governance_core::ingest::{ExecutionInput, ModelCallInput, ToolCallInput};
@@ -75,17 +102,18 @@ fn normalize_span(
     // Token counts are optional: a span that omits them yields a model call
     // with unknown cost (story #31 AC6), not a rejection.
     //
-    // Codex uses different attribute names depending on the execution mode:
-    // - Interactive: codex.turn.input_tokens / codex.turn.output_tokens
-    // - Exec mode: input_token_count / output_token_count (issue #33668)
-    // We check both to handle all cases.
-    let input_tokens = match attr_i64(span, "codex.turn.input_tokens", "span")? {
+    // Codex emits token counts on spans only in exec mode (issue #33668).
+    // Interactive mode token counts are on metrics, which don't carry identity.
+    // We check multiple attribute names to handle both cases:
+    // - `input_token_count` / `output_token_count` (verified for exec mode)
+    // - `codex.turn.input_tokens` / `codex.turn.output_tokens` (fallback, unverified)
+    let input_tokens = match attr_i64(span, "input_token_count", "span")? {
         Some(v) => Some(v),
-        None => attr_i64(span, "input_token_count", "span")?,
+        None => attr_i64(span, "codex.turn.input_tokens", "span")?,
     };
-    let output_tokens = match attr_i64(span, "codex.turn.output_tokens", "span")? {
+    let output_tokens = match attr_i64(span, "output_token_count", "span")? {
         Some(v) => Some(v),
-        None => attr_i64(span, "output_token_count", "span")?,
+        None => attr_i64(span, "codex.turn.output_tokens", "span")?,
     };
 
     let start_time_unix_nano = span_i64(span, "startTimeUnixNano")?;

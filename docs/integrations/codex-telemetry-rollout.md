@@ -49,15 +49,15 @@ Add to `~/.codex/config.toml`:
 ```toml
 [otel]
 environment = "production"
-exporter = "otlp-http"
+# Exporter config uses inline table syntax (not section headers)
+exporter = { otlp-http = { endpoint = "https://otel.ai.camer.digital", protocol = "json", headers = { Authorization = "Bearer <per-developer-token>" } } }
 metrics_exporter = "none"  # Redundant with [analytics] enabled = false, but explicit
 trace_exporter = "otlp-http"
-
-[otel.exporter.otlp-http]
-endpoint = "https://otel.ai.camer.digital"
-protocol = "json"
-headers = { Authorization = "Bearer <per-developer-token>" }
+log_user_prompt = false  # Never enable - privacy policy
 ```
+
+**Important**: The exporter configuration uses **inline table syntax**, not section headers.
+The `[otel.exporter.otlp-http]` section header form is incorrect and will not work.
 
 ### Complete Configuration
 
@@ -71,15 +71,11 @@ enabled = false
 # Configure OTLP export to governance endpoint
 [otel]
 environment = "production"
-exporter = "otlp-http"
+# Exporter config uses inline table syntax (not section headers)
+exporter = { otlp-http = { endpoint = "https://otel.ai.camer.digital", protocol = "json", headers = { Authorization = "Bearer <per-developer-token>" } } }
 metrics_exporter = "none"
 trace_exporter = "otlp-http"
 log_user_prompt = false  # Never enable - privacy policy
-
-[otel.exporter.otlp-http]
-endpoint = "https://otel.ai.camer.digital"
-protocol = "json"
-headers = { Authorization = "Bearer <per-developer-token>" }
 ```
 
 ## Token Issuance
