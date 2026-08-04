@@ -24,6 +24,10 @@ CREATE TABLE executions (
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
     user_email TEXT,
+    -- The Keycloak sub (internal user ID) derived from the ingest token via
+    -- IdentityMap. This is the authoritative identity for attribution (#35),
+    -- never the payload's user.email (which is self-asserted and may be absent).
+    internal_user_id TEXT,
     started_at TIMESTAMPTZ NOT NULL,
     duration_ms BIGINT NOT NULL,
     -- NULL = cost unknown (no pricing row, or a model call with unknown token
@@ -105,3 +109,8 @@ CREATE UNIQUE INDEX tool_calls_trace_id_span_id_key
 
 CREATE UNIQUE INDEX model_pricing_model_effective_from_key
     ON model_pricing (model, effective_from);
+
+-- Developer identity binding (#35): add column to integrations table to bind
+-- tokens to specific developers. This enables per-developer attribution.
+ALTER TABLE integrations
+    ADD COLUMN internal_user_id TEXT;

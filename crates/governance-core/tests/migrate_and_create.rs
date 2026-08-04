@@ -565,6 +565,7 @@ async fn issue_then_resolve_round_trips() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -605,6 +606,7 @@ async fn issued_secret_never_appears_in_the_serialized_integration() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -645,6 +647,7 @@ async fn resolve_rejects_a_revoked_credential() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -694,6 +697,7 @@ async fn revoke_is_idempotent_under_a_repeat_call() {
             provider: "github_copilot".to_owned(),
             environmentId: environment.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await
@@ -838,6 +842,7 @@ async fn issue_credential_under_a_nonexistent_environment_is_rejected() {
             provider: "github_copilot".to_owned(),
             environmentId: format!("env-does-not-exist-{}", cuid::cuid2()),
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await;
@@ -875,6 +880,7 @@ async fn issue_credential_under_an_environment_from_a_different_application_is_r
             provider: "github_copilot".to_owned(),
             environmentId: environment_b.id,
             contentCapture: None,
+            internalUserId: None,
         },
     )
     .await;
@@ -883,5 +889,90 @@ async fn issue_credential_under_an_environment_from_a_different_application_is_r
         result.is_err(),
         "issuing a credential for application_a using an environment that belongs to \
          application_b must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn get_integration_identity_returns_token_derived_identity() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    let internal_user_id = "keycloak-sub-12345";
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: Some(internal_user_id.to_owned()),
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let resolved = governance_core::identity::get_integration_identity(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+    )
+    .await
+    .expect("identity resolution must succeed");
+
+    assert_eq!(
+        resolved,
+        Some(internal_user_id.to_owned()),
+        "token-derived identity must be returned"
+    );
+}
+
+#[tokio::test]
+async fn get_integration_identity_handles_unbound_integration() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: None,
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    let resolved = governance_core::identity::get_integration_identity(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+    )
+    .await
+    .expect("identity resolution must succeed");
+
+    assert_eq!(
+        resolved, None,
+        "unbound integration must have no internal_user_id"
     );
 }

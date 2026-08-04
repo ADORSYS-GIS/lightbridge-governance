@@ -157,6 +157,12 @@ pub async fn ingest_telemetry(
         tool_calls_upserted: 0,
     };
 
+    // Resolve the integration's bound identity once per batch (#35).
+    // Identity comes from the ingest token, not from the payload's user.email
+    // (which is self-asserted and may be absent).
+    let internal_user_id =
+        crate::identity::get_integration_identity(pool, tenant_id, integration_id).await?;
+
     for execution in executions {
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
 
@@ -189,6 +195,7 @@ pub async fn ingest_telemetry(
             provider,
             execution,
             total_cost,
+            internal_user_id.as_deref(),
         )
         .await?;
 
@@ -235,18 +242,20 @@ async fn upsert_execution(
     provider: &str,
     execution: &ExecutionInput,
     total_cost: Option<i64>,
+    internal_user_id: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO executions
            (id, tenant_id, integration_id, provider, trace_id, span_id,
-            user_email, started_at, duration_ms, estimated_cost_micro_usd,
+            user_email, internal_user_id, started_at, duration_ms, estimated_cost_micro_usd,
             raw_backend, raw_schema_version)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, 1)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, 1)
            ON CONFLICT (trace_id, span_id) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
             integration_id = EXCLUDED.integration_id,
             provider = EXCLUDED.provider,
             user_email = EXCLUDED.user_email,
+            internal_user_id = EXCLUDED.internal_user_id,
             duration_ms = EXCLUDED.duration_ms,
             -- cost is deliberately NOT refreshed: history stays stable once
             -- written (a pricing change re-prices future ingests only)
@@ -259,6 +268,7 @@ async fn upsert_execution(
     .bind(&execution.trace_id)
     .bind(&execution.span_id)
     .bind(&execution.user_email)
+    .bind(internal_user_id)
     .bind(execution.started_at)
     .bind(execution.duration_ms)
     .bind(total_cost)
