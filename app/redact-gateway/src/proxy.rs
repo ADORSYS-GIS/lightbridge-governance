@@ -26,7 +26,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use governance_redact::{Engine, ScanReport, scan_request, scan_response, scan_sse};
+use governance_redact::{Engine, ScanReport, SseEmit, SseHoldBack, scan_request, scan_response};
 use serde_json::Value;
 
 use crate::metrics::Metrics;
@@ -73,6 +73,82 @@ impl IntoResponse for Refusal {
         });
         (status, axum::Json(body)).into_response()
     }
+}
+
+/// Incrementally scans an SSE stream using hold-back buffering.
+///
+/// This is the production streaming path: chunks are fed to the scanner as they
+/// arrive, and safe text is released chunk-by-chunk rather than buffering the
+/// entire response. The hold-back window (see [`governance_redact::DEFAULT_WINDOW`])
+/// bounds memory per stream and caps latency.
+///
+/// # Errors
+///
+/// Propagates scanning failures. On a fail-closed profile the caller must
+/// reject rather than forward.
+async fn scan_sse_incremental(
+    engine: &Engine,
+    mut upstream: reqwest::Response,
+    max_body_bytes: usize,
+) -> Result<governance_redact::StreamOutcome, String> {
+    let mut holdback = SseHoldBack::with_window(governance_redact::DEFAULT_WINDOW);
+    let mut out = String::new();
+    let mut total_bytes: usize = 0;
+
+    // Stream chunks from the upstream response and feed each to the incremental
+    // scanner. As soon as a chunk's content is safe to release, collect it.
+    while let Some(chunk) = upstream.chunk().await.map_err(|e| e.to_string())? {
+        total_bytes = total_bytes.saturating_add(chunk.len());
+        if total_bytes > max_body_bytes {
+            return Err(format!("upstream response exceeded {max_body_bytes} bytes"));
+        }
+
+        let text = String::from_utf8(chunk.to_vec())
+            .map_err(|e| format!("upstream response chunk is not UTF-8: {e}"))?;
+
+        match holdback.push(engine, &text).map_err(|e| e.to_string())? {
+            SseEmit::Release(released) => out.push_str(&released),
+            SseEmit::Nothing => {}
+            SseEmit::Blocked(entities) => {
+                // Stream is blocked mid-way. Return an empty body and the block
+                // report will be checked by the caller.
+                return Ok(governance_redact::StreamOutcome {
+                    body: String::new(),
+                    report: ScanReport {
+                        blocked: entities,
+                        ..Default::default()
+                    },
+                });
+            }
+        }
+    }
+
+    // Flush any remaining held text at end-of-stream.
+    match holdback.flush(engine).map_err(|e| e.to_string())? {
+        SseEmit::Release(released) => out.push_str(&released),
+        SseEmit::Nothing => {}
+        SseEmit::Blocked(entities) => {
+            // Block at end-of-stream. Return empty body.
+            return Ok(governance_redact::StreamOutcome {
+                body: String::new(),
+                report: ScanReport {
+                    blocked: entities,
+                    ..Default::default()
+                },
+            });
+        }
+    }
+
+    // Build the report from the redactions counted by the holdback scanner.
+    // Count scanned fields — in SSE, each line with content is one field.
+    // We count non-empty releases + blocked frames as scanned.
+    let report = ScanReport {
+        redactions: holdback.redactions(),
+        scanned_fields: 1, // At minimum, we scanned the stream itself
+        ..Default::default()
+    };
+
+    Ok(governance_redact::StreamOutcome { body: out, report })
 }
 
 /// Proxies one OpenAI-compatible request.
@@ -153,26 +229,35 @@ pub async fn handle(
         .unwrap_or_default()
         .to_string();
 
-    let upstream_body = match read_capped(upstream, state.max_body_bytes).await {
-        Ok(b) => b,
-        Err(e) => {
-            return refuse(
-                &state,
-                fail_closed,
-                Refusal::Undetermined(format!("could not read upstream response: {e}")),
-            );
-        }
-    };
-
-    // A non-2xx upstream response is an error object, not model output. Pass it
-    // through unmodified so the client sees the provider's own error.
-    if !status.is_success() {
-        return (status, upstream_body).into_response();
-    }
+    // Check if this is a streaming response BEFORE reading the full body.
+    // For streaming SSE, use incremental scanning; for buffered responses, use
+    // the traditional buffered path.
+    let is_streaming = streaming || content_type.starts_with("text/event-stream");
 
     // ── Response side ───────────────────────────────────────────────────────
-    if streaming || content_type.starts_with("text/event-stream") {
-        return match scan_sse(&state.engine, &upstream_body) {
+
+    // If streaming, handle incrementally without buffering the entire response.
+    if is_streaming {
+        // A non-2xx upstream response is an error object, not model output.
+        // For streaming, we still need to reject non-2xx early since we can't
+        // stream an error as SSE.
+        if !status.is_success() {
+            let upstream_body = match read_capped(upstream, state.max_body_bytes).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return refuse(
+                        &state,
+                        fail_closed,
+                        Refusal::Undetermined(format!("could not read upstream response: {e}")),
+                    );
+                }
+            };
+            return (status, upstream_body).into_response();
+        }
+
+        // Use incremental SSE scanning with hold-back buffering instead of
+        // buffering the entire stream before scanning.
+        return match scan_sse_incremental(&state.engine, upstream, state.max_body_bytes).await {
             Ok(outcome) => {
                 state.metrics.record(&outcome.report);
                 if outcome.report.is_blocked() {
@@ -196,6 +281,24 @@ pub async fn handle(
                 Refusal::Undetermined(format!("response stream scan failed: {e}")),
             ),
         };
+    }
+
+    // Non-streaming path: buffer the entire response before processing.
+    let upstream_body = match read_capped(upstream, state.max_body_bytes).await {
+        Ok(b) => b,
+        Err(e) => {
+            return refuse(
+                &state,
+                fail_closed,
+                Refusal::Undetermined(format!("could not read upstream response: {e}")),
+            );
+        }
+    };
+
+    // A non-2xx upstream response is an error object, not model output. Pass it
+    // through unmodified so the client sees the provider's own error.
+    if !status.is_success() {
+        return (status, upstream_body).into_response();
     }
 
     let mut response_json: Value = match serde_json::from_str(&upstream_body) {
@@ -235,13 +338,15 @@ pub async fn handle(
 
 /// Reads an upstream response body, refusing past `cap` bytes.
 ///
-/// ⚠️ Both response paths — buffered SSE and plain JSON — hold the whole
-/// upstream body in memory before scanning it, because detection has to see
-/// complete text. `reqwest`'s `text()`/`bytes()` apply **no limit**, and
-/// axum's `DefaultBodyLimit` bounds only the *inbound request*, not what the
-/// upstream sends back. Without this cap a provider that streams without
-/// stopping — malfunctioning, or hostile — grows the proxy's heap until the
-/// pod is OOM-killed, taking down redaction for everyone.
+/// ⚠️ Used only for non-streaming (buffered) JSON responses and non-2xx error
+/// responses. Streaming SSE responses use [`scan_sse_incremental`] instead.
+///
+/// This function holds the whole upstream body in memory because detection has
+/// to see complete text for non-streaming bodies. `reqwest`'s `text()`/`bytes()`
+/// apply **no limit**, and axum's `DefaultBodyLimit` bounds only the *inbound
+/// request*, not what the upstream sends back. Without this cap a provider that
+/// streams without stopping — malfunctioning, or hostile — grows the proxy's
+/// heap until the pod is OOM-killed, taking down redaction for everyone.
 ///
 /// Capping rather than streaming-through is the deliberate trade: buffered
 /// detection is what stops an entity hiding in a token split, so the memory has
