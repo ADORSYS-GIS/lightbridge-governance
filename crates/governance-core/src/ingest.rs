@@ -578,6 +578,29 @@ mod tests {
     /// to applications and environments). `provider` is the integration's
     /// stored provider string (the data the ingest path dispatches on).
     async fn fixture(pool: &PgPool, provider: &str) -> (String, String) {
+        let mut attempt = 0;
+        loop {
+            match fixture_inner(pool, provider).await {
+                Ok(result) => return result,
+                Err(e) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                    attempt += 1;
+                    let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "deadlock detected in fixture setup, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => panic!("fixture setup failed: {e:?}"),
+            }
+        }
+    }
+
+    async fn fixture_inner(
+        pool: &PgPool,
+        provider: &str,
+    ) -> std::result::Result<(String, String), cratestack_core::CoolError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -587,14 +610,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .expect("insert tenant fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .expect("insert application fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -605,7 +628,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .expect("insert environment fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -622,8 +645,8 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
-        (tenant_id, integration_id)
+        .map_err(cool_error_from_sqlx)?;
+        Ok((tenant_id, integration_id))
     }
 
     /// Like `fixture`, but creates two integrations under the same tenant.
@@ -633,6 +656,30 @@ mod tests {
         provider_a: &str,
         provider_b: &str,
     ) -> (String, String, String) {
+        let mut attempt = 0;
+        loop {
+            match fixture_two_providers_inner(pool, provider_a, provider_b).await {
+                Ok(result) => return result,
+                Err(e) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                    attempt += 1;
+                    let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "deadlock detected in fixture_two_providers setup, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => panic!("fixture_two_providers setup failed: {e:?}"),
+            }
+        }
+    }
+
+    async fn fixture_two_providers_inner(
+        pool: &PgPool,
+        provider_a: &str,
+        provider_b: &str,
+    ) -> std::result::Result<(String, String, String), cratestack_core::CoolError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -643,14 +690,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .expect("insert tenant fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .expect("insert application fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -661,7 +708,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .expect("insert environment fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -678,7 +725,7 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -695,8 +742,8 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
-        (tenant_id, integration_a, integration_b)
+        .map_err(cool_error_from_sqlx)?;
+        Ok((tenant_id, integration_a, integration_b))
     }
 
     /// The idempotency contract, against the real database: reprocessing the
