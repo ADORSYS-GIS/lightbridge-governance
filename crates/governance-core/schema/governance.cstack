@@ -133,6 +133,9 @@ model Integration {
   credentialHash String @server_only
   status String @readonly
   contentCapture String
+  // Developer identity binding (#35): the internal user ID (Keycloak sub) this
+  // token is bound to. Used for attribution and mismatch detection.
+  internalUserId String?
   lastTelemetryAt DateTime?
   lastUsedAt DateTime? @readonly
   revokedAt DateTime? @readonly
@@ -150,11 +153,14 @@ model Integration {
 // Environment is a first-class, registered resource, issuance should
 // reference a real one rather than let a typo mint a credential under an
 // environment nothing else agrees exists.
+// `internalUserId` binds the token to a specific developer (#35): the internal
+// user ID (Keycloak sub). This enables per-developer attribution.
 type IssueIntegrationCredentialInput {
   applicationId String
   provider String
   environmentId String
   contentCapture String?
+  internalUserId String?
 }
 
 // Nests `Integration` directly (matching `ApiKeySecret`'s shape in
@@ -344,3 +350,126 @@ model CopilotSeatSnapshot {
   @@paged
   @@allow("read", auth() != null)
 }
+// Telemetry: executions, model calls, tool calls (#30)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// The normalized model that every push connector writes into. One Execution
+// per agent session/run, with ModelCall and ToolCall children. All money is
+// micro-USD (ADR-0008). All writes are idempotent on (trace_id, span_id) --
+// reprocessing the same telemetry must not change row counts.
+//
+// `tenantId` is on every row, derived from the authenticated integration
+// credential and stamped by Authorino -- never read from the telemetry body
+// (RFC-0002's trust boundary).
+
+// One agent session/run. The top-level record that groups model calls and
+// tool calls together. `traceId` + `spanId` are the OpenTelemetry identity --
+// the deterministic key for idempotent upsert.
+model Execution {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  integrationId String
+  provider String
+  traceId String
+  spanId String
+  userEmail String?
+  // The Keycloak sub (internal user ID) derived from the ingest token via
+  // IdentityMap. This is the authoritative identity for attribution (#35),
+  // never the payload's user.email (which is self-asserted and may be absent).
+  internalUserId String?
+  startedAt DateTime
+  durationMs Int
+  // NULL = cost unknown (no pricing row, or a model call with unknown token
+  // counts). Unknown is honest; a zero would be indistinguishable from "free".
+  estimatedCostMicroUsd Int?
+  rawBackend String?
+  rawSchemaVersion Int
+
+  modelCalls ModelCall[] @relation(fields:[id],references:[executionId])
+  toolCalls ToolCall[] @relation(fields:[id],references:[executionId])
+
+  @@unique([traceId, spanId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// One LLM call within an execution. Token counts and cost live here.
+// `executionId` is the parent Execution; `traceId` + `spanId` are the
+// OpenTelemetry identity for idempotent upsert. `inputTokens`/`outputTokens`
+// and `costMicroUsd` are nullable: a call whose token counts are unknown is
+// stored with NULL cost (unknown), never a zero (which a dashboard would read
+// as "free").
+model ModelCall {
+  @use(AuditFields)
+
+  id String @id
+  executionId String
+  traceId String
+  spanId String
+  model String
+  inputTokens Int?
+  outputTokens Int?
+  costMicroUsd Int?
+
+  execution Execution @relation(fields:[executionId],references:[id])
+
+  @@unique([traceId, spanId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// One tool invocation within an execution. No cost -- tools are metered by
+// the model call that invoked them, not independently.
+model ToolCall {
+  @use(AuditFields)
+
+  id String @id
+  executionId String
+  traceId String
+  spanId String
+  toolName String
+  durationMs Int
+
+  execution Execution @relation(fields:[executionId],references:[id])
+
+  @@unique([traceId, spanId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// Per-model pricing. `inputPerMillionMicroUsd` and `outputPerMillionMicroUsd`
+// are the cost in micro-USD per million tokens. Cost for a ModelCall is:
+//   (inputTokens * inputPerMillionMicroUsd + outputTokens * outputPerMillionMicroUsd) / 1_000_000
+// All arithmetic stays integral (ADR-0008).
+model ModelPricing {
+  @use(AuditFields)
+
+  id String @id
+  model String
+  inputPerMillionMicroUsd Int
+  outputPerMillionMicroUsd Int
+  effectiveFrom DateTime @default(dbgenerated())
+  effectiveTo DateTime?
+
+  @@unique([model, effectiveFrom])
+  @@paged
+  @@allow("read", auth() != null)
+  @@allow("create", auth() != null)
+  @@allow("update", auth() != null)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Telemetry ingest (#30)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Ingestion is deliberately NOT a schema procedure. The OpenTelemetry
+// Collector pushes OTLP over plain HTTP JSON -- it cannot be taught CBOR, the
+// same constraint that keeps `/internal/v1/resolve` off this router (ADR-0009,
+// and the schema comment on `IngestManifest`). The ingest path is therefore a
+// hand-written `/internal/v1/ingest` route (merged alongside resolve in
+// `main.rs`) that calls `governance_core::ingest::ingest_telemetry`; that
+// function is the single persistence entry point, its raw SQL being the
+// sanctioned escape hatch for a procedure body (ADR-0009, matching
+// `credential::issue`). The tables below are the normalized model it writes.

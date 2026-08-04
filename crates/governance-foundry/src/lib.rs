@@ -1,16 +1,17 @@
-//! Microsoft Foundry connector (RFC-0002): a PUSH connector.
+//! Push connector for OTLP-based AI telemetry (#30, RFC-0002).
 //!
-//! Foundry hosted agents export OTLP to our public endpoint. This crate owns the
-//! `/internal/v1/resolve` handler Authorino calls to turn an integration bearer
-//! token into trusted tenant context, and the normalizer that turns GenAI spans
-//! into execution / model-call / tool-call records.
+//! Generalized from the original Microsoft Foundry connector to support multiple
+//! providers: Claude Code, Codex, and Foundry. Each provider emits OTLP spans with
+//! slightly different attribute names, but all follow the same structure.
 //!
-//! ⚠️ `resolve` sits in the ext_authz hot path of every customer request. It is
-//! cached in-process (moka, 60s) -- so revocation propagates within one TTL, not
-//! instantly. Say "within 60s" in customer docs rather than implying immediate.
+//! This crate owns:
+//! - The normalizer trait and per-provider implementations
+//! - The dispatch logic that routes telemetry to the correct normalizer
 //!
 //! ⚠️ Never trust `tenant_id` from the telemetry body. It is derived from the
 //! authenticated integration credential and stamped by Authorino.
+
+pub mod normalizer;
 
 /// Resource attributes Authorino stamps and the collector treats as trusted.
 /// A producer that sets these itself must have them overwritten.

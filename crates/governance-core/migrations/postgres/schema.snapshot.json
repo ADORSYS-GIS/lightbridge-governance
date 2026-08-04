@@ -1493,43 +1493,68 @@
           },
           {
             "docs": [],
-            "name": "lastTelemetryAt",
+            "name": "internalUserId",
             "name_span": {
-              "start": 5684,
-              "end": 5699,
-              "line": 136
+              "start": 5833,
+              "end": 5847,
+              "line": 138
             },
             "ty": {
-              "name": "DateTime",
+              "name": "String",
               "name_span": {
-                "start": 5700,
-                "end": 5708,
-                "line": 136
+                "start": 5848,
+                "end": 5854,
+                "line": 138
               },
               "arity": "Optional",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 5682,
-              "end": 5709,
-              "line": 136
+              "start": 5831,
+              "end": 5855,
+              "line": 138
+            }
+          },
+          {
+            "docs": [],
+            "name": "lastTelemetryAt",
+            "name_span": {
+              "start": 5858,
+              "end": 5873,
+              "line": 139
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 5874,
+                "end": 5882,
+                "line": 139
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 5856,
+              "end": 5883,
+              "line": 139
             }
           },
           {
             "docs": [],
             "name": "lastUsedAt",
             "name_span": {
-              "start": 5712,
-              "end": 5722,
-              "line": 137
+              "start": 5886,
+              "end": 5896,
+              "line": 140
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 5723,
-                "end": 5731,
-                "line": 137
+                "start": 5897,
+                "end": 5905,
+                "line": 140
               },
               "arity": "Optional",
               "generic_args": []
@@ -1538,32 +1563,32 @@
               {
                 "raw": "@readonly",
                 "span": {
-                  "start": 5733,
-                  "end": 5742,
-                  "line": 137
+                  "start": 5907,
+                  "end": 5916,
+                  "line": 140
                 }
               }
             ],
             "span": {
-              "start": 5710,
-              "end": 5742,
-              "line": 137
+              "start": 5884,
+              "end": 5916,
+              "line": 140
             }
           },
           {
             "docs": [],
             "name": "revokedAt",
             "name_span": {
-              "start": 5745,
-              "end": 5754,
-              "line": 138
+              "start": 5919,
+              "end": 5928,
+              "line": 141
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 5755,
-                "end": 5763,
-                "line": 138
+                "start": 5929,
+                "end": 5937,
+                "line": 141
               },
               "arity": "Optional",
               "generic_args": []
@@ -1572,32 +1597,32 @@
               {
                 "raw": "@readonly",
                 "span": {
-                  "start": 5765,
-                  "end": 5774,
-                  "line": 138
+                  "start": 5939,
+                  "end": 5948,
+                  "line": 141
                 }
               }
             ],
             "span": {
-              "start": 5743,
-              "end": 5774,
-              "line": 138
+              "start": 5917,
+              "end": 5948,
+              "line": 141
             }
           },
           {
             "docs": [],
             "name": "tenant",
             "name_span": {
-              "start": 5778,
-              "end": 5784,
-              "line": 140
+              "start": 5952,
+              "end": 5958,
+              "line": 143
             },
             "ty": {
               "name": "Tenant",
               "name_span": {
-                "start": 5785,
-                "end": 5791,
-                "line": 140
+                "start": 5959,
+                "end": 5965,
+                "line": 143
               },
               "arity": "Required",
               "generic_args": []
@@ -1606,32 +1631,32 @@
               {
                 "raw": "@relation(fields:[tenantId],references:[id])",
                 "span": {
-                  "start": 5792,
-                  "end": 5836,
-                  "line": 140
+                  "start": 5966,
+                  "end": 6010,
+                  "line": 143
                 }
               }
             ],
             "span": {
-              "start": 5776,
-              "end": 5836,
-              "line": 140
+              "start": 5950,
+              "end": 6010,
+              "line": 143
             }
           },
           {
             "docs": [],
             "name": "application",
             "name_span": {
-              "start": 5839,
-              "end": 5850,
-              "line": 141
+              "start": 6013,
+              "end": 6024,
+              "line": 144
             },
             "ty": {
               "name": "Application",
               "name_span": {
-                "start": 5851,
-                "end": 5862,
-                "line": 141
+                "start": 6025,
+                "end": 6036,
+                "line": 144
               },
               "arity": "Required",
               "generic_args": []
@@ -1640,32 +1665,32 @@
               {
                 "raw": "@relation(fields:[applicationId],references:[id])",
                 "span": {
-                  "start": 5863,
-                  "end": 5912,
-                  "line": 141
+                  "start": 6037,
+                  "end": 6086,
+                  "line": 144
                 }
               }
             ],
             "span": {
-              "start": 5837,
-              "end": 5912,
-              "line": 141
+              "start": 6011,
+              "end": 6086,
+              "line": 144
             }
           },
           {
             "docs": [],
             "name": "environment",
             "name_span": {
-              "start": 5915,
-              "end": 5926,
-              "line": 142
+              "start": 6089,
+              "end": 6100,
+              "line": 145
             },
             "ty": {
               "name": "Environment",
               "name_span": {
-                "start": 5927,
-                "end": 5938,
-                "line": 142
+                "start": 6101,
+                "end": 6112,
+                "line": 145
               },
               "arity": "Required",
               "generic_args": []
@@ -1674,16 +1699,16 @@
               {
                 "raw": "@relation(fields:[environmentId],references:[id])",
                 "span": {
-                  "start": 5939,
-                  "end": 5988,
-                  "line": 142
+                  "start": 6113,
+                  "end": 6162,
+                  "line": 145
                 }
               }
             ],
             "span": {
-              "start": 5913,
-              "end": 5988,
-              "line": 142
+              "start": 6087,
+              "end": 6162,
+              "line": 145
             }
           }
         ],
@@ -1691,23 +1716,23 @@
           {
             "raw": "@@paged",
             "span": {
-              "start": 5992,
-              "end": 5999,
-              "line": 144
+              "start": 6166,
+              "end": 6173,
+              "line": 147
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 6002,
-              "end": 6033,
-              "line": 145
+              "start": 6176,
+              "end": 6207,
+              "line": 148
             }
           }
         ],
         "span": {
           "start": 5420,
-          "end": 6035,
+          "end": 6209,
           "line": 124
         }
       },
@@ -1715,9 +1740,9 @@
         "docs": [],
         "name": "IdentityMap",
         "name_span": {
-          "start": 7758,
-          "end": 7769,
-          "line": 187
+          "start": 8104,
+          "end": 8115,
+          "line": 193
         },
         "fields": [
           {
@@ -1808,16 +1833,16 @@
             "docs": [],
             "name": "id",
             "name_span": {
-              "start": 7795,
-              "end": 7797,
-              "line": 190
+              "start": 8141,
+              "end": 8143,
+              "line": 196
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 7798,
-                "end": 7804,
-                "line": 190
+                "start": 8144,
+                "end": 8150,
+                "line": 196
               },
               "arity": "Required",
               "generic_args": []
@@ -1826,181 +1851,31 @@
               {
                 "raw": "@id",
                 "span": {
-                  "start": 7805,
-                  "end": 7808,
-                  "line": 190
+                  "start": 8151,
+                  "end": 8154,
+                  "line": 196
                 }
               }
             ],
             "span": {
-              "start": 7793,
-              "end": 7808,
-              "line": 190
+              "start": 8139,
+              "end": 8154,
+              "line": 196
             }
           },
           {
             "docs": [],
             "name": "tenantId",
             "name_span": {
-              "start": 7811,
-              "end": 7819,
-              "line": 191
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7820,
-                "end": 7826,
-                "line": 191
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7809,
-              "end": 7826,
-              "line": 191
-            }
-          },
-          {
-            "docs": [],
-            "name": "provider",
-            "name_span": {
-              "start": 7829,
-              "end": 7837,
-              "line": 192
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7838,
-                "end": 7844,
-                "line": 192
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7827,
-              "end": 7844,
-              "line": 192
-            }
-          },
-          {
-            "docs": [],
-            "name": "providerUserId",
-            "name_span": {
-              "start": 7847,
-              "end": 7861,
-              "line": 193
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7862,
-                "end": 7868,
-                "line": 193
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7845,
-              "end": 7868,
-              "line": 193
-            }
-          },
-          {
-            "docs": [],
-            "name": "internalUserId",
-            "name_span": {
-              "start": 7871,
-              "end": 7885,
-              "line": 194
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7886,
-                "end": 7892,
-                "line": 194
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7869,
-              "end": 7893,
-              "line": 194
-            }
-          },
-          {
-            "docs": [],
-            "name": "teamId",
-            "name_span": {
-              "start": 7896,
-              "end": 7902,
-              "line": 195
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7903,
-                "end": 7909,
-                "line": 195
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7894,
-              "end": 7910,
-              "line": 195
-            }
-          },
-          {
-            "docs": [],
-            "name": "costCenterId",
-            "name_span": {
-              "start": 7913,
-              "end": 7925,
-              "line": 196
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 7926,
-                "end": 7932,
-                "line": 196
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 7911,
-              "end": 7933,
-              "line": 196
-            }
-          },
-          {
-            "docs": [],
-            "name": "mappingSource",
-            "name_span": {
-              "start": 7936,
-              "end": 7949,
+              "start": 8157,
+              "end": 8165,
               "line": 197
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 7950,
-                "end": 7956,
+                "start": 8166,
+                "end": 8172,
                 "line": 197
               },
               "arity": "Required",
@@ -2008,25 +1883,175 @@
             },
             "attributes": [],
             "span": {
-              "start": 7934,
-              "end": 7956,
+              "start": 8155,
+              "end": 8172,
               "line": 197
+            }
+          },
+          {
+            "docs": [],
+            "name": "provider",
+            "name_span": {
+              "start": 8175,
+              "end": 8183,
+              "line": 198
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8184,
+                "end": 8190,
+                "line": 198
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8173,
+              "end": 8190,
+              "line": 198
+            }
+          },
+          {
+            "docs": [],
+            "name": "providerUserId",
+            "name_span": {
+              "start": 8193,
+              "end": 8207,
+              "line": 199
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8208,
+                "end": 8214,
+                "line": 199
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8191,
+              "end": 8214,
+              "line": 199
+            }
+          },
+          {
+            "docs": [],
+            "name": "internalUserId",
+            "name_span": {
+              "start": 8217,
+              "end": 8231,
+              "line": 200
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8232,
+                "end": 8238,
+                "line": 200
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8215,
+              "end": 8239,
+              "line": 200
+            }
+          },
+          {
+            "docs": [],
+            "name": "teamId",
+            "name_span": {
+              "start": 8242,
+              "end": 8248,
+              "line": 201
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8249,
+                "end": 8255,
+                "line": 201
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8240,
+              "end": 8256,
+              "line": 201
+            }
+          },
+          {
+            "docs": [],
+            "name": "costCenterId",
+            "name_span": {
+              "start": 8259,
+              "end": 8271,
+              "line": 202
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8272,
+                "end": 8278,
+                "line": 202
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8257,
+              "end": 8279,
+              "line": 202
+            }
+          },
+          {
+            "docs": [],
+            "name": "mappingSource",
+            "name_span": {
+              "start": 8282,
+              "end": 8295,
+              "line": 203
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 8296,
+                "end": 8302,
+                "line": 203
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 8280,
+              "end": 8302,
+              "line": 203
             }
           },
           {
             "docs": [],
             "name": "validFrom",
             "name_span": {
-              "start": 7959,
-              "end": 7968,
-              "line": 198
+              "start": 8305,
+              "end": 8314,
+              "line": 204
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 7969,
-                "end": 7977,
-                "line": 198
+                "start": 8315,
+                "end": 8323,
+                "line": 204
               },
               "arity": "Required",
               "generic_args": []
@@ -2035,57 +2060,57 @@
               {
                 "raw": "@default(dbgenerated())",
                 "span": {
-                  "start": 7978,
-                  "end": 8001,
-                  "line": 198
+                  "start": 8324,
+                  "end": 8347,
+                  "line": 204
                 }
               }
             ],
             "span": {
-              "start": 7957,
-              "end": 8001,
-              "line": 198
+              "start": 8303,
+              "end": 8347,
+              "line": 204
             }
           },
           {
             "docs": [],
             "name": "validTo",
             "name_span": {
-              "start": 8004,
-              "end": 8011,
-              "line": 199
+              "start": 8350,
+              "end": 8357,
+              "line": 205
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 8012,
-                "end": 8020,
-                "line": 199
+                "start": 8358,
+                "end": 8366,
+                "line": 205
               },
               "arity": "Optional",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 8002,
-              "end": 8021,
-              "line": 199
+              "start": 8348,
+              "end": 8367,
+              "line": 205
             }
           },
           {
             "docs": [],
             "name": "tenant",
             "name_span": {
-              "start": 8025,
-              "end": 8031,
-              "line": 201
+              "start": 8371,
+              "end": 8377,
+              "line": 207
             },
             "ty": {
               "name": "Tenant",
               "name_span": {
-                "start": 8032,
-                "end": 8038,
-                "line": 201
+                "start": 8378,
+                "end": 8384,
+                "line": 207
               },
               "arity": "Required",
               "generic_args": []
@@ -2094,16 +2119,16 @@
               {
                 "raw": "@relation(fields:[tenantId],references:[id])",
                 "span": {
-                  "start": 8039,
-                  "end": 8083,
-                  "line": 201
+                  "start": 8385,
+                  "end": 8429,
+                  "line": 207
                 }
               }
             ],
             "span": {
-              "start": 8023,
-              "end": 8083,
-              "line": 201
+              "start": 8369,
+              "end": 8429,
+              "line": 207
             }
           }
         ],
@@ -2111,41 +2136,41 @@
           {
             "raw": "@@unique([tenantId, provider, providerUserId, validFrom])",
             "span": {
-              "start": 8087,
-              "end": 8144,
-              "line": 203
+              "start": 8433,
+              "end": 8490,
+              "line": 209
             }
           },
           {
             "raw": "@@paged",
             "span": {
-              "start": 8147,
-              "end": 8154,
-              "line": 204
+              "start": 8493,
+              "end": 8500,
+              "line": 210
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 8157,
-              "end": 8188,
-              "line": 205
+              "start": 8503,
+              "end": 8534,
+              "line": 211
             }
           }
         ],
         "span": {
-          "start": 7752,
-          "end": 8190,
-          "line": 187
+          "start": 8098,
+          "end": 8536,
+          "line": 193
         }
       },
       {
         "docs": [],
         "name": "IngestManifest",
         "name_span": {
-          "start": 8965,
-          "end": 8979,
-          "line": 216
+          "start": 9311,
+          "end": 9325,
+          "line": 222
         },
         "fields": [
           {
@@ -2236,16 +2261,16 @@
             "docs": [],
             "name": "id",
             "name_span": {
-              "start": 9005,
-              "end": 9007,
-              "line": 219
+              "start": 9351,
+              "end": 9353,
+              "line": 225
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 9008,
-                "end": 9014,
-                "line": 219
+                "start": 9354,
+                "end": 9360,
+                "line": 225
               },
               "arity": "Required",
               "generic_args": []
@@ -2254,181 +2279,31 @@
               {
                 "raw": "@id",
                 "span": {
-                  "start": 9015,
-                  "end": 9018,
-                  "line": 219
+                  "start": 9361,
+                  "end": 9364,
+                  "line": 225
                 }
               }
             ],
             "span": {
-              "start": 9003,
-              "end": 9018,
-              "line": 219
+              "start": 9349,
+              "end": 9364,
+              "line": 225
             }
           },
           {
             "docs": [],
             "name": "tenantId",
             "name_span": {
-              "start": 9021,
-              "end": 9029,
-              "line": 220
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 9030,
-                "end": 9036,
-                "line": 220
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9019,
-              "end": 9036,
-              "line": 220
-            }
-          },
-          {
-            "docs": [],
-            "name": "provider",
-            "name_span": {
-              "start": 9039,
-              "end": 9047,
-              "line": 221
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 9048,
-                "end": 9054,
-                "line": 221
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9037,
-              "end": 9054,
-              "line": 221
-            }
-          },
-          {
-            "docs": [],
-            "name": "scopeId",
-            "name_span": {
-              "start": 9057,
-              "end": 9064,
-              "line": 222
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 9065,
-                "end": 9071,
-                "line": 222
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9055,
-              "end": 9071,
-              "line": 222
-            }
-          },
-          {
-            "docs": [],
-            "name": "reportDay",
-            "name_span": {
-              "start": 9074,
-              "end": 9083,
-              "line": 223
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 9084,
-                "end": 9092,
-                "line": 223
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9072,
-              "end": 9092,
-              "line": 223
-            }
-          },
-          {
-            "docs": [],
-            "name": "reportType",
-            "name_span": {
-              "start": 9095,
-              "end": 9105,
-              "line": 224
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 9106,
-                "end": 9112,
-                "line": 224
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9093,
-              "end": 9112,
-              "line": 224
-            }
-          },
-          {
-            "docs": [],
-            "name": "status",
-            "name_span": {
-              "start": 9115,
-              "end": 9121,
-              "line": 225
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 9122,
-                "end": 9128,
-                "line": 225
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 9113,
-              "end": 9128,
-              "line": 225
-            }
-          },
-          {
-            "docs": [],
-            "name": "recordCount",
-            "name_span": {
-              "start": 9131,
-              "end": 9142,
+              "start": 9367,
+              "end": 9375,
               "line": 226
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 9143,
-                "end": 9146,
+                "start": 9376,
+                "end": 9382,
                 "line": 226
               },
               "arity": "Required",
@@ -2436,49 +2311,49 @@
             },
             "attributes": [],
             "span": {
-              "start": 9129,
-              "end": 9146,
+              "start": 9365,
+              "end": 9382,
               "line": 226
             }
           },
           {
             "docs": [],
-            "name": "checksum",
+            "name": "provider",
             "name_span": {
-              "start": 9149,
-              "end": 9157,
+              "start": 9385,
+              "end": 9393,
               "line": 227
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 9158,
-                "end": 9164,
+                "start": 9394,
+                "end": 9400,
                 "line": 227
               },
-              "arity": "Optional",
+              "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 9147,
-              "end": 9165,
+              "start": 9383,
+              "end": 9400,
               "line": 227
             }
           },
           {
             "docs": [],
-            "name": "schemaVersion",
+            "name": "scopeId",
             "name_span": {
-              "start": 9168,
-              "end": 9181,
+              "start": 9403,
+              "end": 9410,
               "line": 228
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 9182,
-                "end": 9185,
+                "start": 9411,
+                "end": 9417,
                 "line": 228
               },
               "arity": "Required",
@@ -2486,25 +2361,175 @@
             },
             "attributes": [],
             "span": {
-              "start": 9166,
-              "end": 9185,
+              "start": 9401,
+              "end": 9417,
               "line": 228
+            }
+          },
+          {
+            "docs": [],
+            "name": "reportDay",
+            "name_span": {
+              "start": 9420,
+              "end": 9429,
+              "line": 229
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 9430,
+                "end": 9438,
+                "line": 229
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9418,
+              "end": 9438,
+              "line": 229
+            }
+          },
+          {
+            "docs": [],
+            "name": "reportType",
+            "name_span": {
+              "start": 9441,
+              "end": 9451,
+              "line": 230
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 9452,
+                "end": 9458,
+                "line": 230
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9439,
+              "end": 9458,
+              "line": 230
+            }
+          },
+          {
+            "docs": [],
+            "name": "status",
+            "name_span": {
+              "start": 9461,
+              "end": 9467,
+              "line": 231
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 9468,
+                "end": 9474,
+                "line": 231
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9459,
+              "end": 9474,
+              "line": 231
+            }
+          },
+          {
+            "docs": [],
+            "name": "recordCount",
+            "name_span": {
+              "start": 9477,
+              "end": 9488,
+              "line": 232
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 9489,
+                "end": 9492,
+                "line": 232
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9475,
+              "end": 9492,
+              "line": 232
+            }
+          },
+          {
+            "docs": [],
+            "name": "checksum",
+            "name_span": {
+              "start": 9495,
+              "end": 9503,
+              "line": 233
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 9504,
+                "end": 9510,
+                "line": 233
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9493,
+              "end": 9511,
+              "line": 233
+            }
+          },
+          {
+            "docs": [],
+            "name": "schemaVersion",
+            "name_span": {
+              "start": 9514,
+              "end": 9527,
+              "line": 234
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 9528,
+                "end": 9531,
+                "line": 234
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 9512,
+              "end": 9531,
+              "line": 234
             }
           },
           {
             "docs": [],
             "name": "startedAt",
             "name_span": {
-              "start": 9188,
-              "end": 9197,
-              "line": 229
+              "start": 9534,
+              "end": 9543,
+              "line": 235
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 9198,
-                "end": 9206,
-                "line": 229
+                "start": 9544,
+                "end": 9552,
+                "line": 235
               },
               "arity": "Required",
               "generic_args": []
@@ -2513,41 +2538,41 @@
               {
                 "raw": "@default(dbgenerated())",
                 "span": {
-                  "start": 9207,
-                  "end": 9230,
-                  "line": 229
+                  "start": 9553,
+                  "end": 9576,
+                  "line": 235
                 }
               }
             ],
             "span": {
-              "start": 9186,
-              "end": 9230,
-              "line": 229
+              "start": 9532,
+              "end": 9576,
+              "line": 235
             }
           },
           {
             "docs": [],
             "name": "completedAt",
             "name_span": {
-              "start": 9233,
-              "end": 9244,
-              "line": 230
+              "start": 9579,
+              "end": 9590,
+              "line": 236
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 9245,
-                "end": 9253,
-                "line": 230
+                "start": 9591,
+                "end": 9599,
+                "line": 236
               },
               "arity": "Optional",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 9231,
-              "end": 9254,
-              "line": 230
+              "start": 9577,
+              "end": 9600,
+              "line": 236
             }
           }
         ],
@@ -2555,41 +2580,41 @@
           {
             "raw": "@@unique([tenantId, provider, scopeId, reportDay, reportType])",
             "span": {
-              "start": 9258,
-              "end": 9320,
-              "line": 232
+              "start": 9604,
+              "end": 9666,
+              "line": 238
             }
           },
           {
             "raw": "@@paged",
             "span": {
-              "start": 9323,
-              "end": 9330,
-              "line": 233
+              "start": 9669,
+              "end": 9676,
+              "line": 239
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 9333,
-              "end": 9364,
-              "line": 234
+              "start": 9679,
+              "end": 9710,
+              "line": 240
             }
           }
         ],
         "span": {
-          "start": 8959,
-          "end": 9366,
-          "line": 216
+          "start": 9305,
+          "end": 9712,
+          "line": 222
         }
       },
       {
         "docs": [],
         "name": "CopilotOrgDaily",
         "name_span": {
-          "start": 10247,
-          "end": 10262,
-          "line": 246
+          "start": 10593,
+          "end": 10608,
+          "line": 252
         },
         "fields": [
           {
@@ -2680,16 +2705,16 @@
             "docs": [],
             "name": "id",
             "name_span": {
-              "start": 10288,
-              "end": 10290,
-              "line": 249
+              "start": 10634,
+              "end": 10636,
+              "line": 255
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 10291,
-                "end": 10297,
-                "line": 249
+                "start": 10637,
+                "end": 10643,
+                "line": 255
               },
               "arity": "Required",
               "generic_args": []
@@ -2698,181 +2723,31 @@
               {
                 "raw": "@id",
                 "span": {
-                  "start": 10298,
-                  "end": 10301,
-                  "line": 249
+                  "start": 10644,
+                  "end": 10647,
+                  "line": 255
                 }
               }
             ],
             "span": {
-              "start": 10286,
-              "end": 10301,
-              "line": 249
+              "start": 10632,
+              "end": 10647,
+              "line": 255
             }
           },
           {
             "docs": [],
             "name": "tenantId",
             "name_span": {
-              "start": 10304,
-              "end": 10312,
-              "line": 250
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10313,
-                "end": 10319,
-                "line": 250
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10302,
-              "end": 10319,
-              "line": 250
-            }
-          },
-          {
-            "docs": [],
-            "name": "organizationId",
-            "name_span": {
-              "start": 10322,
-              "end": 10336,
-              "line": 251
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10337,
-                "end": 10343,
-                "line": 251
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10320,
-              "end": 10343,
-              "line": 251
-            }
-          },
-          {
-            "docs": [],
-            "name": "reportDay",
-            "name_span": {
-              "start": 10346,
-              "end": 10355,
-              "line": 252
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 10356,
-                "end": 10364,
-                "line": 252
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10344,
-              "end": 10364,
-              "line": 252
-            }
-          },
-          {
-            "docs": [],
-            "name": "activeUsers",
-            "name_span": {
-              "start": 10367,
-              "end": 10378,
-              "line": 253
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 10379,
-                "end": 10382,
-                "line": 253
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10365,
-              "end": 10382,
-              "line": 253
-            }
-          },
-          {
-            "docs": [],
-            "name": "engagedUsers",
-            "name_span": {
-              "start": 10385,
-              "end": 10397,
-              "line": 254
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 10398,
-                "end": 10401,
-                "line": 254
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10383,
-              "end": 10401,
-              "line": 254
-            }
-          },
-          {
-            "docs": [],
-            "name": "totalInteractions",
-            "name_span": {
-              "start": 10404,
-              "end": 10421,
-              "line": 255
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 10422,
-                "end": 10425,
-                "line": 255
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10402,
-              "end": 10425,
-              "line": 255
-            }
-          },
-          {
-            "docs": [],
-            "name": "codeGenerations",
-            "name_span": {
-              "start": 10428,
-              "end": 10443,
+              "start": 10650,
+              "end": 10658,
               "line": 256
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 10444,
-                "end": 10447,
+                "start": 10659,
+                "end": 10665,
                 "line": 256
               },
               "arity": "Required",
@@ -2880,24 +2755,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10426,
-              "end": 10447,
+              "start": 10648,
+              "end": 10665,
               "line": 256
             }
           },
           {
             "docs": [],
-            "name": "codeAcceptances",
+            "name": "organizationId",
             "name_span": {
-              "start": 10450,
-              "end": 10465,
+              "start": 10668,
+              "end": 10682,
               "line": 257
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 10466,
-                "end": 10469,
+                "start": 10683,
+                "end": 10689,
                 "line": 257
               },
               "arity": "Required",
@@ -2905,24 +2780,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10448,
-              "end": 10469,
+              "start": 10666,
+              "end": 10689,
               "line": 257
             }
           },
           {
             "docs": [],
-            "name": "locSuggested",
+            "name": "reportDay",
             "name_span": {
-              "start": 10472,
-              "end": 10484,
+              "start": 10692,
+              "end": 10701,
               "line": 258
             },
             "ty": {
-              "name": "Int",
+              "name": "DateTime",
               "name_span": {
-                "start": 10485,
-                "end": 10488,
+                "start": 10702,
+                "end": 10710,
                 "line": 258
               },
               "arity": "Required",
@@ -2930,24 +2805,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10470,
-              "end": 10488,
+              "start": 10690,
+              "end": 10710,
               "line": 258
             }
           },
           {
             "docs": [],
-            "name": "locAdded",
+            "name": "activeUsers",
             "name_span": {
-              "start": 10491,
-              "end": 10499,
+              "start": 10713,
+              "end": 10724,
               "line": 259
             },
             "ty": {
               "name": "Int",
               "name_span": {
-                "start": 10500,
-                "end": 10503,
+                "start": 10725,
+                "end": 10728,
                 "line": 259
               },
               "arity": "Required",
@@ -2955,24 +2830,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10489,
-              "end": 10503,
+              "start": 10711,
+              "end": 10728,
               "line": 259
             }
           },
           {
             "docs": [],
-            "name": "locDeleted",
+            "name": "engagedUsers",
             "name_span": {
-              "start": 10506,
-              "end": 10516,
+              "start": 10731,
+              "end": 10743,
               "line": 260
             },
             "ty": {
               "name": "Int",
               "name_span": {
-                "start": 10517,
-                "end": 10520,
+                "start": 10744,
+                "end": 10747,
                 "line": 260
               },
               "arity": "Required",
@@ -2980,24 +2855,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10504,
-              "end": 10520,
+              "start": 10729,
+              "end": 10747,
               "line": 260
             }
           },
           {
             "docs": [],
-            "name": "aiCredits",
+            "name": "totalInteractions",
             "name_span": {
-              "start": 10523,
-              "end": 10532,
+              "start": 10750,
+              "end": 10767,
               "line": 261
             },
             "ty": {
               "name": "Int",
               "name_span": {
-                "start": 10533,
-                "end": 10536,
+                "start": 10768,
+                "end": 10771,
                 "line": 261
               },
               "arity": "Required",
@@ -3005,24 +2880,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 10521,
-              "end": 10536,
+              "start": 10748,
+              "end": 10771,
               "line": 261
             }
           },
           {
             "docs": [],
-            "name": "netCostMicroUsd",
+            "name": "codeGenerations",
             "name_span": {
-              "start": 10539,
-              "end": 10554,
+              "start": 10774,
+              "end": 10789,
               "line": 262
             },
             "ty": {
               "name": "Int",
               "name_span": {
-                "start": 10555,
-                "end": 10558,
+                "start": 10790,
+                "end": 10793,
                 "line": 262
               },
               "arity": "Required",
@@ -3030,9 +2905,159 @@
             },
             "attributes": [],
             "span": {
-              "start": 10537,
-              "end": 10558,
+              "start": 10772,
+              "end": 10793,
               "line": 262
+            }
+          },
+          {
+            "docs": [],
+            "name": "codeAcceptances",
+            "name_span": {
+              "start": 10796,
+              "end": 10811,
+              "line": 263
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10812,
+                "end": 10815,
+                "line": 263
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10794,
+              "end": 10815,
+              "line": 263
+            }
+          },
+          {
+            "docs": [],
+            "name": "locSuggested",
+            "name_span": {
+              "start": 10818,
+              "end": 10830,
+              "line": 264
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10831,
+                "end": 10834,
+                "line": 264
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10816,
+              "end": 10834,
+              "line": 264
+            }
+          },
+          {
+            "docs": [],
+            "name": "locAdded",
+            "name_span": {
+              "start": 10837,
+              "end": 10845,
+              "line": 265
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10846,
+                "end": 10849,
+                "line": 265
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10835,
+              "end": 10849,
+              "line": 265
+            }
+          },
+          {
+            "docs": [],
+            "name": "locDeleted",
+            "name_span": {
+              "start": 10852,
+              "end": 10862,
+              "line": 266
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10863,
+                "end": 10866,
+                "line": 266
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10850,
+              "end": 10866,
+              "line": 266
+            }
+          },
+          {
+            "docs": [],
+            "name": "aiCredits",
+            "name_span": {
+              "start": 10869,
+              "end": 10878,
+              "line": 267
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10879,
+                "end": 10882,
+                "line": 267
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10867,
+              "end": 10882,
+              "line": 267
+            }
+          },
+          {
+            "docs": [],
+            "name": "netCostMicroUsd",
+            "name_span": {
+              "start": 10885,
+              "end": 10900,
+              "line": 268
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 10901,
+                "end": 10904,
+                "line": 268
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 10883,
+              "end": 10904,
+              "line": 268
             }
           }
         ],
@@ -3040,41 +3065,41 @@
           {
             "raw": "@@unique([tenantId, organizationId, reportDay])",
             "span": {
-              "start": 10562,
-              "end": 10609,
-              "line": 264
+              "start": 10908,
+              "end": 10955,
+              "line": 270
             }
           },
           {
             "raw": "@@paged",
             "span": {
-              "start": 10612,
-              "end": 10619,
-              "line": 265
+              "start": 10958,
+              "end": 10965,
+              "line": 271
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 10622,
-              "end": 10653,
-              "line": 266
+              "start": 10968,
+              "end": 10999,
+              "line": 272
             }
           }
         ],
         "span": {
-          "start": 10241,
-          "end": 10655,
-          "line": 246
+          "start": 10587,
+          "end": 11001,
+          "line": 252
         }
       },
       {
         "docs": [],
         "name": "CopilotUserDaily",
         "name_span": {
-          "start": 10826,
-          "end": 10842,
-          "line": 271
+          "start": 11172,
+          "end": 11188,
+          "line": 277
         },
         "fields": [
           {
@@ -3165,16 +3190,16 @@
             "docs": [],
             "name": "id",
             "name_span": {
-              "start": 10868,
-              "end": 10870,
-              "line": 274
+              "start": 11214,
+              "end": 11216,
+              "line": 280
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 10871,
-                "end": 10877,
-                "line": 274
+                "start": 11217,
+                "end": 11223,
+                "line": 280
               },
               "arity": "Required",
               "generic_args": []
@@ -3183,181 +3208,31 @@
               {
                 "raw": "@id",
                 "span": {
-                  "start": 10878,
-                  "end": 10881,
-                  "line": 274
+                  "start": 11224,
+                  "end": 11227,
+                  "line": 280
                 }
               }
             ],
             "span": {
-              "start": 10866,
-              "end": 10881,
-              "line": 274
+              "start": 11212,
+              "end": 11227,
+              "line": 280
             }
           },
           {
             "docs": [],
             "name": "tenantId",
             "name_span": {
-              "start": 10884,
-              "end": 10892,
-              "line": 275
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10893,
-                "end": 10899,
-                "line": 275
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10882,
-              "end": 10899,
-              "line": 275
-            }
-          },
-          {
-            "docs": [],
-            "name": "organizationId",
-            "name_span": {
-              "start": 10902,
-              "end": 10916,
-              "line": 276
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10917,
-                "end": 10923,
-                "line": 276
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10900,
-              "end": 10923,
-              "line": 276
-            }
-          },
-          {
-            "docs": [],
-            "name": "reportDay",
-            "name_span": {
-              "start": 10926,
-              "end": 10935,
-              "line": 277
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 10936,
-                "end": 10944,
-                "line": 277
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10924,
-              "end": 10944,
-              "line": 277
-            }
-          },
-          {
-            "docs": [],
-            "name": "providerUserId",
-            "name_span": {
-              "start": 10947,
-              "end": 10961,
-              "line": 278
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10962,
-                "end": 10968,
-                "line": 278
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10945,
-              "end": 10968,
-              "line": 278
-            }
-          },
-          {
-            "docs": [],
-            "name": "userLogin",
-            "name_span": {
-              "start": 10971,
-              "end": 10980,
-              "line": 279
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 10981,
-                "end": 10987,
-                "line": 279
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10969,
-              "end": 10987,
-              "line": 279
-            }
-          },
-          {
-            "docs": [],
-            "name": "totalInteractions",
-            "name_span": {
-              "start": 10990,
-              "end": 11007,
-              "line": 280
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 11008,
-                "end": 11011,
-                "line": 280
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 10988,
-              "end": 11011,
-              "line": 280
-            }
-          },
-          {
-            "docs": [],
-            "name": "codeGenerations",
-            "name_span": {
-              "start": 11014,
-              "end": 11029,
+              "start": 11230,
+              "end": 11238,
               "line": 281
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 11030,
-                "end": 11033,
+                "start": 11239,
+                "end": 11245,
                 "line": 281
               },
               "arity": "Required",
@@ -3365,24 +3240,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 11012,
-              "end": 11033,
+              "start": 11228,
+              "end": 11245,
               "line": 281
             }
           },
           {
             "docs": [],
-            "name": "codeAcceptances",
+            "name": "organizationId",
             "name_span": {
-              "start": 11036,
-              "end": 11051,
+              "start": 11248,
+              "end": 11262,
               "line": 282
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 11052,
-                "end": 11055,
+                "start": 11263,
+                "end": 11269,
                 "line": 282
               },
               "arity": "Required",
@@ -3390,24 +3265,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 11034,
-              "end": 11055,
+              "start": 11246,
+              "end": 11269,
               "line": 282
             }
           },
           {
             "docs": [],
-            "name": "aiCredits",
+            "name": "reportDay",
             "name_span": {
-              "start": 11058,
-              "end": 11067,
+              "start": 11272,
+              "end": 11281,
               "line": 283
             },
             "ty": {
-              "name": "Int",
+              "name": "DateTime",
               "name_span": {
-                "start": 11068,
-                "end": 11071,
+                "start": 11282,
+                "end": 11290,
                 "line": 283
               },
               "arity": "Required",
@@ -3415,24 +3290,24 @@
             },
             "attributes": [],
             "span": {
-              "start": 11056,
-              "end": 11071,
+              "start": 11270,
+              "end": 11290,
               "line": 283
             }
           },
           {
             "docs": [],
-            "name": "netCostMicroUsd",
+            "name": "providerUserId",
             "name_span": {
-              "start": 11074,
-              "end": 11089,
+              "start": 11293,
+              "end": 11307,
               "line": 284
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 11090,
-                "end": 11093,
+                "start": 11308,
+                "end": 11314,
                 "line": 284
               },
               "arity": "Required",
@@ -3440,210 +3315,25 @@
             },
             "attributes": [],
             "span": {
-              "start": 11072,
-              "end": 11093,
+              "start": 11291,
+              "end": 11314,
               "line": 284
             }
-          }
-        ],
-        "attributes": [
-          {
-            "raw": "@@unique([tenantId, organizationId, reportDay, providerUserId])",
-            "span": {
-              "start": 11097,
-              "end": 11160,
-              "line": 286
-            }
-          },
-          {
-            "raw": "@@paged",
-            "span": {
-              "start": 11163,
-              "end": 11170,
-              "line": 287
-            }
-          },
-          {
-            "raw": "@@allow(\"read\", auth() != null)",
-            "span": {
-              "start": 11173,
-              "end": 11204,
-              "line": 288
-            }
-          }
-        ],
-        "span": {
-          "start": 10820,
-          "end": 11206,
-          "line": 271
-        }
-      },
-      {
-        "docs": [],
-        "name": "CopilotRepoDaily",
-        "name_span": {
-          "start": 11241,
-          "end": 11257,
-          "line": 292
-        },
-        "fields": [
-          {
-            "docs": [],
-            "name": "createdAt",
-            "name_span": {
-              "start": 1452,
-              "end": 1461,
-              "line": 35
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 1462,
-                "end": 1470,
-                "line": 35
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@default(dbgenerated())",
-                "span": {
-                  "start": 1471,
-                  "end": 1494,
-                  "line": 35
-                }
-              },
-              {
-                "raw": "@readonly",
-                "span": {
-                  "start": 1495,
-                  "end": 1504,
-                  "line": 35
-                }
-              }
-            ],
-            "span": {
-              "start": 1450,
-              "end": 1504,
-              "line": 35
-            }
           },
           {
             "docs": [],
-            "name": "updatedAt",
-            "name_span": {
-              "start": 1507,
-              "end": 1516,
-              "line": 36
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 1517,
-                "end": 1525,
-                "line": 36
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@default(dbgenerated())",
-                "span": {
-                  "start": 1526,
-                  "end": 1549,
-                  "line": 36
-                }
-              },
-              {
-                "raw": "@readonly",
-                "span": {
-                  "start": 1550,
-                  "end": 1559,
-                  "line": 36
-                }
-              }
-            ],
-            "span": {
-              "start": 1505,
-              "end": 1559,
-              "line": 36
-            }
-          },
-          {
-            "docs": [],
-            "name": "id",
-            "name_span": {
-              "start": 11283,
-              "end": 11285,
-              "line": 295
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 11286,
-                "end": 11292,
-                "line": 295
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@id",
-                "span": {
-                  "start": 11293,
-                  "end": 11296,
-                  "line": 295
-                }
-              }
-            ],
-            "span": {
-              "start": 11281,
-              "end": 11296,
-              "line": 295
-            }
-          },
-          {
-            "docs": [],
-            "name": "tenantId",
-            "name_span": {
-              "start": 11299,
-              "end": 11307,
-              "line": 296
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 11308,
-                "end": 11314,
-                "line": 296
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 11297,
-              "end": 11314,
-              "line": 296
-            }
-          },
-          {
-            "docs": [],
-            "name": "organizationId",
+            "name": "userLogin",
             "name_span": {
               "start": 11317,
-              "end": 11331,
-              "line": 297
+              "end": 11326,
+              "line": 285
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11332,
-                "end": 11338,
-                "line": 297
+                "start": 11327,
+                "end": 11333,
+                "line": 285
               },
               "arity": "Required",
               "generic_args": []
@@ -3651,123 +3341,308 @@
             "attributes": [],
             "span": {
               "start": 11315,
-              "end": 11338,
-              "line": 297
+              "end": 11333,
+              "line": 285
             }
           },
           {
             "docs": [],
-            "name": "reportDay",
+            "name": "totalInteractions",
             "name_span": {
-              "start": 11341,
-              "end": 11350,
-              "line": 298
+              "start": 11336,
+              "end": 11353,
+              "line": 286
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11354,
+                "end": 11357,
+                "line": 286
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11334,
+              "end": 11357,
+              "line": 286
+            }
+          },
+          {
+            "docs": [],
+            "name": "codeGenerations",
+            "name_span": {
+              "start": 11360,
+              "end": 11375,
+              "line": 287
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11376,
+                "end": 11379,
+                "line": 287
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11358,
+              "end": 11379,
+              "line": 287
+            }
+          },
+          {
+            "docs": [],
+            "name": "codeAcceptances",
+            "name_span": {
+              "start": 11382,
+              "end": 11397,
+              "line": 288
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11398,
+                "end": 11401,
+                "line": 288
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11380,
+              "end": 11401,
+              "line": 288
+            }
+          },
+          {
+            "docs": [],
+            "name": "aiCredits",
+            "name_span": {
+              "start": 11404,
+              "end": 11413,
+              "line": 289
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11414,
+                "end": 11417,
+                "line": 289
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11402,
+              "end": 11417,
+              "line": 289
+            }
+          },
+          {
+            "docs": [],
+            "name": "netCostMicroUsd",
+            "name_span": {
+              "start": 11420,
+              "end": 11435,
+              "line": 290
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11436,
+                "end": 11439,
+                "line": 290
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11418,
+              "end": 11439,
+              "line": 290
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([tenantId, organizationId, reportDay, providerUserId])",
+            "span": {
+              "start": 11443,
+              "end": 11506,
+              "line": 292
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 11509,
+              "end": 11516,
+              "line": 293
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 11519,
+              "end": 11550,
+              "line": 294
+            }
+          }
+        ],
+        "span": {
+          "start": 11166,
+          "end": 11552,
+          "line": 277
+        }
+      },
+      {
+        "docs": [],
+        "name": "CopilotRepoDaily",
+        "name_span": {
+          "start": 11587,
+          "end": 11603,
+          "line": 298
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 11351,
-                "end": 11359,
-                "line": 298
+                "start": 1462,
+                "end": 1470,
+                "line": 35
               },
               "arity": "Required",
               "generic_args": []
             },
-            "attributes": [],
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
             "span": {
-              "start": 11339,
-              "end": 11359,
-              "line": 298
+              "start": 1450,
+              "end": 1504,
+              "line": 35
             }
           },
           {
             "docs": [],
-            "name": "repositoryId",
+            "name": "updatedAt",
             "name_span": {
-              "start": 11362,
-              "end": 11374,
-              "line": 299
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 11629,
+              "end": 11631,
+              "line": 301
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11375,
-                "end": 11381,
-                "line": 299
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 11360,
-              "end": 11381,
-              "line": 299
-            }
-          },
-          {
-            "docs": [],
-            "name": "codingAgentActivity",
-            "name_span": {
-              "start": 11384,
-              "end": 11403,
-              "line": 300
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 11404,
-                "end": 11407,
-                "line": 300
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 11382,
-              "end": 11407,
-              "line": 300
-            }
-          },
-          {
-            "docs": [],
-            "name": "codeReviewActivity",
-            "name_span": {
-              "start": 11410,
-              "end": 11428,
-              "line": 301
-            },
-            "ty": {
-              "name": "Int",
-              "name_span": {
-                "start": 11429,
-                "end": 11432,
+                "start": 11632,
+                "end": 11638,
                 "line": 301
               },
               "arity": "Required",
               "generic_args": []
             },
-            "attributes": [],
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 11639,
+                  "end": 11642,
+                  "line": 301
+                }
+              }
+            ],
             "span": {
-              "start": 11408,
-              "end": 11432,
+              "start": 11627,
+              "end": 11642,
               "line": 301
             }
           },
           {
             "docs": [],
-            "name": "pullRequestActivity",
+            "name": "tenantId",
             "name_span": {
-              "start": 11435,
-              "end": 11454,
+              "start": 11645,
+              "end": 11653,
               "line": 302
             },
             "ty": {
-              "name": "Int",
+              "name": "String",
               "name_span": {
-                "start": 11455,
-                "end": 11458,
+                "start": 11654,
+                "end": 11660,
                 "line": 302
               },
               "arity": "Required",
@@ -3775,9 +3650,159 @@
             },
             "attributes": [],
             "span": {
-              "start": 11433,
-              "end": 11458,
+              "start": 11643,
+              "end": 11660,
               "line": 302
+            }
+          },
+          {
+            "docs": [],
+            "name": "organizationId",
+            "name_span": {
+              "start": 11663,
+              "end": 11677,
+              "line": 303
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 11678,
+                "end": 11684,
+                "line": 303
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11661,
+              "end": 11684,
+              "line": 303
+            }
+          },
+          {
+            "docs": [],
+            "name": "reportDay",
+            "name_span": {
+              "start": 11687,
+              "end": 11696,
+              "line": 304
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 11697,
+                "end": 11705,
+                "line": 304
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11685,
+              "end": 11705,
+              "line": 304
+            }
+          },
+          {
+            "docs": [],
+            "name": "repositoryId",
+            "name_span": {
+              "start": 11708,
+              "end": 11720,
+              "line": 305
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 11721,
+                "end": 11727,
+                "line": 305
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11706,
+              "end": 11727,
+              "line": 305
+            }
+          },
+          {
+            "docs": [],
+            "name": "codingAgentActivity",
+            "name_span": {
+              "start": 11730,
+              "end": 11749,
+              "line": 306
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11750,
+                "end": 11753,
+                "line": 306
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11728,
+              "end": 11753,
+              "line": 306
+            }
+          },
+          {
+            "docs": [],
+            "name": "codeReviewActivity",
+            "name_span": {
+              "start": 11756,
+              "end": 11774,
+              "line": 307
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11775,
+                "end": 11778,
+                "line": 307
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11754,
+              "end": 11778,
+              "line": 307
+            }
+          },
+          {
+            "docs": [],
+            "name": "pullRequestActivity",
+            "name_span": {
+              "start": 11781,
+              "end": 11800,
+              "line": 308
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 11801,
+                "end": 11804,
+                "line": 308
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 11779,
+              "end": 11804,
+              "line": 308
             }
           }
         ],
@@ -3785,41 +3810,41 @@
           {
             "raw": "@@unique([tenantId, organizationId, reportDay, repositoryId])",
             "span": {
-              "start": 11462,
-              "end": 11523,
-              "line": 304
+              "start": 11808,
+              "end": 11869,
+              "line": 310
             }
           },
           {
             "raw": "@@paged",
             "span": {
-              "start": 11526,
-              "end": 11533,
-              "line": 305
+              "start": 11872,
+              "end": 11879,
+              "line": 311
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 11536,
-              "end": 11567,
-              "line": 306
+              "start": 11882,
+              "end": 11913,
+              "line": 312
             }
           }
         ],
         "span": {
-          "start": 11235,
-          "end": 11569,
-          "line": 292
+          "start": 11581,
+          "end": 11915,
+          "line": 298
         }
       },
       {
         "docs": [],
         "name": "CopilotUserTeam",
         "name_span": {
-          "start": 11737,
-          "end": 11752,
-          "line": 311
+          "start": 12083,
+          "end": 12098,
+          "line": 317
         },
         "fields": [
           {
@@ -3910,16 +3935,16 @@
             "docs": [],
             "name": "id",
             "name_span": {
-              "start": 11778,
-              "end": 11780,
-              "line": 314
+              "start": 12124,
+              "end": 12126,
+              "line": 320
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11781,
-                "end": 11787,
-                "line": 314
+                "start": 12127,
+                "end": 12133,
+                "line": 320
               },
               "arity": "Required",
               "generic_args": []
@@ -3928,342 +3953,157 @@
               {
                 "raw": "@id",
                 "span": {
-                  "start": 11788,
-                  "end": 11791,
-                  "line": 314
+                  "start": 12134,
+                  "end": 12137,
+                  "line": 320
                 }
               }
             ],
             "span": {
-              "start": 11776,
-              "end": 11791,
-              "line": 314
+              "start": 12122,
+              "end": 12137,
+              "line": 320
             }
           },
           {
             "docs": [],
             "name": "tenantId",
             "name_span": {
-              "start": 11794,
-              "end": 11802,
-              "line": 315
+              "start": 12140,
+              "end": 12148,
+              "line": 321
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11803,
-                "end": 11809,
-                "line": 315
+                "start": 12149,
+                "end": 12155,
+                "line": 321
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 11792,
-              "end": 11809,
-              "line": 315
+              "start": 12138,
+              "end": 12155,
+              "line": 321
             }
           },
           {
             "docs": [],
             "name": "organizationId",
             "name_span": {
-              "start": 11812,
-              "end": 11826,
-              "line": 316
+              "start": 12158,
+              "end": 12172,
+              "line": 322
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11827,
-                "end": 11833,
-                "line": 316
+                "start": 12173,
+                "end": 12179,
+                "line": 322
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 11810,
-              "end": 11833,
-              "line": 316
+              "start": 12156,
+              "end": 12179,
+              "line": 322
             }
           },
           {
             "docs": [],
             "name": "reportDay",
             "name_span": {
-              "start": 11836,
-              "end": 11845,
-              "line": 317
+              "start": 12182,
+              "end": 12191,
+              "line": 323
             },
             "ty": {
               "name": "DateTime",
               "name_span": {
-                "start": 11846,
-                "end": 11854,
-                "line": 317
+                "start": 12192,
+                "end": 12200,
+                "line": 323
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 11834,
-              "end": 11854,
-              "line": 317
+              "start": 12180,
+              "end": 12200,
+              "line": 323
             }
           },
           {
             "docs": [],
             "name": "userId",
             "name_span": {
-              "start": 11857,
-              "end": 11863,
-              "line": 318
+              "start": 12203,
+              "end": 12209,
+              "line": 324
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11864,
-                "end": 11870,
-                "line": 318
+                "start": 12210,
+                "end": 12216,
+                "line": 324
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 11855,
-              "end": 11870,
-              "line": 318
+              "start": 12201,
+              "end": 12216,
+              "line": 324
             }
           },
           {
             "docs": [],
             "name": "teamId",
             "name_span": {
-              "start": 11873,
-              "end": 11879,
-              "line": 319
+              "start": 12219,
+              "end": 12225,
+              "line": 325
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 11880,
-                "end": 11886,
-                "line": 319
+                "start": 12226,
+                "end": 12232,
+                "line": 325
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 11871,
-              "end": 11886,
-              "line": 319
+              "start": 12217,
+              "end": 12232,
+              "line": 325
             }
           },
           {
             "docs": [],
             "name": "teamSlug",
             "name_span": {
-              "start": 11889,
-              "end": 11897,
-              "line": 320
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 11898,
-                "end": 11904,
-                "line": 320
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 11887,
-              "end": 11904,
-              "line": 320
-            }
-          }
-        ],
-        "attributes": [
-          {
-            "raw": "@@unique([tenantId, organizationId, reportDay, userId, teamId])",
-            "span": {
-              "start": 11908,
-              "end": 11971,
-              "line": 322
-            }
-          },
-          {
-            "raw": "@@paged",
-            "span": {
-              "start": 11974,
-              "end": 11981,
-              "line": 323
-            }
-          },
-          {
-            "raw": "@@allow(\"read\", auth() != null)",
-            "span": {
-              "start": 11984,
-              "end": 12015,
-              "line": 324
-            }
-          }
-        ],
-        "span": {
-          "start": 11731,
-          "end": 12017,
-          "line": 311
-        }
-      },
-      {
-        "docs": [],
-        "name": "CopilotSeatSnapshot",
-        "name_span": {
-          "start": 12174,
-          "end": 12193,
-          "line": 329
-        },
-        "fields": [
-          {
-            "docs": [],
-            "name": "createdAt",
-            "name_span": {
-              "start": 1452,
-              "end": 1461,
-              "line": 35
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 1462,
-                "end": 1470,
-                "line": 35
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@default(dbgenerated())",
-                "span": {
-                  "start": 1471,
-                  "end": 1494,
-                  "line": 35
-                }
-              },
-              {
-                "raw": "@readonly",
-                "span": {
-                  "start": 1495,
-                  "end": 1504,
-                  "line": 35
-                }
-              }
-            ],
-            "span": {
-              "start": 1450,
-              "end": 1504,
-              "line": 35
-            }
-          },
-          {
-            "docs": [],
-            "name": "updatedAt",
-            "name_span": {
-              "start": 1507,
-              "end": 1516,
-              "line": 36
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 1517,
-                "end": 1525,
-                "line": 36
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@default(dbgenerated())",
-                "span": {
-                  "start": 1526,
-                  "end": 1549,
-                  "line": 36
-                }
-              },
-              {
-                "raw": "@readonly",
-                "span": {
-                  "start": 1550,
-                  "end": 1559,
-                  "line": 36
-                }
-              }
-            ],
-            "span": {
-              "start": 1505,
-              "end": 1559,
-              "line": 36
-            }
-          },
-          {
-            "docs": [],
-            "name": "id",
-            "name_span": {
-              "start": 12219,
-              "end": 12221,
-              "line": 332
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 12222,
-                "end": 12228,
-                "line": 332
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [
-              {
-                "raw": "@id",
-                "span": {
-                  "start": 12229,
-                  "end": 12232,
-                  "line": 332
-                }
-              }
-            ],
-            "span": {
-              "start": 12217,
-              "end": 12232,
-              "line": 332
-            }
-          },
-          {
-            "docs": [],
-            "name": "tenantId",
-            "name_span": {
               "start": 12235,
               "end": 12243,
-              "line": 333
+              "line": 326
             },
             "ty": {
               "name": "String",
               "name_span": {
                 "start": 12244,
                 "end": 12250,
-                "line": 333
+                "line": 326
               },
               "arity": "Required",
               "generic_args": []
@@ -4272,197 +4112,232 @@
             "span": {
               "start": 12233,
               "end": 12250,
-              "line": 333
+              "line": 326
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([tenantId, organizationId, reportDay, userId, teamId])",
+            "span": {
+              "start": 12254,
+              "end": 12317,
+              "line": 328
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 12320,
+              "end": 12327,
+              "line": 329
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 12330,
+              "end": 12361,
+              "line": 330
+            }
+          }
+        ],
+        "span": {
+          "start": 12077,
+          "end": 12363,
+          "line": 317
+        }
+      },
+      {
+        "docs": [],
+        "name": "CopilotSeatSnapshot",
+        "name_span": {
+          "start": 12520,
+          "end": 12539,
+          "line": 335
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1462,
+                "end": 1470,
+                "line": 35
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
+            "span": {
+              "start": 1450,
+              "end": 1504,
+              "line": 35
+            }
+          },
+          {
+            "docs": [],
+            "name": "updatedAt",
+            "name_span": {
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 12565,
+              "end": 12567,
+              "line": 338
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12568,
+                "end": 12574,
+                "line": 338
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 12575,
+                  "end": 12578,
+                  "line": 338
+                }
+              }
+            ],
+            "span": {
+              "start": 12563,
+              "end": 12578,
+              "line": 338
+            }
+          },
+          {
+            "docs": [],
+            "name": "tenantId",
+            "name_span": {
+              "start": 12581,
+              "end": 12589,
+              "line": 339
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12590,
+                "end": 12596,
+                "line": 339
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12579,
+              "end": 12596,
+              "line": 339
             }
           },
           {
             "docs": [],
             "name": "organizationId",
             "name_span": {
-              "start": 12253,
-              "end": 12267,
-              "line": 334
+              "start": 12599,
+              "end": 12613,
+              "line": 340
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 12268,
-                "end": 12274,
-                "line": 334
+                "start": 12614,
+                "end": 12620,
+                "line": 340
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 12251,
-              "end": 12274,
-              "line": 334
+              "start": 12597,
+              "end": 12620,
+              "line": 340
             }
           },
           {
             "docs": [],
             "name": "snapshotDay",
             "name_span": {
-              "start": 12277,
-              "end": 12288,
-              "line": 335
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 12289,
-                "end": 12297,
-                "line": 335
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12275,
-              "end": 12297,
-              "line": 335
-            }
-          },
-          {
-            "docs": [],
-            "name": "providerUserId",
-            "name_span": {
-              "start": 12300,
-              "end": 12314,
-              "line": 336
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 12315,
-                "end": 12321,
-                "line": 336
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12298,
-              "end": 12321,
-              "line": 336
-            }
-          },
-          {
-            "docs": [],
-            "name": "userLogin",
-            "name_span": {
-              "start": 12324,
-              "end": 12333,
-              "line": 337
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 12334,
-                "end": 12340,
-                "line": 337
-              },
-              "arity": "Required",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12322,
-              "end": 12340,
-              "line": 337
-            }
-          },
-          {
-            "docs": [],
-            "name": "seatAssignedAt",
-            "name_span": {
-              "start": 12343,
-              "end": 12357,
-              "line": 338
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 12358,
-                "end": 12366,
-                "line": 338
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12341,
-              "end": 12367,
-              "line": 338
-            }
-          },
-          {
-            "docs": [],
-            "name": "lastActivityAt",
-            "name_span": {
-              "start": 12370,
-              "end": 12384,
-              "line": 339
-            },
-            "ty": {
-              "name": "DateTime",
-              "name_span": {
-                "start": 12385,
-                "end": 12393,
-                "line": 339
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12368,
-              "end": 12394,
-              "line": 339
-            }
-          },
-          {
-            "docs": [],
-            "name": "lastActivityEditor",
-            "name_span": {
-              "start": 12397,
-              "end": 12415,
-              "line": 340
-            },
-            "ty": {
-              "name": "String",
-              "name_span": {
-                "start": 12416,
-                "end": 12422,
-                "line": 340
-              },
-              "arity": "Optional",
-              "generic_args": []
-            },
-            "attributes": [],
-            "span": {
-              "start": 12395,
-              "end": 12423,
-              "line": 340
-            }
-          },
-          {
-            "docs": [],
-            "name": "seatState",
-            "name_span": {
-              "start": 12426,
-              "end": 12435,
+              "start": 12623,
+              "end": 12634,
               "line": 341
             },
             "ty": {
-              "name": "String",
+              "name": "DateTime",
               "name_span": {
-                "start": 12436,
-                "end": 12442,
+                "start": 12635,
+                "end": 12643,
                 "line": 341
               },
               "arity": "Required",
@@ -4470,9 +4345,159 @@
             },
             "attributes": [],
             "span": {
-              "start": 12424,
-              "end": 12442,
+              "start": 12621,
+              "end": 12643,
               "line": 341
+            }
+          },
+          {
+            "docs": [],
+            "name": "providerUserId",
+            "name_span": {
+              "start": 12646,
+              "end": 12660,
+              "line": 342
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12661,
+                "end": 12667,
+                "line": 342
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12644,
+              "end": 12667,
+              "line": 342
+            }
+          },
+          {
+            "docs": [],
+            "name": "userLogin",
+            "name_span": {
+              "start": 12670,
+              "end": 12679,
+              "line": 343
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12680,
+                "end": 12686,
+                "line": 343
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12668,
+              "end": 12686,
+              "line": 343
+            }
+          },
+          {
+            "docs": [],
+            "name": "seatAssignedAt",
+            "name_span": {
+              "start": 12689,
+              "end": 12703,
+              "line": 344
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 12704,
+                "end": 12712,
+                "line": 344
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12687,
+              "end": 12713,
+              "line": 344
+            }
+          },
+          {
+            "docs": [],
+            "name": "lastActivityAt",
+            "name_span": {
+              "start": 12716,
+              "end": 12730,
+              "line": 345
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 12731,
+                "end": 12739,
+                "line": 345
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12714,
+              "end": 12740,
+              "line": 345
+            }
+          },
+          {
+            "docs": [],
+            "name": "lastActivityEditor",
+            "name_span": {
+              "start": 12743,
+              "end": 12761,
+              "line": 346
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12762,
+                "end": 12768,
+                "line": 346
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12741,
+              "end": 12769,
+              "line": 346
+            }
+          },
+          {
+            "docs": [],
+            "name": "seatState",
+            "name_span": {
+              "start": 12772,
+              "end": 12781,
+              "line": 347
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 12782,
+                "end": 12788,
+                "line": 347
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 12770,
+              "end": 12788,
+              "line": 347
             }
           }
         ],
@@ -4480,32 +4505,1558 @@
           {
             "raw": "@@unique([tenantId, organizationId, snapshotDay, providerUserId])",
             "span": {
-              "start": 12446,
-              "end": 12511,
-              "line": 343
+              "start": 12792,
+              "end": 12857,
+              "line": 349
             }
           },
           {
             "raw": "@@paged",
             "span": {
-              "start": 12514,
-              "end": 12521,
-              "line": 344
+              "start": 12860,
+              "end": 12867,
+              "line": 350
             }
           },
           {
             "raw": "@@allow(\"read\", auth() != null)",
             "span": {
-              "start": 12524,
-              "end": 12555,
-              "line": 345
+              "start": 12870,
+              "end": 12901,
+              "line": 351
             }
           }
         ],
         "span": {
-          "start": 12168,
-          "end": 12557,
-          "line": 329
+          "start": 12514,
+          "end": 12903,
+          "line": 335
+        }
+      },
+      {
+        "docs": [],
+        "name": "Execution",
+        "name_span": {
+          "start": 13884,
+          "end": 13893,
+          "line": 368
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1462,
+                "end": 1470,
+                "line": 35
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
+            "span": {
+              "start": 1450,
+              "end": 1504,
+              "line": 35
+            }
+          },
+          {
+            "docs": [],
+            "name": "updatedAt",
+            "name_span": {
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 13919,
+              "end": 13921,
+              "line": 371
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 13922,
+                "end": 13928,
+                "line": 371
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 13929,
+                  "end": 13932,
+                  "line": 371
+                }
+              }
+            ],
+            "span": {
+              "start": 13917,
+              "end": 13932,
+              "line": 371
+            }
+          },
+          {
+            "docs": [],
+            "name": "tenantId",
+            "name_span": {
+              "start": 13935,
+              "end": 13943,
+              "line": 372
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 13944,
+                "end": 13950,
+                "line": 372
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 13933,
+              "end": 13950,
+              "line": 372
+            }
+          },
+          {
+            "docs": [],
+            "name": "integrationId",
+            "name_span": {
+              "start": 13953,
+              "end": 13966,
+              "line": 373
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 13967,
+                "end": 13973,
+                "line": 373
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 13951,
+              "end": 13973,
+              "line": 373
+            }
+          },
+          {
+            "docs": [],
+            "name": "provider",
+            "name_span": {
+              "start": 13976,
+              "end": 13984,
+              "line": 374
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 13985,
+                "end": 13991,
+                "line": 374
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 13974,
+              "end": 13991,
+              "line": 374
+            }
+          },
+          {
+            "docs": [],
+            "name": "traceId",
+            "name_span": {
+              "start": 13994,
+              "end": 14001,
+              "line": 375
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 14002,
+                "end": 14008,
+                "line": 375
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 13992,
+              "end": 14008,
+              "line": 375
+            }
+          },
+          {
+            "docs": [],
+            "name": "spanId",
+            "name_span": {
+              "start": 14011,
+              "end": 14017,
+              "line": 376
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 14018,
+                "end": 14024,
+                "line": 376
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14009,
+              "end": 14024,
+              "line": 376
+            }
+          },
+          {
+            "docs": [],
+            "name": "userEmail",
+            "name_span": {
+              "start": 14027,
+              "end": 14036,
+              "line": 377
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 14037,
+                "end": 14043,
+                "line": 377
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14025,
+              "end": 14044,
+              "line": 377
+            }
+          },
+          {
+            "docs": [],
+            "name": "internalUserId",
+            "name_span": {
+              "start": 14278,
+              "end": 14292,
+              "line": 381
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 14293,
+                "end": 14299,
+                "line": 381
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14276,
+              "end": 14300,
+              "line": 381
+            }
+          },
+          {
+            "docs": [],
+            "name": "startedAt",
+            "name_span": {
+              "start": 14303,
+              "end": 14312,
+              "line": 382
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 14313,
+                "end": 14321,
+                "line": 382
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14301,
+              "end": 14321,
+              "line": 382
+            }
+          },
+          {
+            "docs": [],
+            "name": "durationMs",
+            "name_span": {
+              "start": 14324,
+              "end": 14334,
+              "line": 383
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 14335,
+                "end": 14338,
+                "line": 383
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14322,
+              "end": 14338,
+              "line": 383
+            }
+          },
+          {
+            "docs": [],
+            "name": "estimatedCostMicroUsd",
+            "name_span": {
+              "start": 14498,
+              "end": 14519,
+              "line": 386
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 14520,
+                "end": 14523,
+                "line": 386
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14496,
+              "end": 14524,
+              "line": 386
+            }
+          },
+          {
+            "docs": [],
+            "name": "rawBackend",
+            "name_span": {
+              "start": 14527,
+              "end": 14537,
+              "line": 387
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 14538,
+                "end": 14544,
+                "line": 387
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14525,
+              "end": 14545,
+              "line": 387
+            }
+          },
+          {
+            "docs": [],
+            "name": "rawSchemaVersion",
+            "name_span": {
+              "start": 14548,
+              "end": 14564,
+              "line": 388
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 14565,
+                "end": 14568,
+                "line": 388
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 14546,
+              "end": 14568,
+              "line": 388
+            }
+          },
+          {
+            "docs": [],
+            "name": "modelCalls",
+            "name_span": {
+              "start": 14572,
+              "end": 14582,
+              "line": 390
+            },
+            "ty": {
+              "name": "ModelCall",
+              "name_span": {
+                "start": 14583,
+                "end": 14592,
+                "line": 390
+              },
+              "arity": "List",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@relation(fields:[id],references:[executionId])",
+                "span": {
+                  "start": 14595,
+                  "end": 14642,
+                  "line": 390
+                }
+              }
+            ],
+            "span": {
+              "start": 14570,
+              "end": 14642,
+              "line": 390
+            }
+          },
+          {
+            "docs": [],
+            "name": "toolCalls",
+            "name_span": {
+              "start": 14645,
+              "end": 14654,
+              "line": 391
+            },
+            "ty": {
+              "name": "ToolCall",
+              "name_span": {
+                "start": 14655,
+                "end": 14663,
+                "line": 391
+              },
+              "arity": "List",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@relation(fields:[id],references:[executionId])",
+                "span": {
+                  "start": 14666,
+                  "end": 14713,
+                  "line": 391
+                }
+              }
+            ],
+            "span": {
+              "start": 14643,
+              "end": 14713,
+              "line": 391
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([traceId, spanId])",
+            "span": {
+              "start": 14717,
+              "end": 14744,
+              "line": 393
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 14747,
+              "end": 14754,
+              "line": 394
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 14757,
+              "end": 14788,
+              "line": 395
+            }
+          }
+        ],
+        "span": {
+          "start": 13878,
+          "end": 14790,
+          "line": 368
+        }
+      },
+      {
+        "docs": [],
+        "name": "ModelCall",
+        "name_span": {
+          "start": 15188,
+          "end": 15197,
+          "line": 404
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1462,
+                "end": 1470,
+                "line": 35
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
+            "span": {
+              "start": 1450,
+              "end": 1504,
+              "line": 35
+            }
+          },
+          {
+            "docs": [],
+            "name": "updatedAt",
+            "name_span": {
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 15223,
+              "end": 15225,
+              "line": 407
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15226,
+                "end": 15232,
+                "line": 407
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 15233,
+                  "end": 15236,
+                  "line": 407
+                }
+              }
+            ],
+            "span": {
+              "start": 15221,
+              "end": 15236,
+              "line": 407
+            }
+          },
+          {
+            "docs": [],
+            "name": "executionId",
+            "name_span": {
+              "start": 15239,
+              "end": 15250,
+              "line": 408
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15251,
+                "end": 15257,
+                "line": 408
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15237,
+              "end": 15257,
+              "line": 408
+            }
+          },
+          {
+            "docs": [],
+            "name": "traceId",
+            "name_span": {
+              "start": 15260,
+              "end": 15267,
+              "line": 409
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15268,
+                "end": 15274,
+                "line": 409
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15258,
+              "end": 15274,
+              "line": 409
+            }
+          },
+          {
+            "docs": [],
+            "name": "spanId",
+            "name_span": {
+              "start": 15277,
+              "end": 15283,
+              "line": 410
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15284,
+                "end": 15290,
+                "line": 410
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15275,
+              "end": 15290,
+              "line": 410
+            }
+          },
+          {
+            "docs": [],
+            "name": "model",
+            "name_span": {
+              "start": 15293,
+              "end": 15298,
+              "line": 411
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15299,
+                "end": 15305,
+                "line": 411
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15291,
+              "end": 15305,
+              "line": 411
+            }
+          },
+          {
+            "docs": [],
+            "name": "inputTokens",
+            "name_span": {
+              "start": 15308,
+              "end": 15319,
+              "line": 412
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 15320,
+                "end": 15323,
+                "line": 412
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15306,
+              "end": 15324,
+              "line": 412
+            }
+          },
+          {
+            "docs": [],
+            "name": "outputTokens",
+            "name_span": {
+              "start": 15327,
+              "end": 15339,
+              "line": 413
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 15340,
+                "end": 15343,
+                "line": 413
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15325,
+              "end": 15344,
+              "line": 413
+            }
+          },
+          {
+            "docs": [],
+            "name": "costMicroUsd",
+            "name_span": {
+              "start": 15347,
+              "end": 15359,
+              "line": 414
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 15360,
+                "end": 15363,
+                "line": 414
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15345,
+              "end": 15364,
+              "line": 414
+            }
+          },
+          {
+            "docs": [],
+            "name": "execution",
+            "name_span": {
+              "start": 15368,
+              "end": 15377,
+              "line": 416
+            },
+            "ty": {
+              "name": "Execution",
+              "name_span": {
+                "start": 15378,
+                "end": 15387,
+                "line": 416
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@relation(fields:[executionId],references:[id])",
+                "span": {
+                  "start": 15388,
+                  "end": 15435,
+                  "line": 416
+                }
+              }
+            ],
+            "span": {
+              "start": 15366,
+              "end": 15435,
+              "line": 416
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([traceId, spanId])",
+            "span": {
+              "start": 15439,
+              "end": 15466,
+              "line": 418
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 15469,
+              "end": 15476,
+              "line": 419
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 15479,
+              "end": 15510,
+              "line": 420
+            }
+          }
+        ],
+        "span": {
+          "start": 15182,
+          "end": 15512,
+          "line": 404
+        }
+      },
+      {
+        "docs": [],
+        "name": "ToolCall",
+        "name_span": {
+          "start": 15652,
+          "end": 15660,
+          "line": 425
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1462,
+                "end": 1470,
+                "line": 35
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
+            "span": {
+              "start": 1450,
+              "end": 1504,
+              "line": 35
+            }
+          },
+          {
+            "docs": [],
+            "name": "updatedAt",
+            "name_span": {
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 15686,
+              "end": 15688,
+              "line": 428
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15689,
+                "end": 15695,
+                "line": 428
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 15696,
+                  "end": 15699,
+                  "line": 428
+                }
+              }
+            ],
+            "span": {
+              "start": 15684,
+              "end": 15699,
+              "line": 428
+            }
+          },
+          {
+            "docs": [],
+            "name": "executionId",
+            "name_span": {
+              "start": 15702,
+              "end": 15713,
+              "line": 429
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15714,
+                "end": 15720,
+                "line": 429
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15700,
+              "end": 15720,
+              "line": 429
+            }
+          },
+          {
+            "docs": [],
+            "name": "traceId",
+            "name_span": {
+              "start": 15723,
+              "end": 15730,
+              "line": 430
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15731,
+                "end": 15737,
+                "line": 430
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15721,
+              "end": 15737,
+              "line": 430
+            }
+          },
+          {
+            "docs": [],
+            "name": "spanId",
+            "name_span": {
+              "start": 15740,
+              "end": 15746,
+              "line": 431
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15747,
+                "end": 15753,
+                "line": 431
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15738,
+              "end": 15753,
+              "line": 431
+            }
+          },
+          {
+            "docs": [],
+            "name": "toolName",
+            "name_span": {
+              "start": 15756,
+              "end": 15764,
+              "line": 432
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 15765,
+                "end": 15771,
+                "line": 432
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15754,
+              "end": 15771,
+              "line": 432
+            }
+          },
+          {
+            "docs": [],
+            "name": "durationMs",
+            "name_span": {
+              "start": 15774,
+              "end": 15784,
+              "line": 433
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 15785,
+                "end": 15788,
+                "line": 433
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 15772,
+              "end": 15788,
+              "line": 433
+            }
+          },
+          {
+            "docs": [],
+            "name": "execution",
+            "name_span": {
+              "start": 15792,
+              "end": 15801,
+              "line": 435
+            },
+            "ty": {
+              "name": "Execution",
+              "name_span": {
+                "start": 15802,
+                "end": 15811,
+                "line": 435
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@relation(fields:[executionId],references:[id])",
+                "span": {
+                  "start": 15812,
+                  "end": 15859,
+                  "line": 435
+                }
+              }
+            ],
+            "span": {
+              "start": 15790,
+              "end": 15859,
+              "line": 435
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([traceId, spanId])",
+            "span": {
+              "start": 15863,
+              "end": 15890,
+              "line": 437
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 15893,
+              "end": 15900,
+              "line": 438
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 15903,
+              "end": 15934,
+              "line": 439
+            }
+          }
+        ],
+        "span": {
+          "start": 15646,
+          "end": 15936,
+          "line": 425
+        }
+      },
+      {
+        "docs": [],
+        "name": "ModelPricing",
+        "name_span": {
+          "start": 16241,
+          "end": 16253,
+          "line": 446
+        },
+        "fields": [
+          {
+            "docs": [],
+            "name": "createdAt",
+            "name_span": {
+              "start": 1452,
+              "end": 1461,
+              "line": 35
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1462,
+                "end": 1470,
+                "line": 35
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1471,
+                  "end": 1494,
+                  "line": 35
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1495,
+                  "end": 1504,
+                  "line": 35
+                }
+              }
+            ],
+            "span": {
+              "start": 1450,
+              "end": 1504,
+              "line": 35
+            }
+          },
+          {
+            "docs": [],
+            "name": "updatedAt",
+            "name_span": {
+              "start": 1507,
+              "end": 1516,
+              "line": 36
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 1517,
+                "end": 1525,
+                "line": 36
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 1526,
+                  "end": 1549,
+                  "line": 36
+                }
+              },
+              {
+                "raw": "@readonly",
+                "span": {
+                  "start": 1550,
+                  "end": 1559,
+                  "line": 36
+                }
+              }
+            ],
+            "span": {
+              "start": 1505,
+              "end": 1559,
+              "line": 36
+            }
+          },
+          {
+            "docs": [],
+            "name": "id",
+            "name_span": {
+              "start": 16279,
+              "end": 16281,
+              "line": 449
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 16282,
+                "end": 16288,
+                "line": 449
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@id",
+                "span": {
+                  "start": 16289,
+                  "end": 16292,
+                  "line": 449
+                }
+              }
+            ],
+            "span": {
+              "start": 16277,
+              "end": 16292,
+              "line": 449
+            }
+          },
+          {
+            "docs": [],
+            "name": "model",
+            "name_span": {
+              "start": 16295,
+              "end": 16300,
+              "line": 450
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 16301,
+                "end": 16307,
+                "line": 450
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 16293,
+              "end": 16307,
+              "line": 450
+            }
+          },
+          {
+            "docs": [],
+            "name": "inputPerMillionMicroUsd",
+            "name_span": {
+              "start": 16310,
+              "end": 16333,
+              "line": 451
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 16334,
+                "end": 16337,
+                "line": 451
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 16308,
+              "end": 16337,
+              "line": 451
+            }
+          },
+          {
+            "docs": [],
+            "name": "outputPerMillionMicroUsd",
+            "name_span": {
+              "start": 16340,
+              "end": 16364,
+              "line": 452
+            },
+            "ty": {
+              "name": "Int",
+              "name_span": {
+                "start": 16365,
+                "end": 16368,
+                "line": 452
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 16338,
+              "end": 16368,
+              "line": 452
+            }
+          },
+          {
+            "docs": [],
+            "name": "effectiveFrom",
+            "name_span": {
+              "start": 16371,
+              "end": 16384,
+              "line": 453
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 16385,
+                "end": 16393,
+                "line": 453
+              },
+              "arity": "Required",
+              "generic_args": []
+            },
+            "attributes": [
+              {
+                "raw": "@default(dbgenerated())",
+                "span": {
+                  "start": 16394,
+                  "end": 16417,
+                  "line": 453
+                }
+              }
+            ],
+            "span": {
+              "start": 16369,
+              "end": 16417,
+              "line": 453
+            }
+          },
+          {
+            "docs": [],
+            "name": "effectiveTo",
+            "name_span": {
+              "start": 16420,
+              "end": 16431,
+              "line": 454
+            },
+            "ty": {
+              "name": "DateTime",
+              "name_span": {
+                "start": 16432,
+                "end": 16440,
+                "line": 454
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 16418,
+              "end": 16441,
+              "line": 454
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "raw": "@@unique([model, effectiveFrom])",
+            "span": {
+              "start": 16445,
+              "end": 16477,
+              "line": 456
+            }
+          },
+          {
+            "raw": "@@paged",
+            "span": {
+              "start": 16480,
+              "end": 16487,
+              "line": 457
+            }
+          },
+          {
+            "raw": "@@allow(\"read\", auth() != null)",
+            "span": {
+              "start": 16490,
+              "end": 16521,
+              "line": 458
+            }
+          },
+          {
+            "raw": "@@allow(\"create\", auth() != null)",
+            "span": {
+              "start": 16524,
+              "end": 16557,
+              "line": 459
+            }
+          },
+          {
+            "raw": "@@allow(\"update\", auth() != null)",
+            "span": {
+              "start": 16560,
+              "end": 16593,
+              "line": 460
+            }
+          }
+        ],
+        "span": {
+          "start": 16235,
+          "end": 16595,
+          "line": 446
         }
       }
     ],
@@ -4514,223 +6065,248 @@
         "docs": [],
         "name": "IssueIntegrationCredentialInput",
         "name_span": {
-          "start": 6373,
-          "end": 6404,
-          "line": 153
+          "start": 6694,
+          "end": 6725,
+          "line": 158
         },
         "fields": [
           {
             "docs": [],
             "name": "applicationId",
             "name_span": {
-              "start": 6409,
-              "end": 6422,
-              "line": 154
+              "start": 6730,
+              "end": 6743,
+              "line": 159
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 6423,
-                "end": 6429,
-                "line": 154
+                "start": 6744,
+                "end": 6750,
+                "line": 159
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6407,
-              "end": 6429,
-              "line": 154
+              "start": 6728,
+              "end": 6750,
+              "line": 159
             }
           },
           {
             "docs": [],
             "name": "provider",
             "name_span": {
-              "start": 6432,
-              "end": 6440,
-              "line": 155
+              "start": 6753,
+              "end": 6761,
+              "line": 160
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 6441,
-                "end": 6447,
-                "line": 155
+                "start": 6762,
+                "end": 6768,
+                "line": 160
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6430,
-              "end": 6447,
-              "line": 155
+              "start": 6751,
+              "end": 6768,
+              "line": 160
             }
           },
           {
             "docs": [],
             "name": "environmentId",
             "name_span": {
-              "start": 6450,
-              "end": 6463,
-              "line": 156
+              "start": 6771,
+              "end": 6784,
+              "line": 161
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 6464,
-                "end": 6470,
-                "line": 156
+                "start": 6785,
+                "end": 6791,
+                "line": 161
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6448,
-              "end": 6470,
-              "line": 156
+              "start": 6769,
+              "end": 6791,
+              "line": 161
             }
           },
           {
             "docs": [],
             "name": "contentCapture",
             "name_span": {
-              "start": 6473,
-              "end": 6487,
-              "line": 157
+              "start": 6794,
+              "end": 6808,
+              "line": 162
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 6488,
-                "end": 6494,
-                "line": 157
+                "start": 6809,
+                "end": 6815,
+                "line": 162
               },
               "arity": "Optional",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6471,
-              "end": 6495,
-              "line": 157
+              "start": 6792,
+              "end": 6816,
+              "line": 162
+            }
+          },
+          {
+            "docs": [],
+            "name": "internalUserId",
+            "name_span": {
+              "start": 6819,
+              "end": 6833,
+              "line": 163
+            },
+            "ty": {
+              "name": "String",
+              "name_span": {
+                "start": 6834,
+                "end": 6840,
+                "line": 163
+              },
+              "arity": "Optional",
+              "generic_args": []
+            },
+            "attributes": [],
+            "span": {
+              "start": 6817,
+              "end": 6841,
+              "line": 163
             }
           }
         ],
         "span": {
-          "start": 6368,
-          "end": 6497,
-          "line": 153
+          "start": 6689,
+          "end": 6843,
+          "line": 158
         }
       },
       {
         "docs": [],
         "name": "IntegrationCredential",
         "name_span": {
-          "start": 6712,
-          "end": 6733,
-          "line": 163
+          "start": 7058,
+          "end": 7079,
+          "line": 169
         },
         "fields": [
           {
             "docs": [],
             "name": "integration",
             "name_span": {
-              "start": 6738,
-              "end": 6749,
-              "line": 164
+              "start": 7084,
+              "end": 7095,
+              "line": 170
             },
             "ty": {
               "name": "Integration",
               "name_span": {
-                "start": 6750,
-                "end": 6761,
-                "line": 164
+                "start": 7096,
+                "end": 7107,
+                "line": 170
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6736,
-              "end": 6761,
-              "line": 164
+              "start": 7082,
+              "end": 7107,
+              "line": 170
             }
           },
           {
             "docs": [],
             "name": "secret",
             "name_span": {
-              "start": 6764,
-              "end": 6770,
-              "line": 165
+              "start": 7110,
+              "end": 7116,
+              "line": 171
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 6771,
-                "end": 6777,
-                "line": 165
+                "start": 7117,
+                "end": 7123,
+                "line": 171
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 6762,
-              "end": 6777,
-              "line": 165
+              "start": 7108,
+              "end": 7123,
+              "line": 171
             }
           }
         ],
         "span": {
-          "start": 6707,
-          "end": 6779,
-          "line": 163
+          "start": 7053,
+          "end": 7125,
+          "line": 169
         }
       },
       {
         "docs": [],
         "name": "RevokeIntegrationCredentialInput",
         "name_span": {
-          "start": 7432,
-          "end": 7464,
-          "line": 178
+          "start": 7778,
+          "end": 7810,
+          "line": 184
         },
         "fields": [
           {
             "docs": [],
             "name": "integrationId",
             "name_span": {
-              "start": 7469,
-              "end": 7482,
-              "line": 179
+              "start": 7815,
+              "end": 7828,
+              "line": 185
             },
             "ty": {
               "name": "String",
               "name_span": {
-                "start": 7483,
-                "end": 7489,
-                "line": 179
+                "start": 7829,
+                "end": 7835,
+                "line": 185
               },
               "arity": "Required",
               "generic_args": []
             },
             "attributes": [],
             "span": {
-              "start": 7467,
-              "end": 7489,
-              "line": 179
+              "start": 7813,
+              "end": 7835,
+              "line": 185
             }
           }
         ],
         "span": {
-          "start": 7427,
-          "end": 7491,
-          "line": 178
+          "start": 7773,
+          "end": 7837,
+          "line": 184
         }
       }
     ],
@@ -4740,9 +6316,9 @@
         "docs": [],
         "name": "issueIntegrationCredential",
         "name_span": {
-          "start": 7312,
-          "end": 7338,
-          "line": 175
+          "start": 7658,
+          "end": 7684,
+          "line": 181
         },
         "kind": "Mutation",
         "args": [
@@ -4750,33 +6326,33 @@
             "docs": [],
             "name": "args",
             "name_span": {
-              "start": 7339,
-              "end": 7343,
-              "line": 175
+              "start": 7685,
+              "end": 7689,
+              "line": 181
             },
             "ty": {
               "name": "IssueIntegrationCredentialInput",
               "name_span": {
-                "start": 7345,
-                "end": 7376,
-                "line": 175
+                "start": 7691,
+                "end": 7722,
+                "line": 181
               },
               "arity": "Required",
               "generic_args": []
             },
             "span": {
-              "start": 7339,
-              "end": 7376,
-              "line": 175
+              "start": 7685,
+              "end": 7722,
+              "line": 181
             }
           }
         ],
         "return_type": {
           "name": "IntegrationCredential",
           "name_span": {
-            "start": 7379,
-            "end": 7400,
-            "line": 175
+            "start": 7725,
+            "end": 7746,
+            "line": 181
           },
           "arity": "Required",
           "generic_args": []
@@ -4785,25 +6361,25 @@
           {
             "raw": "@allow(auth() != null)",
             "span": {
-              "start": 7403,
-              "end": 7425,
-              "line": 176
+              "start": 7749,
+              "end": 7771,
+              "line": 182
             }
           }
         ],
         "span": {
-          "start": 7293,
-          "end": 7400,
-          "line": 175
+          "start": 7639,
+          "end": 7746,
+          "line": 181
         }
       },
       {
         "docs": [],
         "name": "revokeIntegrationCredential",
         "name_span": {
-          "start": 7512,
-          "end": 7539,
-          "line": 182
+          "start": 7858,
+          "end": 7885,
+          "line": 188
         },
         "kind": "Mutation",
         "args": [
@@ -4811,33 +6387,33 @@
             "docs": [],
             "name": "args",
             "name_span": {
-              "start": 7540,
-              "end": 7544,
-              "line": 182
+              "start": 7886,
+              "end": 7890,
+              "line": 188
             },
             "ty": {
               "name": "RevokeIntegrationCredentialInput",
               "name_span": {
-                "start": 7546,
-                "end": 7578,
-                "line": 182
+                "start": 7892,
+                "end": 7924,
+                "line": 188
               },
               "arity": "Required",
               "generic_args": []
             },
             "span": {
-              "start": 7540,
-              "end": 7578,
-              "line": 182
+              "start": 7886,
+              "end": 7924,
+              "line": 188
             }
           }
         ],
         "return_type": {
           "name": "Integration",
           "name_span": {
-            "start": 7581,
-            "end": 7592,
-            "line": 182
+            "start": 7927,
+            "end": 7938,
+            "line": 188
           },
           "arity": "Required",
           "generic_args": []
@@ -4846,16 +6422,16 @@
           {
             "raw": "@allow(auth() != null)",
             "span": {
-              "start": 7595,
-              "end": 7617,
-              "line": 183
+              "start": 7941,
+              "end": 7963,
+              "line": 189
             }
           }
         ],
         "span": {
-          "start": 7493,
-          "end": 7592,
-          "line": 182
+          "start": 7839,
+          "end": 7938,
+          "line": 188
         }
       }
     ],

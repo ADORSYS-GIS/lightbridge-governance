@@ -12,6 +12,8 @@
 
 pub mod credential;
 pub mod error;
+pub mod identity;
+pub mod ingest;
 pub mod migrate;
 pub mod money;
 pub mod registry;

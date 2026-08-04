@@ -25,4 +25,5 @@ hex.workspace = true
 aws-sdk-s3.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+cuid.workspace = true
