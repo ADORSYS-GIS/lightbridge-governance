@@ -17,6 +17,9 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{Error, MicroUsd, Result};
 
+const MAX_DEADLOCK_RETRIES: u32 = 3;
+const DEADLOCK_RETRY_BASE_MS: u64 = 10;
+
 /// Normalized telemetry from a push connector.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionInput {
@@ -146,6 +149,31 @@ pub async fn ingest_telemetry(
 ) -> Result<IngestResult> {
     validate_input(executions)?;
 
+    let mut attempt = 0;
+    loop {
+        match ingest_telemetry_inner(pool, tenant_id, integration_id, provider, executions).await {
+            Ok(result) => return Ok(result),
+            Err(Error::Storage(e)) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                attempt += 1;
+                let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn is_deadlock(e: &cratestack_core::CoolError) -> bool {
+    matches!(e, cratestack_core::CoolError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("40P01"))
+}
+
+async fn ingest_telemetry_inner(
+    pool: &PgPool,
+    tenant_id: &str,
+    integration_id: &str,
+    provider: &str,
+    executions: &[ExecutionInput],
+) -> Result<IngestResult> {
     let mut tx = pool
         .begin()
         .await
