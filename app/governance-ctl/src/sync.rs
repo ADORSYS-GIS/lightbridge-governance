@@ -62,9 +62,10 @@ async fn ingest_day(
 ) -> Result<Vec<governance_copilot::ReportOutcome>> {
     let auth = AppAuth::new(cfg.app_id.clone(), cfg.private_key.clone(), client);
     let archive = cfg.archive.clone();
-    let archive_fn = move |key: &str, bytes: &[u8]| -> governance_copilot::Result<()> {
+    let archive_fn = async |key: &str, bytes: &[u8]| {
         archive
             .write(key, bytes)
+            .await
             .map_err(|e| CopilotError::Archive(format!("{e:#}")))
     };
 

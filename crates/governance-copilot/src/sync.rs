@@ -18,9 +18,12 @@ use crate::{
     },
 };
 
-/// Key under which a report's raw NDJSON is archived. Printable only; never a URL.
+/// Key under which a report's raw NDJSON is archived, relative to the sink's
+/// own prefix (`copilot-governance/raw/` on S3, `RAW_DIR` locally; RFC-0001).
+/// Must stay in lockstep with `Archive::list_day`/`read` — replay depends on
+/// it. Printable only; never a URL.
 pub fn archive_key(org: &str, report: &str, day: &str) -> String {
-    format!("copilot/org={org}/day={day}/{report}.ndjson")
+    format!("org={org}/day={day}/{report}.ndjson")
 }
 
 /// Outcome of ingesting one report for one day.
@@ -41,7 +44,7 @@ pub async fn sync_day(
     tenant_id: &str,
     org: &str,
     day: &str,
-    archive: impl Fn(&str, &[u8]) -> Result<()>,
+    archive: impl AsyncFn(&str, &[u8]) -> Result<()>,
 ) -> Result<Vec<ReportOutcome>> {
     let token = auth.token_for_org(org).await?;
     let mut outcomes = Vec::new();
@@ -67,7 +70,7 @@ async fn ingest_one(
     day: &str,
     report: &str,
     token: &crate::RawSecret,
-    archive: &impl Fn(&str, &[u8]) -> Result<()>,
+    archive: &impl AsyncFn(&str, &[u8]) -> Result<()>,
 ) -> Result<ReportOutcome> {
     let downloaded = client.fetch_report(org, report, day, token).await?;
     let host = downloaded.host.clone();
@@ -97,7 +100,7 @@ async fn ingest_one(
 
     // Archive raw BEFORE parsing (RFC-0001: replay, not refetch).
     let key = archive_key(org, report, day);
-    archive(&key, &downloaded.bytes)?;
+    archive(&key, &downloaded.bytes).await?;
 
     let outcome = replay_report(pool, tenant_id, org, day, report, &downloaded.bytes).await?;
     Ok(ReportOutcome {

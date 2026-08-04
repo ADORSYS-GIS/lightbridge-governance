@@ -1,16 +1,16 @@
 //! The raw-report archive sink: S3 in production, a local directory in dev.
 //!
-//! `sync_day`'s archive closure is synchronous (the connector API takes
-//! `impl Fn(&str, &[u8])`), so the S3 calls here run via
-//! `Handle::current().block_on` on the multi-thread runtime this binary starts
-//! with. That is fine for a daily CronJob run of sequential writes; if the
-//! collector ever goes concurrent, the connector's archive signature is where
-//! the async boundary belongs.
+//! The async boundary lives in the connector's archive signature
+//! (`impl AsyncFn(&str, &[u8])`), so writes await the sink directly — no
+//! `block_on` inside the runtime. The binary runs the connector on a
+//! multi-thread runtime and the CronJob is sequential by construction; if the
+//! collector ever goes concurrent, only the connector call sites change.
 //!
-//! Object layout follows the plan: `copilot-governance/raw/` prefix on S3 over
-//! the connector's relative key (`org=…/day=…/{report}.ndjson`). The S3
-//! endpoint is Hetzner Object Storage (Ceph-RGW), path-style, same as the
-//! LibreChat/CNPG-bootstrap precedent.
+//! Object layout follows RFC-0001: `copilot-governance/raw/` prefix on S3 over
+//! the connector's relative key (`org=…/day=…/{report}.ndjson`); locally the
+//! same relative key under `RAW_DIR`. The S3 endpoint is Hetzner Object
+//! Storage (Ceph-RGW), path-style, same as the LibreChat/CNPG-bootstrap
+//! precedent.
 
 use std::path::PathBuf;
 
@@ -84,18 +84,17 @@ impl Archive {
 
     /// Archive the raw payload. The connector hands us its relative key; the
     /// sink maps it to its own layout.
-    pub fn write(&self, key: &str, bytes: &[u8]) -> Result<()> {
+    pub async fn write(&self, key: &str, bytes: &[u8]) -> Result<()> {
         match self {
             Self::S3 { client, bucket } => {
                 let full = format!("{S3_PREFIX}{key}");
-                let fut = client
+                client
                     .put_object()
                     .bucket(bucket)
                     .key(full)
                     .body(aws_sdk_s3::primitives::ByteStream::from(bytes.to_vec()))
-                    .send();
-                tokio::runtime::Handle::current()
-                    .block_on(fut)
+                    .send()
+                    .await
                     .with_context(|| format!("s3 put {key}"))?;
             }
             Self::Local { dir } => {
@@ -170,5 +169,63 @@ impl Archive {
                 Ok(out)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+
+    static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
+
+    fn tmp_dir() -> PathBuf {
+        let n = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("lb-archive-test-{}-{n}", std::process::id()))
+    }
+
+    /// Regression test for the review finding that `archive_key`'s layout must
+    /// agree with `list_day`/`read`: replay's read path would silently find
+    /// nothing when the write key carried a segment the reader never looked
+    /// under. The sink-specific prefixes (S3_PREFIX / RAW_DIR) are added by
+    /// both write and read, so the Local sink exercises the shared layout.
+    #[test]
+    fn archive_key_round_trips_through_list_day_and_read() {
+        let dir = tmp_dir();
+        let archive = Archive::Local { dir: dir.clone() };
+        let org = "it-org";
+        let day = "2026-07-01";
+        let reports = ["users", "repos", "organization"];
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for report in reports {
+                let key = governance_copilot::archive_key(org, report, day);
+                archive
+                    .write(&key, format!("{report}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+
+            let keys = archive.list_day(org, day).await.unwrap();
+            let mut names: Vec<String> = keys
+                .iter()
+                .map(|k| k.rsplit('/').next().unwrap().to_owned())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                vec!["organization.ndjson", "repos.ndjson", "users.ndjson"]
+            );
+
+            for report in reports {
+                let key = governance_copilot::archive_key(org, report, day);
+                let bytes = archive.read(&key).await.unwrap();
+                assert_eq!(bytes, format!("{report}\n").as_bytes());
+            }
+        });
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
