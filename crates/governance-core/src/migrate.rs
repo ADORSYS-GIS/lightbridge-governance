@@ -22,6 +22,11 @@ const ENVIRONMENT_MODEL_UP: &str =
 const ENVIRONMENT_MODEL_DOWN: &str =
     include_str!("../migrations/postgres/20260802142154_environment_model/down.sql");
 
+const COPILOT_USAGE_MODELS_UP: &str =
+    include_str!("../migrations/postgres/20260804114257_copilot_usage_models/up.sql");
+const COPILOT_USAGE_MODELS_DOWN: &str =
+    include_str!("../migrations/postgres/20260804114257_copilot_usage_models/down.sql");
+
 // Not one of the tracked `Migration`s below: `apply_pending` splits `up` on
 // every literal `;` before executing each fragment as its own prepared
 // statement (verified in cratestack-sqlx's migrations.rs), which corrupts any
@@ -69,6 +74,31 @@ DROP TRIGGER IF EXISTS environments_touch_updated_at ON environments;
 CREATE TRIGGER environments_touch_updated_at
     BEFORE UPDATE ON environments
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS copilot_org_dailys_touch_updated_at ON copilot_org_dailys;
+CREATE TRIGGER copilot_org_dailys_touch_updated_at
+    BEFORE UPDATE ON copilot_org_dailys
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS copilot_user_dailys_touch_updated_at ON copilot_user_dailys;
+CREATE TRIGGER copilot_user_dailys_touch_updated_at
+    BEFORE UPDATE ON copilot_user_dailys
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS copilot_repo_dailys_touch_updated_at ON copilot_repo_dailys;
+CREATE TRIGGER copilot_repo_dailys_touch_updated_at
+    BEFORE UPDATE ON copilot_repo_dailys
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS copilot_user_teams_touch_updated_at ON copilot_user_teams;
+CREATE TRIGGER copilot_user_teams_touch_updated_at
+    BEFORE UPDATE ON copilot_user_teams
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS copilot_seat_snapshots_touch_updated_at ON copilot_seat_snapshots;
+CREATE TRIGGER copilot_seat_snapshots_touch_updated_at
+    BEFORE UPDATE ON copilot_seat_snapshots
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 "#;
 
 fn migrations() -> Vec<Migration> {
@@ -95,6 +125,14 @@ fn migrations() -> Vec<Migration> {
                 .to_owned(),
             up: ENVIRONMENT_MODEL_UP.to_owned(),
             down: Some(ENVIRONMENT_MODEL_DOWN.to_owned()),
+        },
+        Migration {
+            id: "20260804114257_copilot_usage_models".to_owned(),
+            description: "copilot: org/user/repo daily, user-teams, and seat snapshot \
+                           normalized report tables (RFC-0001, #12)"
+                .to_owned(),
+            up: COPILOT_USAGE_MODELS_UP.to_owned(),
+            down: Some(COPILOT_USAGE_MODELS_DOWN.to_owned()),
         },
     ]
 }

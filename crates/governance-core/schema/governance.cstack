@@ -233,3 +233,114 @@ model IngestManifest {
   @@paged
   @@allow("read", auth() != null)
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Copilot usage (RFC-0001)
+// ────────────────────────────────────────────────────────────────────────────
+
+// One row per (organization, report day). Money is integer micro-USD (ADR-0008):
+// `netCostMicroUsd` is cratestack `Int` (= i64), never Decimal/Float. The
+// fine-grained per-user IDE/language/model/feature breakouts from `users-1-day`
+// are NOT stored here -- they live in the S3 raw archive and are replayable
+// (ADR-0002); Postgres keeps the aggregate shape Grafana reads.
+model CopilotOrgDaily {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  organizationId String
+  reportDay DateTime
+  activeUsers Int
+  engagedUsers Int
+  totalInteractions Int
+  codeGenerations Int
+  codeAcceptances Int
+  locSuggested Int
+  locAdded Int
+  locDeleted Int
+  aiCredits Int
+  netCostMicroUsd Int
+
+  @@unique([tenantId, organizationId, reportDay])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// Per GitHub user per day. `providerUserId` is GitHub's numeric user id (stable,
+// server-set) -- never match on `userLogin`/display name (RFC-0001 "Identity").
+model CopilotUserDaily {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  organizationId String
+  reportDay DateTime
+  providerUserId String
+  userLogin String
+  totalInteractions Int
+  codeGenerations Int
+  codeAcceptances Int
+  aiCredits Int
+  netCostMicroUsd Int
+
+  @@unique([tenantId, organizationId, reportDay, providerUserId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// Per repository per day.
+model CopilotRepoDaily {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  organizationId String
+  reportDay DateTime
+  repositoryId String
+  codingAgentActivity Int
+  codeReviewActivity Int
+  pullRequestActivity Int
+
+  @@unique([tenantId, organizationId, reportDay, repositoryId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// GitHub user -> team membership from `user-teams-1-day`. GitHub omits teams
+// with fewer than five seated Copilot users -- documented, not fixed (RFC-0001).
+model CopilotUserTeam {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  organizationId String
+  reportDay DateTime
+  userId String
+  teamId String
+  teamSlug String
+
+  @@unique([tenantId, organizationId, reportDay, userId, teamId])
+  @@paged
+  @@allow("read", auth() != null)
+}
+
+// Daily snapshot of assigned Copilot seats (RFC-0001 endpoints list
+// `/copilot/billing/seats`). Idle seat = `lastActivityAt` older than a window.
+model CopilotSeatSnapshot {
+  @use(AuditFields)
+
+  id String @id
+  tenantId String
+  organizationId String
+  snapshotDay DateTime
+  providerUserId String
+  userLogin String
+  seatAssignedAt DateTime?
+  lastActivityAt DateTime?
+  lastActivityEditor String?
+  seatState String
+
+  @@unique([tenantId, organizationId, snapshotDay, providerUserId])
+  @@paged
+  @@allow("read", auth() != null)
+}
