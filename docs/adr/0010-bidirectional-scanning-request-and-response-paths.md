@@ -1,0 +1,209 @@
+# ADR-0010: Bidirectional scanning — request and response paths
+
+- Status: Proposed
+- Date: 2026-08-04
+- Decision owners: @stephane-segning
+
+## Context
+
+The redaction module (`governance-redact`, deployed as `redact-gateway` and `redact-extproc`) sits in
+the AI request path to prevent sensitive data from leaving the boundary. Two directions must be
+handled:
+
+1. **Request path** — the user's prompt. Leaking a credential here means it reaches the LLM,
+   which may log it, use it, or reflect it in a future response.
+
+2. **Response path** — the LLM's completion. The model may surface training-data material (PII
+   that appeared in its corpus), output a code suggestion that contains a leaked key, or generate
+   documentation that includes names or identifiers from an earlier prompt.
+
+The previous architecture (`censgate/redact`) only scanned the request. A leaked credential in a
+prompt was stopped; a leaked SSN in the response was not. Both directions must be covered for the
+guarantee to mean anything.
+
+## Decision
+
+**Both the request and the response are scanned before they cross the trust boundary.**
+
+The scan happens on both paths, in both deployment shapes (`redact-gateway` and `redact-extproc`),
+using the same `governance-redact` engine and the same profile policy. A blocked entity on either
+path stops the exchange — it never completes, and nothing is forwarded past the scanner.
+
+### Request path
+
+The user sends a prompt (JSON body, OpenAI chat-completions shape). The scanner walks every
+`content` field it finds and applies the profile's action:
+
+| Action | What happens |
+|--------|-------------|
+| `Block` | The request is refused immediately (HTTP 422). The LLM **never receives it**. |
+| `Replace` | The span is replaced with a label (e.g. `<EMAIL>`). The body is rewritten and forwarded. |
+| `Mask` | The span is masked with a suffix (e.g. `123-45-6789` → `****6789`). |
+| `Hash` | The span is replaced with a salted SHA-256 digest, consistent across a conversation. |
+| `Allow` | The span is left untouched. |
+
+The rewrite is applied in-place before the (possibly rewritten) body is forwarded. The LLM
+receives the rewritten version — it never sees the original. A `Block` on a credential means the
+entire request is refused; the LLM is blind to the request.
+
+`redact-gateway` (buffered): the entire JSON body is read synchronously, parsed, and walked in one
+pass before the upstream request is sent.
+
+`redact-extproc` (Buffered mode): Envoy hands the entire `RequestBody` message at once (one message
+covering the whole payload). Identical logic to `redact-gateway`'s request path.
+
+### Response path
+
+After the LLM streams back its completion, every byte is scanned before it reaches the client. This
+is symmetric with the request path — a compromised LLM returning training-data PII is the same
+failure class as a user putting a credential in a prompt.
+
+The response path is harder because it is **streaming**, not batch. The model emits tokens as they
+are generated. Scanning the complete response before releasing any byte would mean
+time-to-first-token = time-to-last-token (20-second stream → 20-second wait before the client sees
+anything). For the request path, buffering is fine (the request body is small and arrives at once).
+For the response path, buffering a multi-megabyte completion before forwarding it is both slow
+and memory-intensive.
+
+The solution is **incremental scanning with a bounded hold-back window** (`SseHoldBack`):
+
+1. Chunks arrive from the LLM as SSE frames (`data: {"choices":[{"delta":{"content":"..."}}]}`).
+2. Each chunk's `delta.content` is fed into the scanner.
+3. A bounded buffer ("hold-back window", ~2 KB — see `DEFAULT_WINDOW`) accumulates the latest
+   unscanned text.
+4. Once the buffer exceeds the window, the scanner checks the oldest part:
+   - If no entity spans the buffer boundary → safe prefix is released, written into the SSE frame,
+     and forwarded to the client.
+   - If an entity does span the boundary → the stream is **blocked** at the hold-back point,
+     the client receives an `ImmediateResponse` (HTTP 422), and upstream is never sent more.
+5. Any frame that carries no redactable content (structural SSE lines, `[DONE]`, role-only chunks)
+   passes through immediately.
+6. Frames are released in **strict arrival order** — a ready frame behind a held one waits.
+
+This gives three properties simultaneously:
+
+- **Bounded memory**: only the hold-back window (2 KB) is retained per concurrent stream, not the
+  whole response. Ten concurrent 100 MB streams use ~120 KB, not 1 GB.
+- **Real-time streaming**: first token delay is ~100 ms, not (stream duration).
+- **No blind spots at token boundaries**: entities whose characters split across SSE chunk
+  boundaries are caught because the buffer must fill before anything is released. An entity
+  spanning the boundary is held and resolved before the stream continues.
+
+`redact-gateway` currently uses buffered scanning for the response (`scan_sse` in streaming.rs) —
+the whole body is buffered before scanning. This is a safe default while the incremental path is
+validated. `redact-extproc` uses `SseHoldBack` for responses (the Envoy `processingMode.response.body:
+Streamed` setting makes chunks available incrementally).
+
+### Entities covered (coding-assistant profile)
+
+| Entity | Default action |
+|--------|--------------|
+| Email address | Replace → `<EMAIL>` |
+| Phone number | Replace → `<PHONE>` |
+| SSN | Mask → `****-**-6789` (last 4) |
+| Credit card | Mask → `************6789` (last 4) |
+| API key / secret | **Block** → request refused |
+| Private key | **Block** → request refused |
+
+Credentials are `Block`, not redacted — a leaked key should not reach the LLM at all, and a LLM
+response containing a leaked key must not reach the client.
+
+### Profile decisions
+
+The redaction profile is configured at startup and is shared by both paths. An unknown profile
+name is **rejected at startup**, never silently resolved to a weaker default — silently falling
+back is the exact failure this service exists to prevent.
+
+### Fail-closed failure model
+
+On every profile except `observe-only`, any failure in the scanning path refuses the exchange:
+
+| What went wrong | What the client sees | What the LLM sees |
+|----------------|---------------------|-------------------|
+| Request body unparseable | HTTP 400 | — |
+| Request scan error | HTTP 502 | — |
+| Credential found (Block) | HTTP 422 content_blocked | Nothing — request was refused first |
+| Non-2xx upstream response | Upstream's error body, passed through | — |
+| Response body unparseable | HTTP 502 | — |
+| Response scan error | HTTP 502 | — |
+| Response block (prohibited content) | HTTP 422 content_blocked | LLM stopped mid-stream; nothing further sent |
+
+`observe-only` is the documented exception: an indeterminate result is logged and the exchange
+continues, because the profile makes no promises in exchange.
+
+## Consequences
+
+**Positive**
+
+- Entire request/response surface is scanned, request and response.
+- Credentials are prevented at the gate — the LLM never receives a blocked payload.
+- LLM-sourced PII (training data leakage, model memorization) is caught on output.
+- Bounded memory per concurrent stream (hold-back window), enabling scale without OOM risk.
+- Real-time streaming latency preserved by incremental scan-and-release.
+- Both paths log to the same Prometheus metrics, giving a unified view of the redaction surface.
+
+**Negative**
+
+- UTF-8 codepoint split at a chunk boundary is not yet handled — the stream fails closed rather
+  than misdecoding. Real non-ASCII text will hit this. The `sse.rs` module doc (lines 23-26) notes
+  this gap explicitly.
+- `Person` / `Location` entities (NER) are not yet active — `pii`'s `candle-ner` feature ships a
+  trait, not a model. All name detection falls back to pattern recognizers only.
+- A `Block` on the response path stops the stream mid-completion. The user's request was
+  processed; they get a partial response or an error. This is the right behavior (fail closed)
+  but disruptive for sessions that otherwise completed normally.
+- Request scanning adds latency to the upstream round-trip (one synchronous parse-and-walk pass
+  before forwarding). At `~1 ms / KB` scanning speed this is negligible for typical prompt sizes
+  (a few KB) but scales with the prompt.
+
+**Neutral / follow-ups**
+
+- Profile migration: the profile is configured at deployment (Helm values), not per-request.
+  Tenant-specific profiles (one team uses `observe-only`, another uses `coding-assistant`) require
+  routing logic upstream of this module.
+- Streaming scan latency: the hold-back window introduces a ceiling-delay proportional to the
+  window size divided by the token arrival rate. At normal streaming speeds (~30 tokens/second)
+  a 2 KB window fills in ~2 KB / (30 tokens × ~7 bytes/token) ≈ 10 seconds.
+- Multi-choice (`n > 1`) traffic has not been exercised at scale on this platform.
+  (`SseHoldBack` handles it, but interleaving is unvalidated.)
+- No per-tenant or per-user policy today.
+
+## Alternatives considered
+
+- **Scan requests only, pass responses through** — rejected. A leaked SSN in the response is
+  the same data-leak failure as a leaked API key in the prompt. The guarantee is only meaningful
+  bidirectional, and a platform that scans prompts but not completions cannot claim to protect
+  the data boundary.
+
+- **Buffer entire response, then scan (current redact-gateway approach)** — accepted as the
+  safe default while incremental scanning is validated. Confirmed safe: no entity can hide in
+  a token split because the whole stream is available before any byte is forwarded. Cost:
+  time-to-first-token = time-to-last-token, which is poor UX for long completions. `scan_sse`
+  (buffered) is the conservative default; `SseHoldBack` (incremental) is the production target.
+
+- **Buffer entire response, rewrite, then stream back** — same as above but re-emits the buffered
+  body after scan. Same latency problem. `SseHoldBack` solves this by releasing safe text as soon
+  as the window confirms it.
+
+- **Scan on the client side (JavaScript intercept before send / after receive)** — rejected.
+  Client-side scanning is in the attacker's trust domain. It can be removed, manipulated, or
+  bypassed. The scanning must live server-side, in the infrastructure this team controls.
+
+- **Let the LLM provider handle PII redaction** — rejected. The provider may not have a policy
+  equivalent to `coding-assistant`, and does not have the same data-isolation guarantees as the
+  cluster. The request path is ours to control.
+
+## Related
+
+- RFC: `docs/rfc/0003-governance-redact-module.md` (proposed)
+- Code: `crates/governance-redact/src/lib.rs`
+- Code: `crates/governance-redact/src/payload.rs` (`scan_request`, `scan_response`)
+- Code: `crates/governance-redact/src/sse.rs` (`SseHoldBack`, incremental response scanning)
+- Code: `crates/governance-redact/src/streaming.rs` (`scan_sse`, buffered response scanning)
+- Code: `crates/governance-redact/src/holdback.rs` (`HoldBack`, raw byte hold-back)
+- Code: `crates/governance-redact/src/engine.rs` (`Engine::scan`, core scanning API)
+- Code: `crates/governance-redact/src/profile.rs` (policy profiles and entity actions)
+- Code: `app/redact-gateway/src/proxy.rs` (proxy request + response handler)
+- Code: `app/redact-extproc/src/service.rs` (ext_proc request + response handler)
+- Deployment: `charts/redact-gateway/values.yaml`
+- ai-helm ADR (platform counterpart, networking in the Envoy/EasyFusion cluster)

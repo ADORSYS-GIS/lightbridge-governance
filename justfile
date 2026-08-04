@@ -64,3 +64,22 @@ redact-down:
 redact-test:
 	@echo "Checking redact-gateway (/livez)..." && curl -sf http://localhost:8080/livez && echo " OK" || echo " FAILED"
 	@echo "Checking redact-extproc (/livez)..." && curl -sf http://localhost:9501/livez && echo " OK" || echo " FAILED"
+
+# Live end-to-end redaction test against a real LLM.
+#
+# Required:
+#   export REDACT_API_KEY='your-key-here'
+#
+# Optional:
+#   export REDACT_MODEL='llama-3.1-8b-instant'    # defaults to llama-3.1-8b-instant
+#   export REDACT_TEST=1                          # full scenario suite
+#   export REPEAT=10                             # concurrent load multiplier
+#
+# just targets:
+#   just redact-test-live              # single clean streaming request
+#   REDACT_TEST=1 just redact-test-live   # full scenario suite
+#   REPEAT=10 just redact-test-live       # 10x concurrent load
+#
+# Requires: just redact-up (stack must be running)
+redact-test-live:
+	/usr/bin/env bash scripts/test-redact-live.sh
