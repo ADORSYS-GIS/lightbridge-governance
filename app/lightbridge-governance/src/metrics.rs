@@ -7,7 +7,7 @@
 //!   ingest outage (auth failures, malformed OTLP, storage errors, rate
 //!   limiting) is observable, not a silent 500 in a log that nobody reads.
 
-use prometheus::{IntCounter, IntCounterVec, Registry, opts};
+use prometheus::{opts, IntCounter, IntCounterVec, Registry};
 
 pub struct Metrics {
     registry: Registry,
@@ -20,6 +20,8 @@ pub struct Metrics {
     pub ingest_executions_total: IntCounter,
     pub ingest_model_calls_total: IntCounter,
     pub ingest_tool_calls_total: IntCounter,
+    /// Identity mismatch detection failures (best-effort query failures).
+    pub ingest_identity_mismatch_failures_total: IntCounter,
 }
 
 impl Metrics {
@@ -53,6 +55,11 @@ impl Metrics {
             "tool calls upserted by /internal/v1/ingest",
         )
         .expect("static metric definition");
+        let ingest_identity_mismatch_failures_total = IntCounter::new(
+            "governance_ingest_identity_mismatch_failures_total",
+            "identity mismatch detection failures (best-effort query failures)",
+        )
+        .expect("static metric definition");
 
         let metrics = Self {
             registry: Registry::new(),
@@ -60,17 +67,20 @@ impl Metrics {
             ingest_executions_total: ingest_executions_total.clone(),
             ingest_model_calls_total: ingest_model_calls_total.clone(),
             ingest_tool_calls_total: ingest_tool_calls_total.clone(),
+            ingest_identity_mismatch_failures_total: ingest_identity_mismatch_failures_total
+                .clone(),
         };
 
         // Registry::register fails only on a name collision or an already
         // registered collector -- impossible here since each is registered
         // exactly once. Logged, not fatal: a missing metric is worse than a
         // 500 on startup.
-        let collectors: [Box<dyn prometheus::core::Collector>; 4] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 5] = [
             Box::new(ingest_requests_total),
             Box::new(ingest_executions_total),
             Box::new(ingest_model_calls_total),
             Box::new(ingest_tool_calls_total),
+            Box::new(ingest_identity_mismatch_failures_total),
         ];
         for collector in collectors {
             if let Err(error) = metrics.registry.register(collector) {
@@ -111,10 +121,12 @@ mod tests {
             .with_label_values(&["success"])
             .inc();
         metrics.ingest_executions_total.inc();
+        metrics.ingest_identity_mismatch_failures_total.inc();
 
         let out = metrics.render();
         assert!(out.contains("governance_ingest_requests_total{outcome=\"success\"} 1"));
         assert!(out.contains("governance_ingest_executions_total 1"));
+        assert!(out.contains("governance_ingest_identity_mismatch_failures_total 1"));
     }
 
     #[test]

@@ -1001,26 +1001,27 @@ async fn check_email_mismatches_detects_identity_conflict() {
     .expect("identity map insert must succeed");
 
     // Token is bound to "bob-keycloak-id", but payload claims "alice@example.com"
-    let resolutions = governance_core::identity::check_email_mismatches(
-        &pool,
-        &tenant_id,
-        "github_copilot",
-        Some("bob-keycloak-id"),
-        &[Some("alice@example.com")],
-    )
-    .await;
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[Some("alice@example.com")],
+        )
+        .await;
 
-    assert_eq!(resolutions.len(), 1);
-    let resolution = &resolutions[0];
+    assert_eq!(mismatches.len(), 1);
     assert_eq!(
-        resolution.internal_user_id,
+        token_identity,
         Some("bob-keycloak-id".to_owned()),
         "token identity must be preserved"
     );
     assert!(
-        resolution.mismatch,
+        mismatches[0],
         "mismatch must be detected when payload email maps to different user"
     );
+    assert!(!query_failed, "query should not fail");
 }
 
 #[tokio::test]
@@ -1046,26 +1047,27 @@ async fn check_email_mismatches_no_conflict_when_email_matches_token() {
     .expect("identity map insert must succeed");
 
     // Token is bound to "alice-keycloak-id", payload claims "alice@example.com" (same user)
-    let resolutions = governance_core::identity::check_email_mismatches(
-        &pool,
-        &tenant_id,
-        "github_copilot",
-        Some("alice-keycloak-id"),
-        &[Some("alice@example.com")],
-    )
-    .await;
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("alice-keycloak-id"),
+            &[Some("alice@example.com")],
+        )
+        .await;
 
-    assert_eq!(resolutions.len(), 1);
-    let resolution = &resolutions[0];
+    assert_eq!(mismatches.len(), 1);
     assert_eq!(
-        resolution.internal_user_id,
+        token_identity,
         Some("alice-keycloak-id".to_owned()),
         "token identity must be preserved"
     );
     assert!(
-        !resolution.mismatch,
+        !mismatches[0],
         "no mismatch when payload email maps to same user as token"
     );
+    assert!(!query_failed, "query should not fail");
 }
 
 #[tokio::test]
@@ -1077,26 +1079,27 @@ async fn check_email_mismatches_no_conflict_when_email_unknown() {
     insert_tenant(&pool, &tenant_id).await;
 
     // Token is bound to "bob-keycloak-id", payload claims "unknown@example.com" (not in identity_maps)
-    let resolutions = governance_core::identity::check_email_mismatches(
-        &pool,
-        &tenant_id,
-        "github_copilot",
-        Some("bob-keycloak-id"),
-        &[Some("unknown@example.com")],
-    )
-    .await;
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[Some("unknown@example.com")],
+        )
+        .await;
 
-    assert_eq!(resolutions.len(), 1);
-    let resolution = &resolutions[0];
+    assert_eq!(mismatches.len(), 1);
     assert_eq!(
-        resolution.internal_user_id,
+        token_identity,
         Some("bob-keycloak-id".to_owned()),
         "token identity must be preserved"
     );
     assert!(
-        !resolution.mismatch,
+        !mismatches[0],
         "no mismatch when payload email is not in identity_maps"
     );
+    assert!(!query_failed, "query should not fail");
 }
 
 #[tokio::test]
@@ -1108,26 +1111,27 @@ async fn check_email_mismatches_no_conflict_when_no_payload_email() {
     insert_tenant(&pool, &tenant_id).await;
 
     // Token is bound to "bob-keycloak-id", no payload email
-    let resolutions = governance_core::identity::check_email_mismatches(
-        &pool,
-        &tenant_id,
-        "github_copilot",
-        Some("bob-keycloak-id"),
-        &[None],
-    )
-    .await;
+    let (token_identity, mismatches, query_failed) =
+        governance_core::identity::check_email_mismatches(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            Some("bob-keycloak-id"),
+            &[None],
+        )
+        .await;
 
-    assert_eq!(resolutions.len(), 1);
-    let resolution = &resolutions[0];
+    assert_eq!(mismatches.len(), 1);
     assert_eq!(
-        resolution.internal_user_id,
+        token_identity,
         Some("bob-keycloak-id".to_owned()),
         "token identity must be preserved"
     );
     assert!(
-        !resolution.mismatch,
+        !mismatches[0],
         "no mismatch when payload has no email"
     );
+    assert!(!query_failed, "query should not fail");
 }
 
 #[tokio::test]
@@ -1195,6 +1199,10 @@ async fn end_to_end_identity_binding_with_mismatch_detection() {
     .expect("ingest must succeed");
 
     assert_eq!(result.executions_upserted, 1);
+    assert!(
+        !result.identity_mismatch_detection_failed,
+        "mismatch detection should not fail in normal operation"
+    );
 
     // Step 4: Verify the execution was stored with token-derived identity
     let row: (Option<String>,) = cratestack::sqlx::query_as(

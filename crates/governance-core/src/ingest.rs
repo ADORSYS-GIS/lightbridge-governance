@@ -59,6 +59,8 @@ pub struct IngestResult {
     pub executions_upserted: i64,
     pub model_calls_upserted: i64,
     pub tool_calls_upserted: i64,
+    /// Whether identity mismatch detection query failed (best-effort).
+    pub identity_mismatch_detection_failed: bool,
 }
 
 /// Derives a deterministic id from `(trace_id, span_id)` so the same
@@ -155,6 +157,7 @@ pub async fn ingest_telemetry(
         executions_upserted: 0,
         model_calls_upserted: 0,
         tool_calls_upserted: 0,
+        identity_mismatch_detection_failed: false,
     };
 
     // Resolve the integration's bound identity once per batch (#35).
@@ -167,7 +170,7 @@ pub async fn ingest_telemetry(
     // Batch query to avoid N+1 problem.
     let payload_emails: Vec<Option<&str>> =
         executions.iter().map(|e| e.user_email.as_deref()).collect();
-    let resolutions = crate::identity::check_email_mismatches(
+    let (token_identity, mismatches, query_failed) = crate::identity::check_email_mismatches(
         pool,
         tenant_id,
         provider,
@@ -176,16 +179,19 @@ pub async fn ingest_telemetry(
     )
     .await;
 
-    for (execution, resolution) in executions.iter().zip(resolutions.iter()) {
+    // Store the query failure flag in the result for the app layer to handle metrics.
+    result.identity_mismatch_detection_failed = query_failed;
+
+    for (execution, mismatch) in executions.iter().zip(mismatches.iter()) {
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
 
-        if resolution.mismatch {
+        if *mismatch {
             // Log mismatch without PII: only log that a mismatch occurred, not the email itself.
             tracing::warn!(
                 tenant_id = %tenant_id,
                 integration_id = %integration_id,
                 provider = %provider,
-                internal_user_id = ?internal_user_id,
+                internal_user_id = ?token_identity,
                 "identity mismatch: payload email does not match token-derived identity"
             );
         }
@@ -464,12 +470,14 @@ mod tests {
             executions_upserted: 5,
             model_calls_upserted: 10,
             tool_calls_upserted: 3,
+            identity_mismatch_detection_failed: false,
         };
 
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("\"executions_upserted\":5"));
         assert!(json.contains("\"model_calls_upserted\":10"));
         assert!(json.contains("\"tool_calls_upserted\":3"));
+        assert!(json.contains("\"identity_mismatch_detection_failed\":false"));
     }
 
     fn valid_execution() -> ExecutionInput {

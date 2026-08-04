@@ -25,6 +25,8 @@
 //! Keycloak `internal_user_id`). This table must be populated by the identity
 //! provider integration, not by the telemetry ingest pipeline.
 
+use std::collections::{HashMap, HashSet};
+
 use cratestack::{cool_error_from_sqlx, sqlx};
 use sqlx::PgPool;
 
@@ -63,30 +65,34 @@ pub async fn get_integration_identity(
 
 /// Checks if payload emails mismatch the token-derived identity.
 ///
-/// Returns a vector of `IdentityResolution` results, one per email. The mismatch
-/// check queries `identity_maps` for all emails in the batch at once to avoid
-/// N+1 queries.
+/// Returns a tuple of (token_user_id, mismatch_flags, query_failed) where:
+/// - mismatch_flags[i] indicates whether payload_emails[i] mismatches the token identity
+/// - query_failed indicates whether the identity_maps query failed (best-effort detection)
 ///
-/// This is best-effort: if the query fails, all results have `mismatch = false`
-/// and an error is logged. Mismatch detection should not block telemetry ingest.
+/// The mismatch check queries `identity_maps` for all emails in the batch at
+/// once to avoid N+1 queries.
+///
+/// This is best-effort: if the query fails, all mismatch flags are false and
+/// query_failed is true. The caller should increment a metric and log the error.
+/// Mismatch detection should not block telemetry ingest.
 pub async fn check_email_mismatches(
     pool: &PgPool,
     tenant_id: &str,
     provider: &str,
     token_user_id: Option<&str>,
     payload_emails: &[Option<&str>],
-) -> Vec<IdentityResolution> {
+) -> (Option<String>, Vec<bool>, bool) {
     // Collect unique non-None emails for batch lookup.
     let unique_emails: Vec<&str> = payload_emails
         .iter()
         .filter_map(|e| *e)
-        .collect::<std::collections::HashSet<_>>()
+        .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 
     // Batch query identity_maps for all emails at once.
-    let email_mappings: std::collections::HashMap<String, String> = if unique_emails.is_empty() {
-        std::collections::HashMap::new()
+    let (email_mappings, query_failed) = if unique_emails.is_empty() {
+        (HashMap::new(), false)
     } else {
         match sqlx::query_as::<_, (String, String)>(
             "SELECT provider_user_id, internal_user_id FROM identity_maps \
@@ -102,11 +108,11 @@ pub async fn check_email_mismatches(
         {
             Ok(rows) => {
                 // Keep only the most recent mapping per email (first occurrence after ORDER BY).
-                let mut map = std::collections::HashMap::new();
+                let mut map = HashMap::new();
                 for (email, user_id) in rows {
                     map.entry(email).or_insert(user_id);
                 }
-                map
+                (map, false)
             }
             Err(e) => {
                 // Best-effort: log error and continue without mismatch detection.
@@ -116,27 +122,24 @@ pub async fn check_email_mismatches(
                     error = %cool_error_from_sqlx(e),
                     "failed to query identity_maps for mismatch detection; continuing without mismatch alerts"
                 );
-                std::collections::HashMap::new()
+                (HashMap::new(), true)
             }
         }
     };
 
-    // Build results for each email.
-    payload_emails
+    // Build mismatch flags for each email.
+    let mismatches = payload_emails
         .iter()
         .map(|email_opt| {
-            let mismatch = if let (Some(token_id), Some(email)) = (token_user_id, email_opt) {
+            if let (Some(token_id), Some(email)) = (token_user_id, email_opt) {
                 email_mappings
                     .get(*email)
                     .is_some_and(|mapped_id| mapped_id != token_id)
             } else {
                 false
-            };
-
-            IdentityResolution {
-                internal_user_id: token_user_id.map(|s| s.to_string()),
-                mismatch,
             }
         })
-        .collect()
+        .collect();
+
+    (token_user_id.map(|s| s.to_string()), mismatches, query_failed)
 }
