@@ -133,10 +133,8 @@ model Integration {
   credentialHash String @server_only
   status String @readonly
   contentCapture String
-  // Developer identity binding (#35): the provider user ID (e.g., email) and
-  // internal user ID (Keycloak sub) this token is bound to. Used for attribution
-  // and mismatch detection.
-  providerUserId String?
+  // Developer identity binding (#35): the internal user ID (Keycloak sub) this
+  // token is bound to. Used for attribution and mismatch detection.
   internalUserId String?
   lastTelemetryAt DateTime?
   lastUsedAt DateTime? @readonly

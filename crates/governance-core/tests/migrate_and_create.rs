@@ -990,14 +990,15 @@ async fn check_email_mismatches_detects_identity_conflict() {
 
     // Create an identity map: email "alice@example.com" -> internal_user_id "alice-keycloak-id"
     cratestack::sqlx::query(
-        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(format!("idmap-{}", cuid::cuid2()))
     .bind(&tenant_id)
     .bind("github_copilot")
     .bind("alice@example.com")
     .bind("alice-keycloak-id")
+    .bind("verified_email")
     .execute(&pool)
     .await
     .expect("identity map insert must succeed");
@@ -1036,14 +1037,15 @@ async fn check_email_mismatches_no_conflict_when_email_matches_token() {
 
     // Create an identity map: email "alice@example.com" -> internal_user_id "alice-keycloak-id"
     cratestack::sqlx::query(
-        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(format!("idmap-{}", cuid::cuid2()))
     .bind(&tenant_id)
     .bind("github_copilot")
     .bind("alice@example.com")
     .bind("alice-keycloak-id")
+    .bind("verified_email")
     .execute(&pool)
     .await
     .expect("identity map insert must succeed");
@@ -1164,14 +1166,15 @@ async fn end_to_end_identity_binding_with_mismatch_detection() {
     // Step 2: Populate identity_maps (simulating OAuth flow)
     // "bob@example.com" maps to "bob-keycloak-id" (different from token)
     cratestack::sqlx::query(
-        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(format!("idmap-{}", cuid::cuid2()))
     .bind(&tenant_id)
     .bind("github_copilot")
     .bind("bob@example.com")
     .bind("bob-keycloak-id")
+    .bind("verified_email")
     .execute(&pool)
     .await
     .expect("identity map insert must succeed");
