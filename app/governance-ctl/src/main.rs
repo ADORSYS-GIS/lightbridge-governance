@@ -8,6 +8,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod archive;
+mod metrics;
+mod sync;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -68,12 +72,45 @@ async fn main() -> Result<()> {
                 tracing::info!(applied = ?applied, "migrations applied");
             }
         }
-        // TODO(RFC-0001): dispatch once the connector lands.
-        Command::Sync
-        | Command::SyncDay { .. }
-        | Command::Replay { .. }
-        | Command::Verify
-        | Command::Status => {}
+        Command::Sync => {
+            let cfg = sync::Config::from_env().await?;
+            let client = governance_copilot::GithubClient::new(reqwest::Client::new());
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let (outcomes, covered) = sync::run_backfill(&client, &pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_run_metrics(&endpoint, "sync", &outcomes, covered as u64).await;
+            }
+        }
+        Command::SyncDay { day } => {
+            let cfg = sync::Config::from_env().await?;
+            let client = governance_copilot::GithubClient::new(reqwest::Client::new());
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_run_metrics(&endpoint, "sync_day", &outcomes, 1).await;
+            }
+        }
+        Command::Replay { from, to } => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            sync::run_replay(&pool, &cfg, &from, &to).await?;
+        }
+        Command::Verify => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let mismatch = sync::run_verify(&pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_verify_metrics(&endpoint, mismatch).await;
+            }
+        }
+        Command::Status => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let (age, unmapped) = sync::run_status(&pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_status_metrics(&endpoint, age, unmapped).await;
+            }
+        }
     }
     Ok(())
 }
