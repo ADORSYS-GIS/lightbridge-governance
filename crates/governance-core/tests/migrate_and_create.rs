@@ -67,6 +67,7 @@
 //! another test's insert.
 
 use cratestack::CoolContext;
+use governance_core::ingest::ExecutionInput;
 use governance_core::schema::cratestack_schema::{
     Cratestack,
     inputs::{CreateApplicationInput, UpdateApplicationInput},
@@ -978,7 +979,7 @@ async fn get_integration_identity_handles_unbound_integration() {
 }
 
 #[tokio::test]
-async fn check_email_mismatch_detects_identity_conflict() {
+async fn check_email_mismatches_detects_identity_conflict() {
     let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
@@ -1000,16 +1001,17 @@ async fn check_email_mismatch_detects_identity_conflict() {
     .expect("identity map insert must succeed");
 
     // Token is bound to "bob-keycloak-id", but payload claims "alice@example.com"
-    let resolution = governance_core::identity::check_email_mismatch(
+    let resolutions = governance_core::identity::check_email_mismatches(
         &pool,
         &tenant_id,
         "github_copilot",
         Some("bob-keycloak-id"),
-        Some("alice@example.com"),
+        &[Some("alice@example.com")],
     )
-    .await
-    .expect("mismatch check must succeed");
+    .await;
 
+    assert_eq!(resolutions.len(), 1);
+    let resolution = &resolutions[0];
     assert_eq!(
         resolution.internal_user_id,
         Some("bob-keycloak-id".to_owned()),
@@ -1022,7 +1024,7 @@ async fn check_email_mismatch_detects_identity_conflict() {
 }
 
 #[tokio::test]
-async fn check_email_mismatch_no_conflict_when_email_matches_token() {
+async fn check_email_mismatches_no_conflict_when_email_matches_token() {
     let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
@@ -1044,16 +1046,17 @@ async fn check_email_mismatch_no_conflict_when_email_matches_token() {
     .expect("identity map insert must succeed");
 
     // Token is bound to "alice-keycloak-id", payload claims "alice@example.com" (same user)
-    let resolution = governance_core::identity::check_email_mismatch(
+    let resolutions = governance_core::identity::check_email_mismatches(
         &pool,
         &tenant_id,
         "github_copilot",
         Some("alice-keycloak-id"),
-        Some("alice@example.com"),
+        &[Some("alice@example.com")],
     )
-    .await
-    .expect("mismatch check must succeed");
+    .await;
 
+    assert_eq!(resolutions.len(), 1);
+    let resolution = &resolutions[0];
     assert_eq!(
         resolution.internal_user_id,
         Some("alice-keycloak-id".to_owned()),
@@ -1066,7 +1069,7 @@ async fn check_email_mismatch_no_conflict_when_email_matches_token() {
 }
 
 #[tokio::test]
-async fn check_email_mismatch_no_conflict_when_email_unknown() {
+async fn check_email_mismatches_no_conflict_when_email_unknown() {
     let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
@@ -1074,16 +1077,17 @@ async fn check_email_mismatch_no_conflict_when_email_unknown() {
     insert_tenant(&pool, &tenant_id).await;
 
     // Token is bound to "bob-keycloak-id", payload claims "unknown@example.com" (not in identity_maps)
-    let resolution = governance_core::identity::check_email_mismatch(
+    let resolutions = governance_core::identity::check_email_mismatches(
         &pool,
         &tenant_id,
         "github_copilot",
         Some("bob-keycloak-id"),
-        Some("unknown@example.com"),
+        &[Some("unknown@example.com")],
     )
-    .await
-    .expect("mismatch check must succeed");
+    .await;
 
+    assert_eq!(resolutions.len(), 1);
+    let resolution = &resolutions[0];
     assert_eq!(
         resolution.internal_user_id,
         Some("bob-keycloak-id".to_owned()),
@@ -1096,7 +1100,7 @@ async fn check_email_mismatch_no_conflict_when_email_unknown() {
 }
 
 #[tokio::test]
-async fn check_email_mismatch_no_conflict_when_no_payload_email() {
+async fn check_email_mismatches_no_conflict_when_no_payload_email() {
     let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
         return;
     };
@@ -1104,16 +1108,17 @@ async fn check_email_mismatch_no_conflict_when_no_payload_email() {
     insert_tenant(&pool, &tenant_id).await;
 
     // Token is bound to "bob-keycloak-id", no payload email
-    let resolution = governance_core::identity::check_email_mismatch(
+    let resolutions = governance_core::identity::check_email_mismatches(
         &pool,
         &tenant_id,
         "github_copilot",
         Some("bob-keycloak-id"),
-        None,
+        &[None],
     )
-    .await
-    .expect("mismatch check must succeed");
+    .await;
 
+    assert_eq!(resolutions.len(), 1);
+    let resolution = &resolutions[0];
     assert_eq!(
         resolution.internal_user_id,
         Some("bob-keycloak-id".to_owned()),
@@ -1122,5 +1127,88 @@ async fn check_email_mismatch_no_conflict_when_no_payload_email() {
     assert!(
         !resolution.mismatch,
         "no mismatch when payload has no email"
+    );
+}
+
+#[tokio::test]
+async fn end_to_end_identity_binding_with_mismatch_detection() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    // Step 1: Issue token bound to "alice-keycloak-id"
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: Some("alice-keycloak-id".to_owned()),
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    // Step 2: Populate identity_maps (simulating OAuth flow)
+    // "bob@example.com" maps to "bob-keycloak-id" (different from token)
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .bind("github_copilot")
+    .bind("bob@example.com")
+    .bind("bob-keycloak-id")
+    .execute(&pool)
+    .await
+    .expect("identity map insert must succeed");
+
+    // Step 3: Ingest telemetry with payload claiming "bob@example.com"
+    let execution = ExecutionInput {
+        trace_id: "trace-e2e-001".to_owned(),
+        span_id: "span-e2e-001".to_owned(),
+        user_email: Some("bob@example.com".to_owned()),
+        started_at: chrono::Utc::now(),
+        duration_ms: 1000,
+        model_calls: vec![],
+        tool_calls: vec![],
+    };
+
+    let result = governance_core::ingest::ingest_telemetry(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+        "github_copilot",
+        &[execution],
+    )
+    .await
+    .expect("ingest must succeed");
+
+    assert_eq!(result.executions_upserted, 1);
+
+    // Step 4: Verify the execution was stored with token-derived identity
+    let row: (Option<String>,) = cratestack::sqlx::query_as(
+        "SELECT internal_user_id FROM executions WHERE trace_id = $1 AND tenant_id = $2",
+    )
+    .bind("trace-e2e-001")
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("execution must exist");
+
+    assert_eq!(
+        row.0,
+        Some("alice-keycloak-id".to_owned()),
+        "execution must be attributed to token-derived identity, not payload email"
     );
 }

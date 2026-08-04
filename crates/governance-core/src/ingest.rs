@@ -163,25 +163,28 @@ pub async fn ingest_telemetry(
     let internal_user_id =
         crate::identity::get_integration_identity(pool, tenant_id, integration_id).await?;
 
-    for execution in executions {
+    // Check for mismatches between token identity and payload emails (#35).
+    // Batch query to avoid N+1 problem.
+    let payload_emails: Vec<Option<&str>> =
+        executions.iter().map(|e| e.user_email.as_deref()).collect();
+    let resolutions = crate::identity::check_email_mismatches(
+        pool,
+        tenant_id,
+        provider,
+        internal_user_id.as_deref(),
+        &payload_emails,
+    )
+    .await;
+
+    for (execution, resolution) in executions.iter().zip(resolutions.iter()) {
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
 
-        // Check for mismatch between token identity and payload email (#35).
-        let resolution = crate::identity::check_email_mismatch(
-            pool,
-            tenant_id,
-            provider,
-            internal_user_id.as_deref(),
-            execution.user_email.as_deref(),
-        )
-        .await?;
-
         if resolution.mismatch {
+            // Log mismatch without PII: only log that a mismatch occurred, not the email itself.
             tracing::warn!(
                 tenant_id = %tenant_id,
                 integration_id = %integration_id,
                 provider = %provider,
-                payload_email = ?execution.user_email,
                 internal_user_id = ?internal_user_id,
                 "identity mismatch: payload email does not match token-derived identity"
             );

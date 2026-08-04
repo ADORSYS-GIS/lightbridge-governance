@@ -15,6 +15,15 @@
 //!    signal worth seeing, not something to resolve silently).
 //! 4. If the payload carries no identity, the token-derived identity is used
 //!    and this is not an error.
+//!
+//! ## Schema Assumption
+//!
+//! The `identity_maps` table stores provider-specific user identifiers in
+//! `provider_user_id`. For Claude Code and Codex, this is the user's email
+//! address. The table is populated by the identity mapping process (e.g., when
+//! a user authenticates via GitHub OAuth, their GitHub email is mapped to their
+//! Keycloak `internal_user_id`). This table must be populated by the identity
+//! provider integration, not by the telemetry ingest pipeline.
 
 use cratestack::{cool_error_from_sqlx, sqlx};
 use sqlx::PgPool;
@@ -52,41 +61,82 @@ pub async fn get_integration_identity(
     Ok(row.and_then(|r| r.0))
 }
 
-/// Checks if a payload email mismatches the token-derived identity.
+/// Checks if payload emails mismatch the token-derived identity.
 ///
-/// Returns an `IdentityResolution` with the token identity and mismatch status.
-/// The mismatch check queries `identity_maps` for the given provider and email.
-pub async fn check_email_mismatch(
+/// Returns a vector of `IdentityResolution` results, one per email. The mismatch
+/// check queries `identity_maps` for all emails in the batch at once to avoid
+/// N+1 queries.
+///
+/// This is best-effort: if the query fails, all results have `mismatch = false`
+/// and an error is logged. Mismatch detection should not block telemetry ingest.
+pub async fn check_email_mismatches(
     pool: &PgPool,
     tenant_id: &str,
     provider: &str,
     token_user_id: Option<&str>,
-    payload_email: Option<&str>,
-) -> Result<IdentityResolution, crate::Error> {
-    let mismatch = if let (Some(token_id), Some(email)) = (token_user_id, payload_email) {
-        // Look up what internal_user_id this email maps to for this provider.
-        let email_mapping: Option<String> = sqlx::query_as(
-            "SELECT internal_user_id FROM identity_maps \
-             WHERE tenant_id = $1 AND provider = $2 AND provider_user_id = $3 \
+    payload_emails: &[Option<&str>],
+) -> Vec<IdentityResolution> {
+    // Collect unique non-None emails for batch lookup.
+    let unique_emails: Vec<&str> = payload_emails
+        .iter()
+        .filter_map(|e| *e)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Batch query identity_maps for all emails at once.
+    let email_mappings: std::collections::HashMap<String, String> = if unique_emails.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        match sqlx::query_as::<_, (String, String)>(
+            "SELECT provider_user_id, internal_user_id FROM identity_maps \
+             WHERE tenant_id = $1 AND provider = $2 AND provider_user_id = ANY($3) \
              AND (valid_to IS NULL OR valid_to > now()) \
-             ORDER BY valid_from DESC LIMIT 1",
+             ORDER BY valid_from DESC",
         )
         .bind(tenant_id)
         .bind(provider)
-        .bind(email)
-        .fetch_optional(pool)
+        .bind(&unique_emails)
+        .fetch_all(pool)
         .await
-        .map_err(|e| crate::Error::Storage(cool_error_from_sqlx(e)))?
-        .map(|(id,): (String,)| id);
-
-        // Mismatch if the email maps to a different user than the token.
-        email_mapping.is_some_and(|mapped_id| mapped_id != token_id)
-    } else {
-        false
+        {
+            Ok(rows) => {
+                // Keep only the most recent mapping per email (first occurrence after ORDER BY).
+                let mut map = std::collections::HashMap::new();
+                for (email, user_id) in rows {
+                    map.entry(email).or_insert(user_id);
+                }
+                map
+            }
+            Err(e) => {
+                // Best-effort: log error and continue without mismatch detection.
+                tracing::error!(
+                    tenant_id = %tenant_id,
+                    provider = %provider,
+                    error = %cool_error_from_sqlx(e),
+                    "failed to query identity_maps for mismatch detection; continuing without mismatch alerts"
+                );
+                std::collections::HashMap::new()
+            }
+        }
     };
 
-    Ok(IdentityResolution {
-        internal_user_id: token_user_id.map(|s| s.to_string()),
-        mismatch,
-    })
+    // Build results for each email.
+    payload_emails
+        .iter()
+        .map(|email_opt| {
+            let mismatch = if let (Some(token_id), Some(email)) = (token_user_id, email_opt) {
+                email_mappings
+                    .get(*email)
+                    .is_some_and(|mapped_id| mapped_id != token_id)
+            } else {
+                false
+            };
+
+            IdentityResolution {
+                internal_user_id: token_user_id.map(|s| s.to_string()),
+                mismatch,
+            }
+        })
+        .collect()
 }
