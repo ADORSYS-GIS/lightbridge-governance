@@ -12,8 +12,7 @@
 //! manufacture an outage that never happened.
 
 use anyhow::Result;
-use opentelemetry::KeyValue;
-use opentelemetry::metrics::MeterProvider;
+use opentelemetry::{KeyValue, metrics::MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::warn;
 
