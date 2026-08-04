@@ -23,6 +23,7 @@ getrandom.workspace = true
 base64.workspace = true
 hex.workspace = true
 aws-sdk-s3.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
