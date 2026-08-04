@@ -26,9 +26,44 @@ sync:
   backoffLimit: 4
   activeDeadlineSeconds: 1800
 
+# The Copilot collector (governance-ctl, runs as the copilot-sync CronJob).
+# The GitHub App needs `Organization Copilot metrics: Read`, `Copilot seat
+# management: Read` and `Metadata: Read` -- spike-0007 proved `Members: Read`
+# is NOT required (the vendor docs and RFC-0001 §2 still say it is). The org's
+# "Copilot metrics API access policy" toggle must be ON: it is an org SETTING,
+# not a permission, and until it is, every request 403s.
+copilot:
+  # The deployment's single tenant (ADR-0001). Set in the deployed values.
+  tenantId: ""
+  org: adorsys-gis
+  s3:
+    # Raw report archive: the shared Hetzner Object Storage bucket, same
+    # material as LibreChat and the CNPG backups (creds via ExternalSecret,
+    # keys under externalSecret.s3RemoteKey). Prefix copilot-governance/raw/.
+    bucket: ssegning-k8s-state
+    endpoint: https://nbg1.your-objectstorage.com
+    region: us-east-1
+    forcePathStyle: "true"
+  # OTLP metrics receiver (Alloy) for the push-based collector metrics (#12 AC
+  # "operational metrics"). Empty host = no env var and no egress; the push is
+  # skipped (and, when set, a failed push is a WARN, never a run failure).
+  # Redact-gateway's precedent uses the `observability` namespace; 4317 is the
+  # OTLP/gRPC receiver port. Confirm the service name against the deployed
+  # Alloy before enabling.
+  otlp:
+    host: ""
+    port: "4317"
+
 serviceMonitor:
   enabled: true
   interval: 30s
+
+# Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
+# copilot-reports.github.com signed-download host (spike-0007) and the S3
+# archive. Scoped to the CronJob pods via the component label; the API
+# Deployment's egress is untouched.
+networkPolicy:
+  enabled: true
 
 # ⚠️ Never `optional: true` on a secretKeyRef env: env vars bind once at pod start
 # and never refresh, so an optional ref lets a pod that beats ESO capture an EMPTY
@@ -45,6 +80,15 @@ externalSecret:
   remoteKey: ai/camer/digital/prod/env
   databaseUrlProperty: governance_database_url
   internalResolveTokenProperty: governance_internal_resolve_token
+  # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
+  # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
+  # users all read). Property names must be created in the remote entries when
+  # the production App is registered (values-repo-FIRST).
+  githubAppIdProperty: governance_github_app_id
+  githubAppPrivateKeyProperty: governance_github_app_private_key
+  s3RemoteKey: prod/meta/test-app
+  s3AccessKeyProperty: s3_backup_cnpg_client_id
+  s3SecretKeyProperty: s3_backup_cnpg_secret
 
 podSecurityContext:
   runAsNonRoot: true
