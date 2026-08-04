@@ -141,5 +141,9 @@ pub async fn check_email_mismatches(
         })
         .collect();
 
-    (token_user_id.map(|s| s.to_string()), mismatches, query_failed)
+    (
+        token_user_id.map(|s| s.to_string()),
+        mismatches,
+        query_failed,
+    )
 }

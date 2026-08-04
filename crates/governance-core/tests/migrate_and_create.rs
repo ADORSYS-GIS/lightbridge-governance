@@ -67,11 +67,13 @@
 //! another test's insert.
 
 use cratestack::CoolContext;
-use governance_core::ingest::ExecutionInput;
-use governance_core::schema::cratestack_schema::{
-    Cratestack,
-    inputs::{CreateApplicationInput, UpdateApplicationInput},
-    types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
+use governance_core::{
+    ingest::ExecutionInput,
+    schema::cratestack_schema::{
+        Cratestack,
+        inputs::{CreateApplicationInput, UpdateApplicationInput},
+        types::{IssueIntegrationCredentialInput, RevokeIntegrationCredentialInput},
+    },
 };
 
 static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -1127,10 +1129,7 @@ async fn check_email_mismatches_no_conflict_when_no_payload_email() {
         Some("bob-keycloak-id".to_owned()),
         "token identity must be preserved"
     );
-    assert!(
-        !mismatches[0],
-        "no mismatch when payload has no email"
-    );
+    assert!(!mismatches[0], "no mismatch when payload has no email");
     assert!(!query_failed, "query should not fail");
 }
 

@@ -7,7 +7,7 @@
 //!   ingest outage (auth failures, malformed OTLP, storage errors, rate
 //!   limiting) is observable, not a silent 500 in a log that nobody reads.
 
-use prometheus::{opts, IntCounter, IntCounterVec, Registry};
+use prometheus::{IntCounter, IntCounterVec, Registry, opts};
 
 pub struct Metrics {
     registry: Registry,

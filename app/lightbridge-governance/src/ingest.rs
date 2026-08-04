@@ -205,10 +205,7 @@ pub async fn ingest(
 
             // Increment metric if identity mismatch detection failed (best-effort).
             if result.identity_mismatch_detection_failed {
-                state
-                    .metrics
-                    .ingest_identity_mismatch_failures_total
-                    .inc();
+                state.metrics.ingest_identity_mismatch_failures_total.inc();
             }
 
             tracing::info!(
