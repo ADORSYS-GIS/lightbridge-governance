@@ -40,8 +40,8 @@ use chrono::{DateTime, Utc};
 use governance_core::ingest::{ExecutionInput, ModelCallInput, ToolCallInput};
 
 use super::{
-    otlp::{attr_i64, attr_string, span_i64, span_string},
     Normalizer, NormalizerError, TelemetryPayload,
+    otlp::{attr_i64, attr_string, span_i64, span_string},
 };
 
 pub struct CodexNormalizer;

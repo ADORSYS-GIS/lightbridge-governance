@@ -156,6 +156,12 @@ pub async fn ingest_telemetry(
             Err(Error::Storage(e)) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
                 attempt += 1;
                 let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                tracing::warn!(
+                    attempt,
+                    delay_ms = delay,
+                    integration_id,
+                    "deadlock detected, retrying ingest"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
             }
             Err(e) => return Err(e),
@@ -1088,18 +1094,19 @@ mod tests {
     }
 
     /// Story #33: Codex exec mode token counts are on span attributes, not metrics.
-    /// This test verifies that exec mode token counts flow through the full pipeline
-    /// (normalizer → ingest → database) and are priced correctly.
+    /// This test verifies that Codex-style token counts (input_tokens/output_tokens on model calls)
+    /// flow through the ingest pipeline and are priced correctly.
     #[tokio::test]
-    async fn codex_exec_mode_token_counts_are_priced() {
+    async fn codex_style_token_counts_are_priced_correctly() {
         let Some(pool) = connected_pool().await else {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
         let (tenant_id, integration_id) = fixture(&pool, "codex").await;
 
-        // Insert pricing for gpt-4
-        const MODEL: &str = "gpt-4";
+        // Unique model name so parallel tests cannot interleave a competing
+        // pricing row into this test's lookup.
+        const MODEL: &str = "codex-exec-probe";
         sqlx::query(
             "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
              output_per_million_micro_usd, effective_from) \
@@ -1123,18 +1130,13 @@ mod tests {
         execution.model_calls[0].input_tokens = Some(1000);
         execution.model_calls[0].output_tokens = Some(500);
 
-        let result = ingest_telemetry(
-            &pool,
-            &tenant_id,
-            &integration_id,
-            "codex",
-            std::slice::from_ref(&execution),
-        )
-        .await
-        .expect("codex exec ingest succeeds");
+        let executions = vec![execution.clone()];
+        let first = ingest_telemetry(&pool, &tenant_id, &integration_id, "codex", &executions)
+            .await
+            .expect("codex exec ingest succeeds");
 
-        assert_eq!(result.executions_upserted, 1);
-        assert_eq!(result.model_calls_upserted, 1);
+        assert_eq!(first.executions_upserted, 1);
+        assert_eq!(first.model_calls_upserted, 1);
 
         // Verify cost calculation: 1000 * $30/M + 500 * $60/M = 30000 + 30000 = 60000 micro-USD
         let (execution_cost,): (Option<i64>,) = sqlx::query_as(
@@ -1150,6 +1152,32 @@ mod tests {
             execution_cost,
             Some(60_000),
             "codex exec token counts must be priced correctly"
+        );
+
+        // Idempotency: reprocessing must not change row counts or costs.
+        let second = ingest_telemetry(&pool, &tenant_id, &integration_id, "codex", &executions)
+            .await
+            .expect("reprocessing succeeds");
+
+        assert_eq!(
+            (second.executions_upserted, second.model_calls_upserted),
+            (1, 1),
+            "row counts must not change on reprocessing"
+        );
+
+        let (reprocessed_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind("trace-codex-exec")
+        .bind("span-codex-exec")
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+
+        assert_eq!(
+            reprocessed_cost,
+            Some(60_000),
+            "cost must remain stable on reprocessing"
         );
     }
 }
