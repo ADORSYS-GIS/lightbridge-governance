@@ -33,14 +33,14 @@ dotfiles (advisory):
 
 ### Token Issuance
 
-Each developer receives a **per-developer ingest token** issued by the governance registry
-(Story #10). The token:
+Each developer receives a **per-developer ingest token** issued by the governance registry.
+The token:
 
 - Binds identity to the token's subject (Keycloak `sub`), not the payload's `user.email`
 - Enables server-side identity resolution via `identity_maps`
 - Triggers mismatch alerts if the payload's `user.email` disagrees with the token's subject
 
-Token issuance is documented in Story #35.
+Token issuance and identity binding are implemented in Story #35.
 
 ### Distribution Channels
 
@@ -60,7 +60,7 @@ To confirm a developer cannot override the managed telemetry setting:
 1. Apply the managed settings template to a developer's workspace
 2. Attempt to set `CLAUDE_CODE_ENABLE_TELEMETRY=0` in the developer's shell
 3. Start Claude Code and verify telemetry is still emitted
-4. Check `otel.ai.camer.digital` for incoming spans with the developer's token subject
+4. Check `otel.ai.camer.digital` for incoming telemetry with the developer's token subject
 
 Expected: telemetry is emitted regardless of the developer's shell environment.
 
@@ -79,8 +79,7 @@ Expected: telemetry is emitted regardless of the developer's shell environment.
 1. Issue a token for `dev@example.com`
 2. Modify the managed settings to use a different token (or simulate a payload with a different
    `user.email`)
-3. Verify the governance API logs a mismatch warning and increments
-   `governance_ingest_identity_mismatch_total`
+3. Verify the governance API logs a mismatch warning
 
 ## Content Capture
 
