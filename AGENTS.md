@@ -136,8 +136,10 @@ catalogue's own exemplary test uses float money, and it prints `#[allow]` in fou
 
 - ⚠️ Build the image with **`cargo-auditable`**. Without it Trivy scans only the base OS and
   reports a clean result that means "it never looked at your Rust dependencies".
-- ⚠️ `jsonwebtoken` v10 requires an explicit crypto backend feature. With none selected,
-  signing **panics at runtime**. The `rust_crypto` pin in the workspace manifest is load-bearing.
+- ⚠️ `jsonwebtoken` v11 requires an explicit crypto backend feature (`aws_lc_rs` or `rust_crypto`).
+  With none selected, signing **panics at runtime**. The backend pin in the workspace manifest is
+  load-bearing. It is `aws_lc_rs`, not `rust_crypto`: the latter pulls the `rsa` crate, which has
+  RUSTSEC-2023-0071 (Marvin attack, no fix released) and fails the SAST advisories gate.
 - ⚠️ Never mark a `secretKeyRef` env var `optional: true`. Env vars bind once at pod start
   and never refresh, so an optional ref lets a pod that beats ESO capture an **empty**
   credential and fail auth forever.
