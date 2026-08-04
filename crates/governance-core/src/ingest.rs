@@ -166,6 +166,27 @@ pub async fn ingest_telemetry(
     for execution in executions {
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
 
+        // Check for mismatch between token identity and payload email (#35).
+        let resolution = crate::identity::check_email_mismatch(
+            pool,
+            tenant_id,
+            provider,
+            internal_user_id.as_deref(),
+            execution.user_email.as_deref(),
+        )
+        .await?;
+
+        if resolution.mismatch {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                integration_id = %integration_id,
+                provider = %provider,
+                payload_email = ?execution.user_email,
+                internal_user_id = ?internal_user_id,
+                "identity mismatch: payload email does not match token-derived identity"
+            );
+        }
+
         // Compute each model call's cost once, reuse it for both the child row
         // and the execution total. The pricing lookup is cheap but not free --
         // never query it twice for the same call (the pre-fix code did).
