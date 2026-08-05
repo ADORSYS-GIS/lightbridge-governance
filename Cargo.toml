@@ -6,6 +6,7 @@ members = [
     "crates/governance-redact",
     "app/lightbridge-governance",
     "app/governance-ctl",
+    "app/governance-auth",
     "app/redact-gateway",
     "app/redact-extproc",
 ]
@@ -45,13 +46,21 @@ hex = "0.4"
 # adds zero new crates to the supply chain, same as #10's sha2/getrandom/
 # base64/hex swap.
 subtle = "2"
+# governance-auth only: parsing/building the authorization and loopback-
+# callback URLs by hand invites the exact query-string bugs a URL parser
+# exists to prevent. Already a transitive dependency of reqwest (see
+# Cargo.lock), so this is a promotion to direct dependency, not a new crate.
+url = "2"
 
 # --- async runtime / http ---
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
 axum = { version = "0.8", features = ["macros", "tracing"] }
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 # default-features off + rustls keeps OpenSSL out of the distroless runtime image.
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
+# `form` is governance-auth-only (OAuth2 token-endpoint requests are
+# application/x-www-form-urlencoded per RFC 6749) -- reqwest 0.13 gates it
+# behind a feature even though it's part of `default`, which we don't use.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "charset", "http2", "stream", "form"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # --- storage: cratestack ONLY (ADR-0009) ---
