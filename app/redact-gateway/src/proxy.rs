@@ -21,13 +21,15 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use governance_redact::{Engine, ScanReport, SseEmit, SseHoldBack, scan_request, scan_response};
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::metrics::Metrics;
 
@@ -75,80 +77,157 @@ impl IntoResponse for Refusal {
     }
 }
 
-/// Incrementally scans an SSE stream using hold-back buffering.
+/// Streams an SSE response to the client chunk-by-chunk using hold-back
+/// buffering.
 ///
-/// This is the production streaming path: chunks are fed to the scanner as they
-/// arrive, and safe text is released chunk-by-chunk rather than buffering the
-/// entire response. The hold-back window (see [`governance_redact::DEFAULT_WINDOW`])
-/// bounds memory per stream and caps latency.
+/// Each `SseEmit::Release` is forwarded to the client as soon as the holdback
+/// scanner clears it, so time-to-first-token equals the holdback window rather
+/// than the full response length. Memory per stream is bounded by
+/// [`governance_redact::DEFAULT_WINDOW`] regardless of response size.
 ///
-/// # Errors
+/// If a `Blocked` entity is detected mid-stream the function sends a terminal
+/// OpenAI-shaped SSE error event and closes the stream. Because HTTP headers
+/// are committed before scanning begins, the status code stays 200; the error
+/// payload inside the stream signals the block to the client.
 ///
-/// Propagates scanning failures. On a fail-closed profile the caller must
-/// reject rather than forward.
-async fn scan_sse_incremental(
-    engine: &Engine,
-    mut upstream: reqwest::Response,
-    max_body_bytes: usize,
-) -> Result<governance_redact::StreamOutcome, String> {
-    let mut holdback = SseHoldBack::with_window(governance_redact::DEFAULT_WINDOW);
-    let mut out = String::new();
-    let mut total_bytes: usize = 0;
+/// Metrics (`redactions_total`, `scanned_fields_total`, `blocked_total`) are
+/// recorded inside the spawned task after the stream completes.
+fn scan_sse_streaming(
+    state: Arc<AppState>,
+    status: StatusCode,
+    upstream: reqwest::Response,
+) -> Response {
+    let (tx, rx) = mpsc::channel::<Result<Bytes, String>>(32);
 
-    // Stream chunks from the upstream response and feed each to the incremental
-    // scanner. As soon as a chunk's content is safe to release, collect it.
-    while let Some(chunk) = upstream.chunk().await.map_err(|e| e.to_string())? {
-        total_bytes = total_bytes.saturating_add(chunk.len());
-        if total_bytes > max_body_bytes {
-            return Err(format!("upstream response exceeded {max_body_bytes} bytes"));
-        }
+    tokio::spawn(async move {
+        let mut upstream = upstream;
+        let mut holdback = SseHoldBack::with_window(governance_redact::DEFAULT_WINDOW);
+        let mut total_bytes: usize = 0;
+        // Count `data:` lines that carry content (excluding the terminal [DONE]).
+        let mut data_frames: usize = 0;
 
-        let text = String::from_utf8(chunk.to_vec())
-            .map_err(|e| format!("upstream response chunk is not UTF-8: {e}"))?;
+        loop {
+            let chunk = match upstream.chunk().await {
+                Ok(Some(c)) => c,
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string())).await;
+                    return;
+                }
+            };
 
-        match holdback.push(engine, &text).map_err(|e| e.to_string())? {
-            SseEmit::Release(released) => out.push_str(&released),
-            SseEmit::Nothing => {}
-            SseEmit::Blocked(entities) => {
-                // Stream is blocked mid-way. Return an empty body and the block
-                // report will be checked by the caller.
-                return Ok(governance_redact::StreamOutcome {
-                    body: String::new(),
-                    report: ScanReport {
-                        blocked: entities,
-                        ..Default::default()
-                    },
-                });
+            total_bytes = total_bytes.saturating_add(chunk.len());
+            if total_bytes > state.max_body_bytes {
+                let msg = format!("upstream response exceeded {} bytes", state.max_body_bytes);
+                let _ = tx
+                    .send(Ok(Bytes::from(sse_error_event(
+                        "redaction_unavailable",
+                        &msg,
+                    ))))
+                    .await;
+                return;
+            }
+
+            let text = match String::from_utf8(chunk.to_vec()) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(Bytes::from(sse_error_event(
+                            "redaction_unavailable",
+                            &format!("non-UTF-8 chunk: {e}"),
+                        ))))
+                        .await;
+                    return;
+                }
+            };
+
+            // Count content-bearing `data:` lines so scanned_fields reflects
+            // actual work done rather than a hardcoded 1.
+            data_frames += text
+                .lines()
+                .filter(|l| l.starts_with("data:") && *l != "data: [DONE]")
+                .count();
+
+            match holdback
+                .push(&state.engine, &text)
+                .map_err(|e| e.to_string())
+            {
+                Ok(SseEmit::Release(released)) => {
+                    if tx.send(Ok(Bytes::from(released))).await.is_err() {
+                        return; // client disconnected
+                    }
+                }
+                Ok(SseEmit::Nothing) => {}
+                Ok(SseEmit::Blocked(entities)) => {
+                    tracing::warn!(
+                        entities = ?entities,
+                        "blocked response stream: prohibited content mid-stream"
+                    );
+                    state.metrics.blocked_total.inc();
+                    let _ = tx.send(Ok(Bytes::from(sse_blocked_event(&entities)))).await;
+                    return;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(Bytes::from(sse_error_event(
+                            "redaction_unavailable",
+                            &e,
+                        ))))
+                        .await;
+                    return;
+                }
             }
         }
-    }
 
-    // Flush any remaining held text at end-of-stream.
-    match holdback.flush(engine).map_err(|e| e.to_string())? {
-        SseEmit::Release(released) => out.push_str(&released),
-        SseEmit::Nothing => {}
-        SseEmit::Blocked(entities) => {
-            // Block at end-of-stream. Return empty body.
-            return Ok(governance_redact::StreamOutcome {
-                body: String::new(),
-                report: ScanReport {
-                    blocked: entities,
-                    ..Default::default()
-                },
-            });
+        // Flush any held text at end-of-stream.
+        match holdback.flush(&state.engine).map_err(|e| e.to_string()) {
+            Ok(SseEmit::Release(released)) => {
+                let _ = tx.send(Ok(Bytes::from(released))).await;
+            }
+            Ok(SseEmit::Blocked(entities)) => {
+                state.metrics.blocked_total.inc();
+                let _ = tx.send(Ok(Bytes::from(sse_blocked_event(&entities)))).await;
+            }
+            Ok(SseEmit::Nothing) => {}
+            Err(e) => {
+                let _ = tx
+                    .send(Ok(Bytes::from(sse_error_event(
+                        "redaction_unavailable",
+                        &e,
+                    ))))
+                    .await;
+            }
         }
-    }
 
-    // Build the report from the redactions counted by the holdback scanner.
-    // Count scanned fields — in SSE, each line with content is one field.
-    // We count non-empty releases + blocked frames as scanned.
-    let report = ScanReport {
-        redactions: holdback.redactions(),
-        scanned_fields: 1, // At minimum, we scanned the stream itself
-        ..Default::default()
-    };
+        let report = ScanReport {
+            redactions: holdback.redactions(),
+            scanned_fields: data_frames.max(1),
+            ..Default::default()
+        };
+        state.metrics.record(&report);
+    });
 
-    Ok(governance_redact::StreamOutcome { body: out, report })
+    let body = Body::from_stream(ReceiverStream::new(rx));
+    (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+}
+
+/// Formats an OpenAI-shaped SSE error event so that OpenAI-compatible clients
+/// handle it via their existing error path.
+fn sse_error_event(code: &str, message: &str) -> String {
+    let body = serde_json::json!({
+        "error": { "message": message, "type": code, "code": code }
+    });
+    format!("data: {body}\n\n")
+}
+
+/// Formats a `content_blocked` SSE error event carrying entity type labels
+/// (never entity values).
+fn sse_blocked_event(entities: &[String]) -> String {
+    let message = format!(
+        "response blocked: content matched a prohibited category ({})",
+        entities.join(", ")
+    );
+    sse_error_event("content_blocked", &message)
 }
 
 /// Proxies one OpenAI-compatible request.
@@ -255,32 +334,10 @@ pub async fn handle(
             return (status, upstream_body).into_response();
         }
 
-        // Use incremental SSE scanning with hold-back buffering instead of
-        // buffering the entire stream before scanning.
-        return match scan_sse_incremental(&state.engine, upstream, state.max_body_bytes).await {
-            Ok(outcome) => {
-                state.metrics.record(&outcome.report);
-                if outcome.report.is_blocked() {
-                    state.metrics.blocked_total.inc();
-                    tracing::warn!(
-                        entities = ?outcome.report.blocked,
-                        "blocked response stream: prohibited content"
-                    );
-                    return Refusal::Blocked(outcome.report.blocked).into_response();
-                }
-                (
-                    status,
-                    [(header::CONTENT_TYPE, "text/event-stream")],
-                    outcome.body,
-                )
-                    .into_response()
-            }
-            Err(e) => refuse(
-                &state,
-                fail_closed,
-                Refusal::Undetermined(format!("response stream scan failed: {e}")),
-            ),
-        };
+        // Stream the SSE response chunk-by-chunk using hold-back buffering.
+        // Metrics and blocked-event emission are handled inside the spawned
+        // task; see `scan_sse_streaming` for details.
+        return scan_sse_streaming(Arc::clone(&state), status, upstream);
     }
 
     // Non-streaming path: buffer the entire response before processing.
