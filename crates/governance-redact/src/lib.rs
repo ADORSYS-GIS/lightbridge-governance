@@ -93,19 +93,19 @@
 //!
 //! ### Bounded memory
 //!
-//! The hold-back window is **bounded** ([`DEFAULT_WINDOW`], ~2 KB). The buffer
+//! The hold-back window is **bounded** ([`DEFAULT_WINDOW`], 1 KB). The buffer
 //! never grows beyond the window regardless of how long the stream runs. Ten
-//! concurrent 100 MB streams use roughly ten × the window size (~20 KB total),
+//! concurrent 100 MB streams use roughly ten × the window size (~10 KB total),
 //! not ten × 100 MB.
 //!
 //! Why the window must not be unbounded: if the held region were allowed to grow
 //! as large as the response, we are back to buffering the whole stream — same
 //! latency problem, same OOM risk. The window IS the latency budget: an entity
-//! longer than the window could straddle the window boundary, which is why the
-//! window must be large enough to exceed any realistic entity (`DEFAULT_WINDOW`
-//! is ~2 KB; the longest standard entity is a private key at ~2,200 bytes).
-//! Anything that does not fully fit in the window is held until `flush`
-//! (end-of-stream), where the full buffer is available.
+//! longer than the window could straddle the window boundary. Note that
+//! `DEFAULT_WINDOW` (1 KB) is smaller than the longest standard entity (a
+//! private key at ~2,200 bytes), so such entities are only caught at `flush`
+//! (end-of-stream), where the full buffer is available. Raise `DEFAULT_WINDOW`
+//! to at least 2,200 bytes if you need mid-stream blocking of private keys.
 //!
 //! ### Frame-aware release
 //!

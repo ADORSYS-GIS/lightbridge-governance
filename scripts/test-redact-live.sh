@@ -118,6 +118,8 @@ stream_req_block() {
   end=$(date +%s%3N)
   ms=$(( end - beg ))
 
+  local bytes
+  bytes=$(wc -c < "$tmpf")
   if grep -q 'content_blocked' "$tmpf" 2>/dev/null; then
     ok "→ BLOCKED mid-stream ${ms}ms"
   else
@@ -224,7 +226,6 @@ info "10. Credit card"
 # ── Concurrent ────────────────────────────────────────────────────────────────
 [ "$REPEAT" -gt 1 ] 2>/dev/null && {
   hdr "CONCURRENT LOAD — ${REPEAT}x parallel"
-  local start end
   start=$(date +%s%3N)
   for _ in $(seq 1 "$REPEAT"); do
     {
