@@ -37,15 +37,14 @@
 //!
 //! The hold-back window (see [`DEFAULT_WINDOW`](crate::DEFAULT_WINDOW)) bounds
 //! memory per concurrent stream. Ten concurrent 100 MB streams use roughly
-//! ten × 2 KB, not ten × 100 MB. The window must not be unbounded — that
-//! returns to buffering the whole stream, the exact latency problem this type
-//! solves.
-//!
+//! ten × 4 KB (~40 KB total), not ten × 100 MB. The window must be large enough
+//! to exceed the longest [`Action::Block`][crate::profile::Action] entity so no
+//! credential is partially released before the block fires.
+
+
 //! # What this still does not solve
 //!
-//! A response chunk boundary landing mid-UTF-8-codepoint (decoding is the
-//! caller's problem, same limitation [`crate::HoldBack`]'s caller has today), and
-//! multi-choice (`n > 1`) interleaving is handled correctly but is
+//! Multi-choice (`n > 1`) interleaving is handled correctly but is
 //! unexercised against real multi-choice traffic — this platform's clients
 //! (opencode, Kilo-Code, LibreChat) stream `n = 1`.
 
