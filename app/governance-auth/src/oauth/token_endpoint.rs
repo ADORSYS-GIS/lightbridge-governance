@@ -9,12 +9,12 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::OidcMetadata;
-use crate::{cache::CachedSession, config::OauthConfig};
+use crate::{cache::CachedSession, config::OauthConfig, redacted::Redacted};
 
 #[derive(Debug, Deserialize)]
 pub struct RawTokenResponse {
-    pub access_token: String,
-    pub refresh_token: Option<String>,
+    pub access_token: Redacted<String>,
+    pub refresh_token: Option<Redacted<String>>,
     pub expires_in: Option<u64>,
 }
 
@@ -125,7 +125,7 @@ pub async fn refresh(
     // response omitted one, keep using the one we already had rather than
     // discarding a still-valid rotation chain.
     if session.refresh_token.is_none() {
-        session.refresh_token = Some(refresh_token.to_owned());
+        session.refresh_token = Some(Redacted::new(refresh_token.to_owned()));
     }
     Ok(session)
 }

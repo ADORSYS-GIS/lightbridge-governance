@@ -14,6 +14,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::redacted::Redacted;
+
 /// How far ahead of the real expiry a cached token is treated as unusable.
 /// Matches the margin the org's own `opencode-oauth2` plugin uses
 /// (`tokenExpirySkewMs`), so a caller with a short re-check interval (Codex's
@@ -22,22 +24,22 @@ use sha2::{Digest, Sha256};
 const SKEW_SECONDS: u64 = 30;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(200);
-/// Last-resort ceiling for a lock whose holder we've confirmed is still
-/// alive (an interactive `login` can legitimately hold the lock across an
-/// entire browser flow, well past any short timeout). Crash recovery does
-/// NOT wait for this: [`holder_is_dead`] reclaims a dead holder's lock
-/// immediately, regardless of elapsed time. This only guards a holder
-/// that's alive but has abandoned the lock some other way (or a platform
-/// where liveness can't be checked), so it's generous rather than tuned to
-/// the common case.
+/// Fallback ceiling used ONLY when this process genuinely can't determine
+/// whether the recorded holder is alive (an unreadable/unparseable lock
+/// file, or the liveness check itself couldn't run -- see
+/// [`holder_liveness`]). A *confirmed* live holder is never preempted by
+/// this: an interactive `login` can legitimately hold the lock across an
+/// entire browser flow, and forcing it out would break the single-writer
+/// guarantee the lock exists for. This is generous because it only fires
+/// in the ambiguous case, not the common one.
 const LOCK_MAX_WAIT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSession {
     pub issuer: String,
     pub client_id: String,
-    pub access_token: String,
-    pub refresh_token: Option<String>,
+    pub access_token: Redacted<String>,
+    pub refresh_token: Option<Redacted<String>>,
     pub expires_at: u64,
 }
 
@@ -199,15 +201,34 @@ impl FileLock {
                     return Ok(Self { path, pid });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if holder_is_dead(&path) {
-                        let _ = fs::remove_file(&path);
-                        continue;
+                    match holder_liveness(&path) {
+                        Some(false) => {
+                            // Confirmed dead -- reclaim now, regardless of
+                            // how long that took to determine.
+                            let _ = fs::remove_file(&path);
+                            continue;
+                        }
+                        Some(true) => {
+                            // Confirmed alive -- keep waiting, no timeout.
+                            // An interactive `login` can legitimately run
+                            // for minutes; preempting it here would break
+                            // the single-writer guarantee this lock exists
+                            // for, on a real cadence (an automated `token`
+                            // re-invoke racing a slow human login).
+                            std::thread::sleep(LOCK_POLL_INTERVAL);
+                        }
+                        None => {
+                            // Genuinely undeterminable (unreadable lock
+                            // file, or the liveness check itself couldn't
+                            // run) -- this is the only case the timeout
+                            // ceiling applies to.
+                            if Instant::now() >= deadline {
+                                let _ = fs::remove_file(&path);
+                                continue;
+                            }
+                            std::thread::sleep(LOCK_POLL_INTERVAL);
+                        }
                     }
-                    if Instant::now() >= deadline {
-                        let _ = fs::remove_file(&path);
-                        continue;
-                    }
-                    std::thread::sleep(LOCK_POLL_INTERVAL);
                 }
                 Err(error) => {
                     return Err(error)
@@ -218,35 +239,36 @@ impl FileLock {
     }
 }
 
-/// Whether the lock file's recorded holder is confirmed gone. Returns
-/// `false` (don't preempt) whenever this can't be determined -- an unreadable
-/// or unparseable lock file isn't evidence of a crash.
-fn holder_is_dead(path: &Path) -> bool {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(pid) = contents.trim().parse::<u32>() else {
-        return false;
-    };
-    !process_is_alive(pid)
+/// Liveness of the lock file's recorded holder: `Some(true)` = confirmed
+/// running, `Some(false)` = confirmed gone, `None` = couldn't tell (an
+/// unreadable/unparseable lock file, or the check itself couldn't run).
+/// Only the `None` case falls back to [`LOCK_MAX_WAIT`] -- see
+/// [`FileLock::acquire`].
+fn holder_liveness(path: &Path) -> Option<bool> {
+    let contents = fs::read_to_string(path).ok()?;
+    let pid: u32 = contents.trim().parse().ok()?;
+    process_is_alive(pid)
 }
 
 #[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
+fn process_is_alive(pid: u32) -> Option<bool> {
     // `kill -0` checks for existence (and permission) without sending a
     // signal. Shelling out avoids a new libc/nix dependency for this one
-    // call site. If the check itself can't run, assume alive -- the
-    // `LOCK_MAX_WAIT` ceiling is the fallback for that case, not this.
-    std::process::Command::new("kill")
+    // call site. A failure to even run the command (not "ran and said
+    // gone") is the undeterminable case, not a confirmed answer.
+    match std::process::Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
         .status()
-        .map_or(true, |status| status.success())
+    {
+        Ok(status) => Some(status.success()),
+        Err(_) => None,
+    }
 }
 
 #[cfg(not(unix))]
-fn process_is_alive(_pid: u32) -> bool {
-    true
+fn process_is_alive(_pid: u32) -> Option<bool> {
+    None
 }
 
 impl Drop for FileLock {

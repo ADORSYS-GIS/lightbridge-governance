@@ -9,11 +9,14 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::{OidcMetadata, token_endpoint};
-use crate::{cache::CachedSession, config::OauthConfig};
+use crate::{cache::CachedSession, config::OauthConfig, redacted::Redacted};
 
 #[derive(Debug, Deserialize)]
 struct DeviceAuthorizationResponse {
-    device_code: String,
+    // RFC 8628 treats the device_code as bearer-equivalent for the
+    // lifetime of the flow -- redacted for the same reason access/refresh
+    // tokens are.
+    device_code: Redacted<String>,
     user_code: String,
     verification_uri: String,
     verification_uri_complete: Option<String>,
@@ -86,7 +89,7 @@ async fn poll(
 
         let poll_params = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device.device_code.as_str()),
+            ("device_code", device.device_code.expose().as_str()),
             ("client_id", config.client_id.as_str()),
         ];
 

@@ -13,6 +13,7 @@ mod browser;
 mod cache;
 mod config;
 mod oauth;
+mod redacted;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

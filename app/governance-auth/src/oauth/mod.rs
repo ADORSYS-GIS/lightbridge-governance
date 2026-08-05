@@ -53,7 +53,7 @@ pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     // The ONLY thing this command ever writes to stdout. Everything else --
     // prompts, errors, status -- goes to stderr, matching the contract both
     // `apiKeyHelper` and Codex's `auth.command` expect.
-    println!("{}", session.access_token);
+    println!("{}", session.access_token.expose());
     Ok(())
 }
 
@@ -64,8 +64,10 @@ async fn refresh_or_fail(
 ) -> Result<CachedSession> {
     let refresh_token = session
         .refresh_token
-        .as_deref()
-        .context("cached session has no refresh token; run `governance-auth login` again")?;
+        .as_ref()
+        .context("cached session has no refresh token; run `governance-auth login` again")?
+        .expose()
+        .as_str();
 
     let metadata = discovery::discover(http, &config.issuer).await?;
     token_endpoint::refresh(http, &metadata, config, refresh_token)
