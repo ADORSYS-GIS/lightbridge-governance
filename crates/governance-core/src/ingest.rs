@@ -17,6 +17,9 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{Error, MicroUsd, Result};
 
+const MAX_DEADLOCK_RETRIES: u32 = 3;
+const DEADLOCK_RETRY_BASE_MS: u64 = 10;
+
 /// Normalized telemetry from a push connector.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionInput {
@@ -148,6 +151,37 @@ pub async fn ingest_telemetry(
 ) -> Result<IngestResult> {
     validate_input(executions)?;
 
+    let mut attempt = 0;
+    loop {
+        match ingest_telemetry_inner(pool, tenant_id, integration_id, provider, executions).await {
+            Ok(result) => return Ok(result),
+            Err(Error::Storage(e)) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                attempt += 1;
+                let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                tracing::warn!(
+                    attempt,
+                    delay_ms = delay,
+                    integration_id,
+                    "deadlock detected, retrying ingest"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn is_deadlock(e: &cratestack_core::CoolError) -> bool {
+    matches!(e, cratestack_core::CoolError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("40P01"))
+}
+
+async fn ingest_telemetry_inner(
+    pool: &PgPool,
+    tenant_id: &str,
+    integration_id: &str,
+    provider: &str,
+    executions: &[ExecutionInput],
+) -> Result<IngestResult> {
     let mut tx = pool
         .begin()
         .await
@@ -586,6 +620,29 @@ mod tests {
     /// to applications and environments). `provider` is the integration's
     /// stored provider string (the data the ingest path dispatches on).
     async fn fixture(pool: &PgPool, provider: &str) -> (String, String) {
+        let mut attempt = 0;
+        loop {
+            match fixture_inner(pool, provider).await {
+                Ok(result) => return result,
+                Err(e) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                    attempt += 1;
+                    let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "deadlock detected in fixture setup, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => panic!("fixture setup failed: {e:?}"),
+            }
+        }
+    }
+
+    async fn fixture_inner(
+        pool: &PgPool,
+        provider: &str,
+    ) -> std::result::Result<(String, String), cratestack_core::CoolError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -595,14 +652,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .expect("insert tenant fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .expect("insert application fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -613,7 +670,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .expect("insert environment fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -630,8 +687,8 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
-        (tenant_id, integration_id)
+        .map_err(cool_error_from_sqlx)?;
+        Ok((tenant_id, integration_id))
     }
 
     /// Like `fixture`, but creates two integrations under the same tenant.
@@ -641,6 +698,30 @@ mod tests {
         provider_a: &str,
         provider_b: &str,
     ) -> (String, String, String) {
+        let mut attempt = 0;
+        loop {
+            match fixture_two_providers_inner(pool, provider_a, provider_b).await {
+                Ok(result) => return result,
+                Err(e) if is_deadlock(&e) && attempt < MAX_DEADLOCK_RETRIES => {
+                    attempt += 1;
+                    let delay = DEADLOCK_RETRY_BASE_MS * 2u64.pow(attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms = delay,
+                        "deadlock detected in fixture_two_providers setup, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => panic!("fixture_two_providers setup failed: {e:?}"),
+            }
+        }
+    }
+
+    async fn fixture_two_providers_inner(
+        pool: &PgPool,
+        provider_a: &str,
+        provider_b: &str,
+    ) -> std::result::Result<(String, String, String), cratestack_core::CoolError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -651,14 +732,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .expect("insert tenant fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .expect("insert application fixture");
+            .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -669,7 +750,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .expect("insert environment fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -686,7 +767,7 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
+        .map_err(cool_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -703,8 +784,8 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .expect("insert integration fixture");
-        (tenant_id, integration_a, integration_b)
+        .map_err(cool_error_from_sqlx)?;
+        Ok((tenant_id, integration_a, integration_b))
     }
 
     /// The idempotency contract, against the real database: reprocessing the
@@ -1098,6 +1179,94 @@ mod tests {
         assert_eq!(
             rows[1].2, rows[0].2,
             "identical token counts at identical pricing must be equal and comparable"
+        );
+    }
+
+    /// Story #33: Codex exec mode token counts are on span attributes, not metrics.
+    /// This test verifies that Codex-style token counts (input_tokens/output_tokens on model calls)
+    /// flow through the ingest pipeline and are priced correctly.
+    #[tokio::test]
+    async fn codex_style_token_counts_are_priced_correctly() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, integration_id) = fixture(&pool, "codex").await;
+
+        // Unique model name so parallel tests cannot interleave a competing
+        // pricing row into this test's lookup.
+        const MODEL: &str = "codex-exec-probe";
+        sqlx::query(
+            "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
+             output_per_million_micro_usd, effective_from) \
+             VALUES ($1, $2, $3, $4, now())",
+        )
+        .bind(format!("price-{}", cuid::cuid2()))
+        .bind(MODEL)
+        .bind(30_000_000i64) // $30 per million input tokens
+        .bind(60_000_000i64) // $60 per million output tokens
+        .execute(&pool)
+        .await
+        .expect("insert pricing fixture");
+
+        // Create a Codex exec mode execution with token counts
+        let mut execution = valid_execution();
+        execution.trace_id = "trace-codex-exec".to_owned();
+        execution.span_id = "span-codex-exec".to_owned();
+        execution.model_calls[0].trace_id = "trace-codex-exec".to_owned();
+        execution.model_calls[0].span_id = "span-codex-exec:mc".to_owned();
+        execution.model_calls[0].model = MODEL.to_owned();
+        execution.model_calls[0].input_tokens = Some(1000);
+        execution.model_calls[0].output_tokens = Some(500);
+
+        let executions = vec![execution.clone()];
+        let first = ingest_telemetry(&pool, &tenant_id, &integration_id, "codex", &executions)
+            .await
+            .expect("codex exec ingest succeeds");
+
+        assert_eq!(first.executions_upserted, 1);
+        assert_eq!(first.model_calls_upserted, 1);
+
+        // Verify cost calculation: 1000 * $30/M + 500 * $60/M = 30000 + 30000 = 60000 micro-USD
+        let (execution_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind("trace-codex-exec")
+        .bind("span-codex-exec")
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+
+        assert_eq!(
+            execution_cost,
+            Some(60_000),
+            "codex exec token counts must be priced correctly"
+        );
+
+        // Idempotency: reprocessing must not change row counts or costs.
+        let second = ingest_telemetry(&pool, &tenant_id, &integration_id, "codex", &executions)
+            .await
+            .expect("reprocessing succeeds");
+
+        assert_eq!(
+            (second.executions_upserted, second.model_calls_upserted),
+            (1, 1),
+            "row counts must not change on reprocessing"
+        );
+
+        let (reprocessed_cost,): (Option<i64>,) = sqlx::query_as(
+            "SELECT estimated_cost_micro_usd FROM executions WHERE trace_id = $1 AND span_id = $2",
+        )
+        .bind("trace-codex-exec")
+        .bind("span-codex-exec")
+        .fetch_one(&pool)
+        .await
+        .expect("execution row exists");
+
+        assert_eq!(
+            reprocessed_cost,
+            Some(60_000),
+            "cost must remain stable on reprocessing"
         );
     }
 }
