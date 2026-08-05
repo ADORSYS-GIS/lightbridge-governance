@@ -13,10 +13,17 @@ advisory.
 
 ## Configuration
 
-### Managed Settings Template
+### Managed Settings File
 
-The following configuration must be distributed via Coder workspace templates (enforced) or
-dotfiles (advisory):
+Claude Code's **managed settings** live in a machine-global file that sits at the top of the
+settings precedence chain and **cannot be overridden** by project or user settings:
+
+- Linux / WSL: `/etc/claude-code/managed-settings.json`
+- macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`
+- Windows: `C:\ProgramData\ClaudeCode\managed-settings.json`
+
+It is the only channel that is genuinely enforced. The following configuration must be written
+to that file (via Coder workspace templates, see [Distribution Channels](#distribution-channels)):
 
 ```json
 {
@@ -31,6 +38,10 @@ dotfiles (advisory):
 }
 ```
 
+Precedence (highest to lowest): managed settings → project settings (`.claude/settings.json`)
+→ user settings (`~/.claude/settings.json`). Only the managed file is enforced; anything below
+it is advisory and overridable.
+
 ### Token Issuance
 
 Each developer receives a **per-developer ingest token** issued by the governance registry.
@@ -42,14 +53,37 @@ The token:
 
 Token issuance and identity binding are implemented in Story #35.
 
+### Token Placement: Threat Model
+
+`OTEL_EXPORTER_OTLP_HEADERS` carries the per-developer token in the process environment, which
+shapes where this configuration is safe:
+
+- The managed-settings file is root-owned on a shared host, but the token is **not** a secret
+  once Claude Code runs: it appears in `OTEL_EXPORTER_OTLP_HEADERS` in the process environment,
+  is readable via `/proc/<pid>/environ`, and is inherited by every subprocess Claude Code
+  spawns. Anyone who can run a process as the same user can read it.
+- This is acceptable where **one machine equals one developer** — Coder workspaces satisfy
+  this, which is why the enforced channel is the workspace template.
+- On a **shared host** with multiple developers, a per-developer token in a machine-global file
+  is a credential readable by every user on the box. Do not deploy per-developer tokens there;
+  fall back to a per-machine token with reduced blast radius, or accept that attribution is per-
+  machine rather than per-developer.
+
+The token is an ingest credential: it authorizes writing telemetry, nothing else. Treat it as
+sensitive anyway — a leaked token lets an attacker fabricate attributed usage.
+
 ### Distribution Channels
 
-1. **Coder workspace template** (enforced): Inject the managed settings into the workspace
-   template at `charts/apps/values.yaml` or equivalent. Developers cannot override enforced
-   settings.
+1. **Coder workspace template** (enforced): Write the managed settings to the managed-settings
+   file path above via the workspace template at `charts/apps/values.yaml` or equivalent.
+   Because it lands in the managed file, developers cannot override it. This is the only
+   channel that satisfies the enforcement claim in [Purpose](#purpose).
 
-2. **Dotfiles** (advisory): Distribute via `~/.claude/settings.json` for developers running
-   Claude Code on personal machines. This is advisory and can be overridden.
+2. **Dotfiles** (advisory, NOT enforced): Distributing the same block via `~/.claude/settings.json`
+   is user settings, which a developer can override. It is useful for personal machines but does
+   **not** deliver the coverage guarantee — a developer following this channel ends up with
+   precisely the non-enforced configuration the story exists to avoid. Do not treat dotfiles as a
+   substitute for the managed file.
 
 ## Verification
 
