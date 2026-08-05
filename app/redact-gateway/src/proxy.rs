@@ -82,20 +82,25 @@ impl IntoResponse for Refusal {
 ///
 /// Each `SseEmit::Release` is forwarded to the client as soon as the holdback
 /// scanner clears it, so time-to-first-token equals the holdback window rather
-/// than the full response length. Memory per stream is bounded by
+/// than the full response duration. Memory per stream is bounded by
 /// [`governance_redact::DEFAULT_WINDOW`] regardless of response size.
 ///
-/// If a `Blocked` entity is detected mid-stream the function sends a terminal
-/// OpenAI-shaped SSE error event and closes the stream. Because HTTP headers
-/// are committed before scanning begins, the status code stays 200; the error
-/// payload inside the stream signals the block to the client.
+/// If a `Blocked` entity is detected mid-stream: when `fail_closed` is true,
+/// a terminal OpenAI-shaped SSE error event is sent and the stream closes;
+/// when false (observe-only) the content is forwarded and the block is logged.
 ///
-/// Metrics (`redactions_total`, `scanned_fields_total`, `blocked_total`) are
-/// recorded inside the spawned task after the stream completes.
+/// On a non-UTF-8 chunk: a split codepoint is carried forward and retried;
+/// a genuine corruption (invalid byte sequence) triggers the `fail_closed`
+/// split the same way. Because HTTP headers are committed before scanning
+/// begins, the status code stays 200; the in-band error payload signals the
+/// block to OpenAI-compatible clients.
+///
+/// Metrics are recorded on both clean exit and each early-return path.
 fn scan_sse_streaming(
     state: Arc<AppState>,
     status: StatusCode,
     upstream: reqwest::Response,
+    fail_closed: bool,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<Result<Bytes, String>>(32);
 
@@ -103,7 +108,7 @@ fn scan_sse_streaming(
         let mut upstream = upstream;
         let mut holdback = SseHoldBack::with_window(governance_redact::DEFAULT_WINDOW);
         let mut total_bytes: usize = 0;
-        // Count `data:` lines that carry content (excluding the terminal [DONE]).
+        let mut carry = Vec::new();
         let mut data_frames: usize = 0;
 
         loop {
@@ -111,38 +116,75 @@ fn scan_sse_streaming(
                 Ok(Some(c)) => c,
                 Ok(None) => break,
                 Err(e) => {
-                    let _ = tx.send(Err(e.to_string())).await;
+                    tracing::warn!(error = %e, "upstream read error during streaming scan");
+                    if fail_closed {
+                        let _ = tx
+                            .send(Ok(Bytes::from(sse_error_event(
+                                "redaction_unavailable",
+                                &format!("upstream read error: {e}"),
+                            ))))
+                            .await;
+                        state.metrics.record(&ScanReport {
+                            redactions: holdback.redactions(),
+                            scanned_fields: data_frames,
+                            ..Default::default()
+                        });
+                    }
                     return;
                 }
             };
 
             total_bytes = total_bytes.saturating_add(chunk.len());
             if total_bytes > state.max_body_bytes {
-                let msg = format!("upstream response exceeded {} bytes", state.max_body_bytes);
-                let _ = tx
-                    .send(Ok(Bytes::from(sse_error_event(
-                        "redaction_unavailable",
-                        &msg,
-                    ))))
-                    .await;
-                return;
-            }
-
-            let text = match String::from_utf8(chunk.to_vec()) {
-                Ok(t) => t,
-                Err(e) => {
+                tracing::warn!(
+                    max_bytes = state.max_body_bytes,
+                    "upstream response exceeded size cap"
+                );
+                if fail_closed {
                     let _ = tx
                         .send(Ok(Bytes::from(sse_error_event(
                             "redaction_unavailable",
-                            &format!("non-UTF-8 chunk: {e}"),
+                            &format!("upstream response exceeded {} bytes", state.max_body_bytes),
                         ))))
                         .await;
+                    state.metrics.record(&ScanReport {
+                        redactions: holdback.redactions(),
+                        scanned_fields: data_frames,
+                        ..Default::default()
+                    });
+                }
+                return;
+            }
+
+            let (text, incomplete_codepoint) = match decode_chunk_with_carry(&mut carry, &chunk) {
+                Ok(r) => r,
+                Err(()) => {
+                    tracing::warn!("upstream response chunk is not valid UTF-8");
+                    if fail_closed {
+                        let _ = tx
+                            .send(Ok(Bytes::from(sse_error_event(
+                                "redaction_unavailable",
+                                "upstream chunk is corrupt UTF-8",
+                            ))))
+                            .await;
+                        state.metrics.record(&ScanReport {
+                            redactions: holdback.redactions(),
+                            scanned_fields: data_frames,
+                            ..Default::default()
+                        });
+                    }
                     return;
                 }
             };
 
-            // Count content-bearing `data:` lines so scanned_fields reflects
-            // actual work done rather than a hardcoded 1.
+            if incomplete_codepoint {
+                tracing::trace!(
+                    carry_len = carry.len(),
+                    "UTF-8 codepoint split across chunks — carrying forward"
+                );
+                continue;
+            }
+
             data_frames += text
                 .lines()
                 .filter(|l| l.starts_with("data:") && *l != "data: [DONE]")
@@ -164,17 +206,35 @@ fn scan_sse_streaming(
                         "blocked response stream: prohibited content mid-stream"
                     );
                     state.metrics.blocked_total.inc();
-                    let _ = tx.send(Ok(Bytes::from(sse_blocked_event(&entities)))).await;
-                    return;
+                    if fail_closed {
+                        let _ = tx.send(Ok(Bytes::from(sse_blocked_event(&entities)))).await;
+                        state.metrics.record(&ScanReport {
+                            redactions: holdback.redactions(),
+                            scanned_fields: data_frames,
+                            ..Default::default()
+                        });
+
+                        return;
+                    }
+                    // observe-only: log and continue — stream content forwarded
                 }
                 Err(e) => {
-                    let _ = tx
-                        .send(Ok(Bytes::from(sse_error_event(
-                            "redaction_unavailable",
-                            &e,
-                        ))))
-                        .await;
-                    return;
+                    tracing::error!(error = %e, "response stream scan error");
+                    if fail_closed {
+                        let _ = tx
+                            .send(Ok(Bytes::from(sse_error_event(
+                                "redaction_unavailable",
+                                &e,
+                            ))))
+                            .await;
+                        state.metrics.record(&ScanReport {
+                            redactions: holdback.redactions(),
+                            scanned_fields: data_frames,
+                            ..Default::default()
+                        });
+
+                        return;
+                    }
                 }
             }
         }
@@ -190,6 +250,7 @@ fn scan_sse_streaming(
             }
             Ok(SseEmit::Nothing) => {}
             Err(e) => {
+                tracing::error!(error = %e, "response stream flush error");
                 let _ = tx
                     .send(Ok(Bytes::from(sse_error_event(
                         "redaction_unavailable",
@@ -199,16 +260,58 @@ fn scan_sse_streaming(
             }
         }
 
-        let report = ScanReport {
+        state.metrics.record(&ScanReport {
             redactions: holdback.redactions(),
-            scanned_fields: data_frames.max(1),
+            scanned_fields: data_frames,
             ..Default::default()
-        };
-        state.metrics.record(&report);
+        });
     });
 
     let body = Body::from_stream(ReceiverStream::new(rx));
     (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+}
+
+/// Decodes as much valid UTF-8 as possible from `carry` followed by `chunk`,
+/// leaving any trailing incomplete codepoint in `carry` for the next call.
+///
+/// A chunk boundary landing mid-codepoint is a routine consequence of chunked
+/// delivery — nothing about the content is wrong, only where the transport
+/// cut it — so carrying the tail forward is the fix, not an error to raise.
+/// Only genuinely malformed UTF-8 (a byte sequence that no valid codepoint
+/// could ever complete) reaches the caller as `Err(())`.
+///
+/// Returns `(decoded, incomplete_codepoint)` where the second element is true
+/// when the buffer ends mid-codepoint and the caller should wait for the next
+/// chunk before scanning.
+fn decode_chunk_with_carry(carry: &mut Vec<u8>, chunk: &[u8]) -> Result<(String, bool), ()> {
+    carry.extend_from_slice(chunk);
+    match std::str::from_utf8(carry) {
+        Ok(s) => {
+            let s = s.to_string();
+            carry.clear();
+            Ok((s, false))
+        }
+        Err(e) => {
+            if e.error_len().is_some() {
+                // Genuinely malformed bytes — e.g. 0xFF can never start a
+                // valid codepoint regardless of what follows. This is
+                // corruption, not a split, so surface it as an error immediately.
+                Err(())
+            } else {
+                // `error_len()` is None: the buffer ends mid-codepoint, which
+                // is an ordinary chunk split. `valid_up_to()` gives the byte
+                // index before the incomplete sequence; that prefix is solid.
+                let valid_up_to = e.valid_up_to();
+                let s = carry
+                    .get(..valid_up_to)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or_default()
+                    .to_string();
+                carry.drain(..valid_up_to);
+                Ok((s, true))
+            }
+        }
+    }
 }
 
 /// Formats an OpenAI-shaped SSE error event so that OpenAI-compatible clients
@@ -335,9 +438,10 @@ pub async fn handle(
         }
 
         // Stream the SSE response chunk-by-chunk using hold-back buffering.
-        // Metrics and blocked-event emission are handled inside the spawned
-        // task; see `scan_sse_streaming` for details.
-        return scan_sse_streaming(Arc::clone(&state), status, upstream);
+        // fail_closed is consulted inside the spawned task; observe-only
+        // logs the block and continues forwarding.  See
+        // `scan_sse_streaming` for full semantics.
+        return scan_sse_streaming(Arc::clone(&state), status, upstream, fail_closed);
     }
 
     // Non-streaming path: buffer the entire response before processing.

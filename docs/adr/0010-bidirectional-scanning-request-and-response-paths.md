@@ -80,30 +80,35 @@ The solution is **incremental scanning with a bounded hold-back window** (`SseHo
 
 1. Chunks arrive from the LLM as SSE frames (`data: {"choices":[{"delta":{"content":"..."}}]}`).
 2. Each chunk's `delta.content` is fed into the scanner.
-3. A bounded buffer ("hold-back window", ~2 KB — see `DEFAULT_WINDOW`) accumulates the latest
-   unscanned text.
+3. A bounded buffer ("hold-back window", 4 KB — see `DEFAULT_WINDOW` in
+   `crates/governance-redact/src/holdback.rs`) accumulates unscanned text.
 4. Once the buffer exceeds the window, the scanner checks the oldest part:
    - If no entity spans the buffer boundary → safe prefix is released, written into the SSE frame,
      and forwarded to the client.
    - If an entity does span the boundary → the stream is **blocked** at the hold-back point,
-     the client receives an `ImmediateResponse` (HTTP 422), and upstream is never sent more.
+     the client receives an HTTP 200 SSE error event (`data: {"error":...}`), and the upstream
+     connection is aborted. (A trailing-blocked entity is caught at `flush`.)
 5. Any frame that carries no redactable content (structural SSE lines, `[DONE]`, role-only chunks)
    passes through immediately.
 6. Frames are released in **strict arrival order** — a ready frame behind a held one waits.
 
+The window (4 KB) exceeds our longest `Action::Block` entity (a PKCS#8 RSA 4096 key at ~3,300
+bytes), so no credential subject to `Block` can straddle the boundary and have its safe prefix
+released before detection fires. Raising the window further is possible but increases worst-case
+output lag (see Consequences).
+
 This gives three properties simultaneously:
 
-- **Bounded memory**: only the hold-back window (2 KB) is retained per concurrent stream, not the
-  whole response. Ten concurrent 100 MB streams use ~120 KB, not 1 GB.
-- **Real-time streaming**: first token delay is ~100 ms, not (stream duration).
+- **Bounded memory**: only the hold-back window (4 KB) is retained per concurrent stream, not the
+  whole response. Ten concurrent 100 MB streams use ~40 KB, not 1 GB.
+- **Real-time streaming**: first token delay is the window fill time (~4 KB / token-arrival-rate),
+  not the full stream duration.
 - **No blind spots at token boundaries**: entities whose characters split across SSE chunk
-  boundaries are caught because the buffer must fill before anything is released. An entity
-  spanning the boundary is held and resolved before the stream continues.
+  boundaries are reassembled by the UTF-8 carry decoder before the scanner sees them, so a
+  partial multi-byte character never causes a misdecode.
 
-Both `redact-gateway` and `redact-extproc` now use `SseHoldBack` for incremental SSE response
-scanning. `redact-gateway` feeds chunks from `reqwest`'s response stream to `SseHoldBack`, while
-`redact-extproc` uses chunks made available by Envoy's `processingMode.response.body: Streamed`
-setting. This enables real-time streaming without buffering the entire response.
+`redact-gateway` feeds chunks from `reqwest`'s response stream to `SseHoldBack`. `redact-extproc`
+feeds chunks made available by Envoy's `processingMode.response.body: Streamed` setting.
 
 ### Entities covered (coding-assistant profile)
 
@@ -137,7 +142,10 @@ On every profile except `observe-only`, any failure in the scanning path refuses
 | Non-2xx upstream response | Upstream's error body, passed through | — |
 | Response body unparseable | HTTP 502 | — |
 | Response scan error | HTTP 502 | — |
-| Response block (prohibited content) | HTTP 422 content_blocked | LLM stopped mid-stream; nothing further sent |
+| Response block (prohibited content, non-observe profile) | HTTP 200 + `data:{"error":{"code":"content_blocked",...}}` SSE event | LLM stopped mid-stream |
+| Response block (`observe-only` profile) | Content forwarded; block logged | LLM continues; nothing blocked |
+
+Note on response path: HTTP headers are committed before SSE streaming begins, so the status code cannot be changed after a block is detected mid-stream. The streaming gateway delivers the block signal inside the SSE body as an OpenAI-shaped error event — clients that handle the `error` field in SSE `data:` frames receive it unambiguously. `redact-extproc`'s buffered path can return HTTP 422 as in the table.
 
 `observe-only` is the documented exception: an indeterminate result is logged and the exchange
 continues, because the profile makes no promises in exchange.
@@ -155,9 +163,6 @@ continues, because the profile makes no promises in exchange.
 
 **Negative**
 
-- UTF-8 codepoint split at a chunk boundary is not yet handled — the stream fails closed rather
-  than misdecoding. Real non-ASCII text will hit this. The `sse.rs` module doc (lines 23-26) notes
-  this gap explicitly.
 - `Person` / `Location` entities (NER) are not yet active — `pii`'s `candle-ner` feature ships a
   trait, not a model. All name detection falls back to pattern recognizers only.
 - A `Block` on the response path stops the stream mid-completion. The user's request was
@@ -172,9 +177,13 @@ continues, because the profile makes no promises in exchange.
 - Profile migration: the profile is configured at deployment (Helm values), not per-request.
   Tenant-specific profiles (one team uses `observe-only`, another uses `coding-assistant`) require
   routing logic upstream of this module.
+- `observe-only` on the response path forwards content even when `Block` would fire on another
+  profile — the block is logged but the SSE stream continues. This enables kill-switch-free
+  monitoring but means the block signal is in-band (inside the stream), not in the HTTP status.
 - Streaming scan latency: the hold-back window introduces a ceiling-delay proportional to the
-  window size divided by the token arrival rate. At normal streaming speeds (~30 tokens/second)
-  a 2 KB window fills in ~2 KB / (30 tokens × ~7 bytes/token) ≈ 10 seconds.
+  window size divided by the token arrival rate. At normal streaming speeds (~30 tokens/second),
+  a 4 KB window fills in ~4 KB / (30 tokens × ~7 bytes/token) ≈ 19 seconds — a deliberate
+  trade-off, so monitor this in production.
 - Multi-choice (`n > 1`) traffic has not been exercised at scale on this platform.
   (`SseHoldBack` handles it, but interleaving is unvalidated.)
 - No per-tenant or per-user policy today.

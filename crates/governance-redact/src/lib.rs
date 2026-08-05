@@ -93,19 +93,18 @@
 //!
 //! ### Bounded memory
 //!
-//! The hold-back window is **bounded** ([`DEFAULT_WINDOW`], 1 KB). The buffer
+//! The hold-back window is **bounded** ([`DEFAULT_WINDOW`], 4 KB). The buffer
 //! never grows beyond the window regardless of how long the stream runs. Ten
-//! concurrent 100 MB streams use roughly ten × the window size (~10 KB total),
+//! concurrent 100 MB streams use roughly ten × the window size (~40 KB total),
 //! not ten × 100 MB.
 //!
 //! Why the window must not be unbounded: if the held region were allowed to grow
 //! as large as the response, we are back to buffering the whole stream — same
 //! latency problem, same OOM risk. The window IS the latency budget: an entity
-//! longer than the window could straddle the window boundary. Note that
-//! `DEFAULT_WINDOW` (1 KB) is smaller than the longest standard entity (a
-//! private key at ~2,200 bytes), so such entities are only caught at `flush`
-//! (end-of-stream), where the full buffer is available. Raise `DEFAULT_WINDOW`
-//! to at least 2,200 bytes if you need mid-stream blocking of private keys.
+//! longer than the window could straddle the boundary and be released before
+//! detection fires. [`DEFAULT_WINDOW`] (4 KB) exceeds our longest
+//! [`Action::Block`] entity (a PKCS#8 RSA 4096 key at ~3,300 bytes), so no
+//! credential subject to `Block` can straddle the boundary.
 //!
 //! ### Frame-aware release
 //!
