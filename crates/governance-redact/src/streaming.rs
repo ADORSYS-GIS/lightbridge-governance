@@ -1,23 +1,25 @@
 //! Redacting a Server-Sent Events completion stream.
 //!
-//! Streaming is the hard case, and on this platform it is also the *normal*
-//! one: opencode, Kilo-Code and LibreChat all stream by default, so a redactor
-//! that only handles buffered responses cannot go in front of real traffic.
+//! This module is the **buffered SSE scanning path**. It scans an *already
+//! complete* SSE stream — the whole upstream response is buffered in memory
+//! before any byte is forwarded. See the crate-level docs ([`crate`]) for the
+//! full two-path architecture (buffered request, incremental streaming response)
+//! and the safety vs. latency trade-off that decides which path is used where.
 //!
-//! # Buffered, not incremental
+//! # Why buffered SSE
 //!
-//! This module implements **buffered** redaction: consume the whole upstream
-//! stream, coalesce the assistant text, scan it once, then re-emit. That gives
-//! a property incremental redaction cannot — detection sees the complete text,
-//! so **no entity can hide in a token split**. A credential streamed as
-//! `ghp_` + `abc…` is one string by the time we look at it.
+//! The public entry point here ([`scan_sse`]) is the conservative default for the
+//! response path. It is the safe counterpart to the buffered request scan
+//! ([`crate::scan_request`]): because the entire stream is present before any byte is
+//! forwarded, no entity can hide in a token split. A credential streamed as
+//! `ghp_` + `ABC…` across chunks is one string by the time [`scan_sse`] looks
+//! at it.
 //!
-//! The cost is real and worth stating: time-to-first-token becomes
-//! time-to-*last*-token, because nothing is emitted until the upstream stream
-//! finishes. An incremental mode with a hold-back window trades that latency
-//! back for a weaker guarantee (entities longer than the window can still
-//! straddle it). Buffered is the safe default; incremental is a later, opt-in
-//! addition.
+//! The cost: time-to-first-token = time-to-last-token. A 20-second completion
+//! begins returning at second 20, not second 0. The incremental path
+//! ([`crate::sse::SseHoldBack`]) trades that latency back for bounded memory
+//! by scanning chunk-by-chunk with a hold-back window. [`scan_sse`] is the safe
+//! default; [`crate::sse::SseHoldBack`] is the production streaming target.
 //!
 //! # What is preserved
 //!

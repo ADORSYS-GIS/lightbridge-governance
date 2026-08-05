@@ -46,3 +46,43 @@ nuke:
 # there are no hand-written migration files to edit (ADR-0009).
 migrate:
 	cargo run --bin governance-ctl -- migrate
+
+# Build the redact-gateway / redact-extproc images. Requires PROVIDER_BASE_URL
+# in .env (copy from .env.example) -- a real OpenAI-compatible LLM, not a mock.
+redact-build:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact build
+
+# Bring up redact-gateway (and redact-extproc) against a real upstream LLM
+redact-up:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact up -d --remove-orphans {{c}}
+
+# Tear down the redact stack, keeping volumes
+redact-down:
+	docker compose -p lightbridge-governance -f compose.yaml --profile redact down
+
+# Health check redact-gateway and redact-extproc. Fails if either is unhealthy.
+# Uses -sf unconditionally so it waits rather than fails-fast; the recipe
+# always exits 0 after showing OK/FAIL so CI sees a real exit code from the
+# docker-compose up itself.
+redact-test:
+    @echo "Checking redact-gateway (/livez)..." && curl -sf -H "Host: localhost:8080" http://localhost:8080/livez && echo " OK" || exit 1
+    @echo "Checking redact-extproc (/livez)..." && curl -sf http://localhost:9501/livez && echo " OK" || exit 1
+
+# Live end-to-end redaction test against a real LLM.
+#
+# Required:
+#   export REDACT_API_KEY='your-key-here'
+#
+# Optional:
+#   export REDACT_MODEL='llama-3.1-8b-instant'    # defaults to llama-3.1-8b-instant
+#   export REDACT_TEST=1                          # full scenario suite
+#   export REPEAT=10                             # concurrent load multiplier
+#
+# just targets:
+#   just redact-test-live              # single clean streaming request
+#   REDACT_TEST=1 just redact-test-live   # full scenario suite
+#   REPEAT=10 just redact-test-live       # 10x concurrent load
+#
+# Requires: just redact-up (stack must be running)
+redact-test-live:
+	/usr/bin/env bash scripts/test-redact-live.sh

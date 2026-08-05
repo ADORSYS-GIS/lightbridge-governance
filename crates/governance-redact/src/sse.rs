@@ -1,24 +1,31 @@
 //! Incremental, SSE-frame-aware redaction over a streamed completion.
 //!
-//! [`HoldBack`](crate::HoldBack) closes the *latency* gap for streaming (hold
-//! back a bounded window instead of buffering the whole response) but not the
-//! *framing* gap: it scans raw text with no notion of SSE structure, so a
-//! redaction operator's replacement can in principle land inside the JSON
-//! surrounding `delta.content` rather than only inside the content string
-//! itself, corrupting that frame for the client to parse. [`scan_sse`] (the
-//! buffered path) avoids this by extracting exactly `delta.content` before
-//! touching anything — this module gets the same precision incrementally.
+//! [`SseHoldBack`] is the **incremental SSE scanning path** — the production
+//! streaming target for the response direction. See the crate-level docs
+//! ([`crate`]) for the full two-path architecture (buffered request, incremental
+//! streaming response) and the trade-off that makes `SseHoldBack` the right
+//! choice for real-time streaming at scale.
+//!
+//! # How it relates to [`crate::HoldBack`] and [`crate::scan_sse`]
+//!
+//! [`crate::HoldBack`] closes the *latency* gap for streaming (hold back a bounded
+//! window instead of buffering the whole response) but not the *framing* gap: it
+//! scans raw text with no notion of SSE structure, so a redaction operator's
+//! replacement can in principle land inside the JSON surrounding `delta.content`
+//! rather than only inside the content string itself, corrupting that frame.
+//! [`crate::scan_sse`] (the buffered path, in the [`crate::streaming`] module) avoids
+//! this by extracting exactly `delta.content` before touching anything —
+//! [`SseHoldBack`] gets the same precision incrementally.
 //!
 //! # The approach
 //!
-//! Each choice index gets its own [`ChoiceRedactor`], which accumulates that
-//! choice's `delta.content` text and — like [`HoldBack`] — releases a prefix
-//! once nothing still open can extend into it. The one addition:
+//! Each choice index gets its own ephemeral redactor, which accumulates that
+//! choice's `delta.content` text and — like [`crate::HoldBack`] — releases a
+//! prefix once nothing still open can extend into it. The one addition:
 //! **a release is always snapped down to a whole SSE frame boundary.** A
 //! frame's content is never split across two release batches, so "attach the
-//! released text to one frame, blank the others" (the same rule
-//! [`scan_sse`]'s `rewrite_deltas` already uses, applied per-batch instead of
-//! per-stream) is always exact — never a partial string glued mid-frame.
+//! released text to one frame, blank the others" is always exact — never a
+//! partial string glued mid-frame.
 //!
 //! Frames that carry no redactable content (structural SSE lines, `[DONE]`,
 //! role/`finish_reason`-only chunks) have nothing to wait on and are ready
@@ -26,11 +33,17 @@
 //! frame behind a still-held one waits its turn, so the reassembled stream's
 //! frame sequence is never reordered.
 //!
+//! # Bounded memory
+//!
+//! The hold-back window (see [`DEFAULT_WINDOW`](crate::DEFAULT_WINDOW)) bounds
+//! memory per concurrent stream. Ten concurrent 100 MB streams use roughly
+//! ten × 4 KB (~40 KB total), not ten × 100 MB. The window must be large enough
+//! to exceed the longest [`Action::Block`][crate::profile::Action] entity so no
+//! credential is partially released before the block fires.
+
 //! # What this still does not solve
 //!
-//! A response chunk boundary landing mid-UTF-8-codepoint (decoding is the
-//! caller's problem, same limitation `HoldBack`'s caller has today), and
-//! multi-choice (`n > 1`) interleaving is handled correctly but is
+//! Multi-choice (`n > 1`) interleaving is handled correctly but is
 //! unexercised against real multi-choice traffic — this platform's clients
 //! (opencode, Kilo-Code, LibreChat) stream `n = 1`.
 
@@ -48,7 +61,7 @@ use crate::{
 
 /// What the caller should do after feeding a chunk. Mirrors
 /// [`crate::Emit`]'s shape deliberately, so callers migrating from
-/// [`HoldBack`] to this type change only which methods they call.
+/// [`crate::HoldBack`] to this type change only which methods they call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SseEmit {
     /// Nothing is safe to release yet. Keep reading.
