@@ -102,6 +102,7 @@ async fn discovery(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse 
     };
     let base_url = guard.base_url.clone();
     Json(json!({
+        "issuer": base_url,
         "authorization_endpoint": format!("{base_url}/authorize"),
         "token_endpoint": format!("{base_url}/token"),
         "device_authorization_endpoint": format!("{base_url}/device"),

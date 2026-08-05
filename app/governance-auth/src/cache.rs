@@ -22,7 +22,15 @@ use sha2::{Digest, Sha256};
 const SKEW_SECONDS: u64 = 30;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(200);
-const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Last-resort ceiling for a lock whose holder we've confirmed is still
+/// alive (an interactive `login` can legitimately hold the lock across an
+/// entire browser flow, well past any short timeout). Crash recovery does
+/// NOT wait for this: [`holder_is_dead`] reclaims a dead holder's lock
+/// immediately, regardless of elapsed time. This only guards a holder
+/// that's alive but has abandoned the lock some other way (or a platform
+/// where liveness can't be checked), so it's generous rather than tuned to
+/// the common case.
+const LOCK_MAX_WAIT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSession {
@@ -157,11 +165,14 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// A coarse mutex over the session file, implemented as a create-new
-/// sentinel file rather than pulling in an flock crate for one call site.
-/// Stale-lock recovery: a lock older than [`LOCK_TIMEOUT`] is assumed to be
-/// left over from a crashed process and is removed.
+/// sentinel file (containing the holder's PID) rather than pulling in an
+/// flock crate for one call site. Stale-lock recovery is PID-liveness-based,
+/// not timeout-based: a lock whose recorded PID is no longer running is
+/// reclaimed immediately, so a legitimately slow holder (an interactive
+/// `login` waiting on a human) is never preempted just because time passed.
 pub struct FileLock {
     path: PathBuf,
+    pid: u32,
 }
 
 impl FileLock {
@@ -170,7 +181,8 @@ impl FileLock {
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating cache directory {}", dir.display()))?;
         let path = lock_path(issuer, client_id)?;
-        let deadline = Instant::now() + LOCK_TIMEOUT;
+        let pid = std::process::id();
+        let deadline = Instant::now() + LOCK_MAX_WAIT;
 
         loop {
             match fs::OpenOptions::new()
@@ -178,8 +190,19 @@ impl FileLock {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => return Ok(Self { path }),
+                Ok(mut file) => {
+                    use std::io::Write;
+                    // Best-effort: if this write fails we still hold the
+                    // lock (the file exists), just without a PID a peer
+                    // could use for its own liveness check.
+                    let _ = write!(file, "{pid}");
+                    return Ok(Self { path, pid });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if holder_is_dead(&path) {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
                     if Instant::now() >= deadline {
                         let _ = fs::remove_file(&path);
                         continue;
@@ -195,8 +218,47 @@ impl FileLock {
     }
 }
 
+/// Whether the lock file's recorded holder is confirmed gone. Returns
+/// `false` (don't preempt) whenever this can't be determined -- an unreadable
+/// or unparseable lock file isn't evidence of a crash.
+fn holder_is_dead(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(pid) = contents.trim().parse::<u32>() else {
+        return false;
+    };
+    !process_is_alive(pid)
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    // `kill -0` checks for existence (and permission) without sending a
+    // signal. Shelling out avoids a new libc/nix dependency for this one
+    // call site. If the check itself can't run, assume alive -- the
+    // `LOCK_MAX_WAIT` ceiling is the fallback for that case, not this.
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map_or(true, |status| status.success())
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
+}
+
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        // Only remove the lock file if it still records our own PID --
+        // guards against deleting a replacement lock a peer created after
+        // reclaiming what it believed (correctly or not) was an abandoned
+        // lock while we were still shutting down.
+        if let Ok(contents) = fs::read_to_string(&self.path)
+            && contents.trim().parse::<u32>() == Ok(self.pid)
+        {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }

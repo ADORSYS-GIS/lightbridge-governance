@@ -55,7 +55,7 @@ pub async fn run(
         ("code_verifier", pkce.verifier.as_str()),
     ];
     if let Some(audience) = &config.audience {
-        params.push(("resource", audience.as_str()));
+        params.push(("audience", audience.as_str()));
     }
 
     let response = token_endpoint::request(http, &metadata.token_endpoint, &params).await?;
@@ -82,7 +82,7 @@ fn build_authorize_url(
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256");
         if let Some(audience) = &config.audience {
-            query.append_pair("resource", audience);
+            query.append_pair("audience", audience);
         }
     }
     Ok(url)
