@@ -54,7 +54,11 @@ request() {
     -H "Connection: close" \
     "$url" \
     ${body:+-d "$body"} \
-    2>&1) || true
+    2>&1) || {
+    ng "→ connection failed"
+    rm -f "$capture_file"
+    return 1
+  }
 
   local result
   result=$(cat "$capture_file")
@@ -62,7 +66,6 @@ request() {
 
   case "$http_code" in
     "$expect_status") ok "→ $http_code"; cat <<< "$result" | head -c 200;;
-    error|*[^0-9]*) ok "→ error ($http_code)"; cat <<< "$result" | head -c 200 ;;
     *) ng "→ HTTP $http_code (expected $expect_status)"
        cat <<< "$result" | head -c 300;;
   esac
@@ -75,17 +78,21 @@ stream_req() {
   local body="$1"; shift
   local tmpf
   tmpf=$(mktemp)
-  local beg end ms bytes
+  local beg end ms bytes http_code
 
-  beg=$(date +%s%3N)
-  curl -s --no-buffer \
+  beg=$(date +%s%N)
+  http_code=$(curl -s --no-buffer \
     -X POST "$CHAT" \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
     -H "Connection: close" \
     -d "$body" \
-    > "$tmpf" 2>&1 || true
-  end=$(date +%s%3N)
+    > "$tmpf" 2>&1) || {
+    ng "→ connection failed"
+    rm -f "$tmpf"
+    return 1
+  }
+  end=$(date +%s%N)
   ms=$(( end - beg ))
   bytes=$(wc -c < "$tmpf")
 
@@ -105,17 +112,21 @@ stream_req_block() {
   local body="$1"; shift
   local tmpf
   tmpf=$(mktemp)
-  local beg end ms
+  local beg end ms http_code
 
-  beg=$(date +%s%3N)
-  curl -s --no-buffer \
+  beg=$(date +%s%N)
+  http_code=$(curl -s --no-buffer \
     -X POST "$CHAT" \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
     -H "Connection: close" \
     -d "$body" \
-    > "$tmpf" 2>&1 || true
-  end=$(date +%s%3N)
+    > "$tmpf" 2>&1) || {
+    ng "→ connection failed"
+    rm -f "$tmpf"
+    return 1
+  }
+  end=$(date +%s%N)
   ms=$(( end - beg ))
 
   local bytes

@@ -110,6 +110,7 @@ fn scan_sse_streaming(
         let mut total_bytes: usize = 0;
         let mut carry = Vec::new();
         let mut data_frames: usize = 0;
+        let mut observe_passthrough = false;
 
         loop {
             let chunk = match upstream.chunk().await {
@@ -124,15 +125,22 @@ fn scan_sse_streaming(
                                 &format!("upstream read error: {e}"),
                             ))))
                             .await;
-                        state.metrics.record(&ScanReport {
-                            redactions: holdback.redactions(),
-                            scanned_fields: data_frames,
-                            ..Default::default()
-                        });
                     }
+                    state.metrics.record(&ScanReport {
+                        redactions: holdback.redactions(),
+                        scanned_fields: data_frames,
+                        ..Default::default()
+                    });
                     return;
                 }
             };
+
+            if observe_passthrough {
+                if tx.send(Ok(chunk)).await.is_err() {
+                    return;
+                }
+                continue;
+            }
 
             total_bytes = total_bytes.saturating_add(chunk.len());
             if total_bytes > state.max_body_bytes {
@@ -147,12 +155,12 @@ fn scan_sse_streaming(
                             &format!("upstream response exceeded {} bytes", state.max_body_bytes),
                         ))))
                         .await;
-                    state.metrics.record(&ScanReport {
-                        redactions: holdback.redactions(),
-                        scanned_fields: data_frames,
-                        ..Default::default()
-                    });
                 }
+                state.metrics.record(&ScanReport {
+                    redactions: holdback.redactions(),
+                    scanned_fields: data_frames,
+                    ..Default::default()
+                });
                 return;
             }
 
@@ -167,12 +175,12 @@ fn scan_sse_streaming(
                                 "upstream chunk is corrupt UTF-8",
                             ))))
                             .await;
-                        state.metrics.record(&ScanReport {
-                            redactions: holdback.redactions(),
-                            scanned_fields: data_frames,
-                            ..Default::default()
-                        });
                     }
+                    state.metrics.record(&ScanReport {
+                        redactions: holdback.redactions(),
+                        scanned_fields: data_frames,
+                        ..Default::default()
+                    });
                     return;
                 }
             };
@@ -182,6 +190,11 @@ fn scan_sse_streaming(
                     carry_len = carry.len(),
                     "UTF-8 codepoint split across chunks — carrying forward"
                 );
+                if !text.is_empty() {
+                    let _ = holdback.push(&state.engine, &text).map_err(
+                        |e| tracing::warn!(error = %e, "holdback emit after partial decode"),
+                    );
+                }
                 continue;
             }
 
@@ -213,10 +226,18 @@ fn scan_sse_streaming(
                             scanned_fields: data_frames,
                             ..Default::default()
                         });
-
                         return;
                     }
-                    // observe-only: log and continue — stream content forwarded
+                    state.metrics.record(&ScanReport {
+                        redactions: holdback.redactions(),
+                        scanned_fields: data_frames,
+                        ..Default::default()
+                    });
+                    // observe-only: stop feeding holdback (it has latched); forward
+                    // remaining chunks raw so the client sees the rest of the stream.
+                    observe_passthrough = true;
+                    // Fall through to next loop iteration where the passthrough guard
+                    // above will kick in.
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "response stream scan error");
@@ -227,14 +248,13 @@ fn scan_sse_streaming(
                                 &e,
                             ))))
                             .await;
-                        state.metrics.record(&ScanReport {
-                            redactions: holdback.redactions(),
-                            scanned_fields: data_frames,
-                            ..Default::default()
-                        });
-
-                        return;
                     }
+                    state.metrics.record(&ScanReport {
+                        redactions: holdback.redactions(),
+                        scanned_fields: data_frames,
+                        ..Default::default()
+                    });
+                    return;
                 }
             }
         }
@@ -500,7 +520,7 @@ pub async fn handle(
 /// Reads an upstream response body, refusing past `cap` bytes.
 ///
 /// ⚠️ Used only for non-streaming (buffered) JSON responses and non-2xx error
-/// responses. Streaming SSE responses use [`scan_sse_incremental`] instead.
+/// responses. Streaming SSE responses use [`scan_sse_streaming`] instead.
 ///
 /// This function holds the whole upstream body in memory because detection has
 /// to see complete text for non-streaming bodies. `reqwest`'s `text()`/`bytes()`

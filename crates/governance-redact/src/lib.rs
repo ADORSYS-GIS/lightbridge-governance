@@ -83,7 +83,7 @@
 //!
 //!   Step 2: chunk arrives
 //!           scanner finds "John Smith" → PERSON detected
-//!           holdback buffer count: > 2 KB window threshold
+//!           holdback buffer count: > 4 KB window threshold
 //!           scanner scans held buffer → no overlap with PERSON span
 //!           Release: [safe content]
 //!

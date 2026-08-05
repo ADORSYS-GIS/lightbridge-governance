@@ -1,6 +1,6 @@
 # ADR-0010: Bidirectional scanning — request and response paths
 
-- Status: Implemented
+- Status: Proposed
 - Date: 2026-08-04
 - Decision owners: @stephane-segning
 
@@ -9,11 +9,13 @@
 As of 2026-08-04:
 - ✅ Request path scanning: Both `redact-gateway` and `redact-extproc` scan all request bodies
   synchronously before forwarding.
-- ✅ Response path scanning (streaming): Both binaries now use `SseHoldBack` for incremental
-  SSE response scanning with a bounded hold-back window instead of buffering entire responses.
-  This resolves the latency issue while maintaining security and bounded memory usage.
+- ✅ Response path scanning (`redact-gateway`): incremental `SseHoldBack` replaces the buffered
+  `scan_sse` path, enabling bounded-memory streaming with time-to-first-token sub-linear in
+  response duration.
 - ✅ Metrics: Both paths report to the same Prometheus metrics (`redact_redactions_total`,
   `redact_scanned_fields_total`, etc.).
+- ⏳ Response path scanning (`redact-extproc`): Envoy's streamed mode for response bodies is
+  not yet wired to `SseHoldBack`. That change is tracked separately.
 
 ## Context
 
@@ -108,7 +110,8 @@ This gives three properties simultaneously:
   partial multi-byte character never causes a misdecode.
 
 `redact-gateway` feeds chunks from `reqwest`'s response stream to `SseHoldBack`. `redact-extproc`
-feeds chunks made available by Envoy's `processingMode.response.body: Streamed` setting.
+streams response chunks via Envoy's `processingMode.response.body: Streamed` mode (not yet wired
+to `SseHoldBack` — tracked separately).
 
 ### Entities covered (coding-assistant profile)
 
