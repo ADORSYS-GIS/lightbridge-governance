@@ -84,9 +84,14 @@ externalSecret:
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
   # users all read). Property names must be created in the remote entries when
   # the production App is registered (values-repo-FIRST).
+  #
+  # `s3RemoteKey` must be set in the deployed values: it is left empty here so
+  # a missed override fails the ExternalSecret sync loudly instead of silently
+  # archiving the raw report against the wrong material (a placeholder
+  # "prod/meta/test-app" was rejected in review for exactly that reason).
   githubAppIdProperty: governance_github_app_id
   githubAppPrivateKeyProperty: governance_github_app_private_key
-  s3RemoteKey: prod/meta/test-app
+  s3RemoteKey: ""
   s3AccessKeyProperty: s3_backup_cnpg_client_id
   s3SecretKeyProperty: s3_backup_cnpg_secret
 

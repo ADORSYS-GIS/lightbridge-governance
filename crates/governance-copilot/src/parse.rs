@@ -77,14 +77,20 @@ pub fn parse_user_daily(bytes: &[u8], report: &str, day: &str) -> Result<Vec<Use
             _ => continue,
         };
         let ai_credits = row.ai_credits.unwrap_or(0.0);
+        // Stored credits are derived from the exact money value (rounded down
+        // to whole credits), so the two columns can never disagree in origin.
+        // GitHub credits are fractional in practice (a 2.5-credit day is in
+        // the fixture below): money is the record of truth (ADR-0008), the
+        // credit count is a whole-credit approximation for display.
+        let cost = credits_to_micro_usd(ai_credits);
         out.push(UserDaily {
             provider_user_id: user_id,
             user_login: row.user_login.unwrap_or_default(),
             report_day: row.day,
             total_interactions: row.total_engagements.unwrap_or(0),
             total_completions: row.total_completions.unwrap_or(0),
-            ai_credits: ai_credits as u64,
-            net_cost_micro_usd: credits_to_micro_usd(ai_credits),
+            ai_credits: (cost.0 / CREDIT_MICRO_USD as i64) as u64,
+            net_cost_micro_usd: cost,
         });
     }
     Ok(out)
@@ -185,7 +191,11 @@ mod tests {
         assert_eq!(rows[0].provider_user_id, "1001");
         assert_eq!(rows[0].user_login, "octocat");
         assert_eq!(rows[0].total_interactions, 42);
-        assert_eq!(rows[0].net_cost_micro_usd, MicroUsd(25_000)); // 2.5 * 10k
+        // 2.5 credits: money is exact (2.5 * 10k), the stored credit count is
+        // derived from that money value (25000 / 10000 = 2), so the two
+        // columns always agree in origin.
+        assert_eq!(rows[0].ai_credits, 2);
+        assert_eq!(rows[0].net_cost_micro_usd, MicroUsd(25_000));
     }
 
     #[test]

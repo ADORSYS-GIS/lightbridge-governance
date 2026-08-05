@@ -12,8 +12,20 @@ use std::fmt;
 /// download URLs get no newtype because they only ever exist transiently
 /// inside a function and are never printed (`download_host` is derived before
 /// the URL is dropped).
+///
+/// The field is private so the plaintext is reachable only through the
+/// deliberate read paths below (`as_ref`/`deref`), never through a public
+/// tuple field that any caller could hand to a formatter.
 #[derive(Clone, PartialEq, Eq)]
-pub struct RawSecret(pub String);
+pub struct RawSecret(String);
+
+impl RawSecret {
+    /// Wrap a plaintext value. The only way in; the only ways out are the
+    /// deliberate `as_ref`/`deref` accessors.
+    pub fn new(secret: String) -> Self {
+        Self(secret)
+    }
+}
 
 impl fmt::Debug for RawSecret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

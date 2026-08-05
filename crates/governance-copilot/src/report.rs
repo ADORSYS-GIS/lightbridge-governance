@@ -24,6 +24,11 @@ pub struct DownloadedReport {
     pub empty: bool,
 }
 
+/// Largest report payload accepted, in bytes. A daily NDJSON for a large org
+/// is a few MB; the cap is a memory guard against a misbehaving or
+/// malicious signed-URL host, not a throughput limit.
+const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
+
 impl GithubClient {
     /// Fetch the report envelope for `report` on `day`, then download the
     /// NDJSON behind its signed URL, then drop the URL.
@@ -89,18 +94,35 @@ impl GithubClient {
             .nth(1)
             .and_then(|rest| rest.split('/').next())
             .map(str::to_owned);
-        let bytes = self
+        let mut resp = self
             .inner()
             .get(signed)
             .send()
             .await
             .map_err(CopilotError::Transport)?
             .error_for_status()
-            .map_err(CopilotError::Transport)?
-            .bytes()
-            .await
-            .map_err(CopilotError::Transport)?
-            .to_vec();
+            .map_err(CopilotError::Transport)?;
+        let too_large = |size: u64| CopilotError::ReportTooLarge {
+            report: report.to_owned(),
+            day: day.to_owned(),
+            size,
+            max: MAX_REPORT_BYTES,
+        };
+        // Reject on Content-Length when the server states it up front, and
+        // enforce the cap while streaming regardless (a lying server is
+        // stopped at MAX_REPORT_BYTES, not after buffering the whole body).
+        match resp.content_length() {
+            Some(len) if len > MAX_REPORT_BYTES as u64 => return Err(too_large(len)),
+            _ => {}
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(CopilotError::Transport)? {
+            let next = bytes.len() + chunk.len();
+            if next > MAX_REPORT_BYTES {
+                return Err(too_large(next as u64));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         let empty = bytes.is_empty();
 
         Ok(DownloadedReport { bytes, host, empty })

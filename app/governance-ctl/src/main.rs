@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         }
         Command::Sync => {
             let cfg = sync::Config::from_env().await?;
-            let client = governance_copilot::GithubClient::new(reqwest::Client::new());
+            let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
             let (outcomes, covered) = sync::run_backfill(&client, &pool, &cfg).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
         }
         Command::SyncDay { day } => {
             let cfg = sync::Config::from_env().await?;
-            let client = governance_copilot::GithubClient::new(reqwest::Client::new());
+            let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
             let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {

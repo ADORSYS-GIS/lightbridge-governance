@@ -33,6 +33,20 @@ pub enum CopilotError {
         source: serde_json::Error,
     },
 
+    /// A report download exceeded the size cap and was rejected rather than
+    /// buffered unbounded in memory.
+    #[error("report {report} for {day} download was {size} bytes, over the {max} byte cap")]
+    ReportTooLarge {
+        /// The report type (`users-1-day`, ...).
+        report: String,
+        /// The report day.
+        day: String,
+        /// The size that was being accumulated when the cap tripped.
+        size: u64,
+        /// The configured cap.
+        max: usize,
+    },
+
     /// An I/O operation failed.
     #[error("copilot connector io: {0}")]
     Io(#[from] std::io::Error),
@@ -74,7 +88,7 @@ mod tests {
 
     #[test]
     fn raw_secret_debug_and_display_are_redacted() {
-        let secret = RawSecret("supersecret".to_owned());
+        let secret = RawSecret::new("supersecret".to_owned());
         assert_eq!(format!("{secret:?}"), "<redacted>");
         assert_eq!(format!("{secret}"), "<redacted>");
     }

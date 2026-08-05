@@ -83,7 +83,7 @@ impl<'c> AppAuth<'c> {
     /// Resolve the numeric installation id for `org` (case-insensitive, as
     /// GitHub treats org logins).
     async fn installation_id(&self, org: &str) -> Result<String> {
-        let jwt = RawSecret(self.app_jwt()?);
+        let jwt = RawSecret::new(self.app_jwt()?);
         let (status, json) = self
             .get("https://api.github.com/app/installations", &jwt)
             .await?;
@@ -117,7 +117,7 @@ impl<'c> AppAuth<'c> {
     /// Exchange the App JWT for a fresh installation token for `org`.
     pub async fn token_for_org(&self, org: &str) -> Result<RawSecret> {
         let id = self.installation_id(org).await?;
-        let jwt = RawSecret(self.app_jwt()?);
+        let jwt = RawSecret::new(self.app_jwt()?);
         let resp = self
             .client
             .inner()
@@ -145,7 +145,7 @@ impl<'c> AppAuth<'c> {
             .get("token")
             .and_then(|t| t.as_str())
             .ok_or_else(|| CopilotError::Token("no token in response".to_owned()))?;
-        Ok(RawSecret(token.to_owned()))
+        Ok(RawSecret::new(token.to_owned()))
     }
 }
 

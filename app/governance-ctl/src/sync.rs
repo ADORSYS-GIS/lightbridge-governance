@@ -47,7 +47,7 @@ impl Config {
             tenant_id,
             org,
             app_id,
-            private_key: RawSecret(pem),
+            private_key: RawSecret::new(pem),
             archive,
         })
     }
