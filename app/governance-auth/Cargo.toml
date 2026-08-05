@@ -1,0 +1,37 @@
+[package]
+name = "governance-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "governance-auth"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+base64.workspace = true
+hex.workspace = true
+url.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Test-only mock OIDC server. Already a pinned workspace dependency (the
+# server binaries use it); reusing it here as a dev-dependency adds no new
+# crate to the supply chain and keeps the mock strictly under tests/, never
+# reachable from src/.
+axum = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
