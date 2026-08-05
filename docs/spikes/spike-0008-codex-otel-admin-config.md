@@ -1,4 +1,7 @@
-# Spike #34 Findings: Can Codex Admin Config Pin OTel?
+# Spike 0008 (issue #34) — Codex admin config cannot pin OTel
+
+- Ticket: [#34](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/34) · Epic: [#30](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/30)
+- Date: 2026-08-04
 
 ## Answer
 
@@ -95,6 +98,12 @@ This means:
 
 ## Recommendation
 
-Document this limitation explicitly in **Story #33** and **Epic #30**.
-
-The Codex telemetry rollout should be treated as **advisory rather than enforceable**. Reassess whether this limitation materially affects Story #33 or whether alternative approaches (for example, server-side telemetry or proxy-based instrumentation) are required to achieve the desired coverage guarantees.
+1. **Document this limitation explicitly** in **Story #33** and **Epic #30**: Codex telemetry
+   is **advisory, not enforceable**.
+2. **Express the Epic #30 success metric as a proportion of participating users** and do
+   **not** report absolute Codex spend per engineer — it measures only users who have
+   telemetry enabled, not actual Codex usage.
+3. **Story #33 owns the reassessment**: decide whether this limitation materially affects
+   the rollout or whether alternative approaches (server-side telemetry, proxy-based
+   instrumentation) are required to reach the desired coverage guarantees. The outcome
+   changes what Epic #30's success metric can claim.
