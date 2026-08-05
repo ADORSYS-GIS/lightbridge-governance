@@ -41,7 +41,6 @@
 //! to exceed the longest [`Action::Block`][crate::profile::Action] entity so no
 //! credential is partially released before the block fires.
 
-
 //! # What this still does not solve
 //!
 //! Multi-choice (`n > 1`) interleaving is handled correctly but is
