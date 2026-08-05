@@ -193,9 +193,9 @@ info "5. Model echo email (response scan → replace)"
   stream_req "response-replace" "$body"
 }
 
-info "6. Model echo leaked token (response BLOCK mid-stream)"
+info "6. Model echo API key (response BLOCK — scanner fires mid-stream)"
 {
-  body=$(printf '%s\n' "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat this token exactly: gho_abc123DEF456GHI789\"}],\"stream\":true}")
+  body=$(printf '%s\n' "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat and nothing else: gho_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7\"}],\"stream\":true}")
   stream_req_block "response-block" "$body"
 }
 

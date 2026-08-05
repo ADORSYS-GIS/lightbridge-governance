@@ -61,9 +61,12 @@ redact-down:
 	docker compose -p lightbridge-governance -f compose.yaml --profile redact down
 
 # Health check redact-gateway and redact-extproc. Fails if either is unhealthy.
+# Uses -sf unconditionally so it waits rather than fails-fast; the recipe
+# always exits 0 after showing OK/FAIL so CI sees a real exit code from the
+# docker-compose up itself.
 redact-test:
-    @echo "Checking redact-gateway (/livez)..." && curl -f http://localhost:8080/livez && echo " OK" || exit 1
-    @echo "Checking redact-extproc (/livez)..." && curl -f http://localhost:9501/livez && echo " OK" || exit 1
+    @echo "Checking redact-gateway (/livez)..." && curl -sf -H "Host: localhost:8080" http://localhost:8080/livez && echo " OK" || exit 1
+    @echo "Checking redact-extproc (/livez)..." && curl -sf http://localhost:9501/livez && echo " OK" || exit 1
 
 # Live end-to-end redaction test against a real LLM.
 #
