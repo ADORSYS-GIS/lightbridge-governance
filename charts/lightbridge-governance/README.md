@@ -1,9 +1,12 @@
 # lightbridge-governance (chart)
 
-Renders the API `Deployment`, the `copilot-sync` `CronJob`, a `Service`, a `ServiceMonitor`,
-and an `ExternalSecret` for the [`lightbridge-governance`](../../app/lightbridge-governance)
-API server and the [`governance-ctl`](../../app/governance-ctl) collector CLI — one image,
-two binaries (`.docker/Dockerfile`), two workloads.
+Renders the API `Deployment`, the `copilot-sync` `CronJob` and their `Service` through
+[`bjw-s/app-template`](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
+v4 (see `values.yaml`'s `app-template` key), plus a `ServiceMonitor`, a `CiliumNetworkPolicy`
+and an `ExternalSecret` as local templates (`templates/`) for the
+[`lightbridge-governance`](../../app/lightbridge-governance) API server and the
+[`governance-ctl`](../../app/governance-ctl) collector CLI — one image, two binaries
+(`.docker/Dockerfile`), two workloads.
 
 ## Values-repo-first
 
@@ -40,9 +43,15 @@ confirmed against the real store. Check before relying on this in a real environ
 
 Env vars bind once at pod start and never refresh. An optional ref lets a pod that beats ESO
 to readiness capture an **empty** credential and run with it — the pod that already tried
-this the wrong way just fails auth forever instead of loudly refusing to start. Both
-`secretKeyRef`s in `templates/deployment.yaml` and `templates/cronjob.yaml` set
-`optional: false` explicitly; if you're adding a third, do the same.
+this the wrong way just fails auth forever instead of loudly refusing to start.
+
+Every `secretKeyRef` under `app-template.controllers.*.containers.main.env` in
+`values.yaml` omits `optional` rather than setting `optional: false`: app-template v4's own
+`values.schema.json` rejects an `optional` key on `secretKeyRef` outright (`helm template`
+fails with `Additional property optional is not allowed`). Omitting it is functionally
+identical — Kubernetes defaults `optional` to `false` (required) when it's absent — but if
+you're adding a fourth `secretKeyRef`, leave the field out; don't add `optional: false` and
+break `helm lint`.
 
 ## `/metrics`, `/livez`, `/readyz` are real but `/metrics` is empty
 

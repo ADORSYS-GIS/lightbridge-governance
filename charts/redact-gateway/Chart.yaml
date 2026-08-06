@@ -16,6 +16,10 @@ description: |
   lightbridge-authz convention (charts live with the code they deploy).
 type: application
 version: 0.1.2
+# The application version, which is NOT the chart version and is not expected
+# to track it: `version` bumps on every chart change, `appVersion` only when the
+# shipped binary changes. Held at 0.1.0 to match .release-please-manifest.json,
+# which is the source of truth for the app's version.
 appVersion: "0.1.0"
 keywords:
   - redaction
@@ -23,3 +27,7 @@ keywords:
   - gateway
 maintainers:
   - name: adorsys-gis
+dependencies:
+  - name: app-template
+    version: 4.6.2
+    repository: https://bjw-s-labs.github.io/helm-charts

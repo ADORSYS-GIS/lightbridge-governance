@@ -5,12 +5,11 @@
 
 name: redact-gateway
 
-image:
-  repository: ghcr.io/adorsys-gis/redact-gateway
-  tag: ""            # defaults to .Chart.AppVersion
-  pullPolicy: IfNotPresent
-
-replicas: 1
+# Read directly by templates/ciliumnetworkpolicy.yaml for the ingress port
+# rule. Duplicated (not referenced) in app-template.service.main.ports.http
+# and app-template.controllers.main.containers.main.ports below -- see the
+# comment on the `app-template` key for why Helm values can't share this
+# across the two.
 port: 8080
 
 # The upstream every request is forwarded to. Verified live:
@@ -44,6 +43,16 @@ maxBodyBytes: 33554432
 # start and never refresh, so an optional ref lets a pod that beats ESO capture
 # an EMPTY value and run with it forever (the context7 MCP_TOKEN incident).
 # Required means the pod waits in ContainerCreating until ESO has synced.
+#
+# app-template v4's own values.schema.json does not accept an `optional` key on
+# secretKeyRef at all (verified via `helm template`: it is rejected with
+# "Additional property optional is not allowed"), so the REDACT_HASH_SALT env
+# entry in `app-template.controllers.main` below cannot spell out
+# `optional: false` explicitly the way the pre-migration template did. It omits
+# the field instead, which is functionally identical -- Kubernetes defaults
+# `optional` to `false` (required) when absent -- but the "waits in
+# ContainerCreating until ESO has synced" behaviour now depends on that
+# Kubernetes default rather than on an explicit chart setting.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
@@ -57,6 +66,17 @@ externalSecret:
 # service was OpenSSL-linked and got trust from that variable; this binary's
 # HTTP client is rustls, which does not read it. Setting SSL_CERT_FILE here
 # would look right and fail at connect time on the first request.
+#
+# ⚠️ KNOWN GAP from the v4 migration: `enabled: false` here still stops the
+# Certificate (templates/certificate.yaml) from being created, but it no
+# longer stops the Deployment from mounting the CA secret volume or setting
+# PROVIDER_CA_FILE (app-template.persistence.internal-ca /
+# app-template.controllers.main below): Helm values files are never
+# templated, so that wiring can't be made conditional on this flag the way
+# the pre-migration Deployment template was. If this is ever set to false in
+# a deployed environment, the pod will crash-loop on the missing
+# `redact-gateway-internal-ca` secret instead of just skipping CA trust.
+# No known deployment currently sets this to false.
 internalCaTrust:
   enabled: true
   secretName: redact-gateway-internal-ca
@@ -91,18 +111,137 @@ networkPolicy:
   providerPort: 10443
   otlpNamespace: observability
 
-resources:
-  requests: { cpu: 100m, memory: 128Mi }
-  limits: { cpu: 500m, memory: 512Mi }
+# bjw-s/app-template v4 expresses the Deployment, its container/probes/security
+# context and the Service. It does not cover ExternalSecret, the Certificate,
+# CiliumNetworkPolicy or ServiceMonitor -- those stay as local templates
+# (templates/externalsecret.yaml, templates/certificate.yaml,
+# templates/ciliumnetworkpolicy.yaml, templates/servicemonitor.yaml) and key
+# off `.Values.name`/`.Values.networkPolicy.*`/`.Values.internalCaTrust.*` etc
+# above, exactly as before the migration.
+#
+# Helm values files are never templated (only templates/*.yaml are), so the
+# literals below that also appear above (the chart name, the port, the salt
+# property name, internalCaTrust's fields) are necessarily duplicated rather
+# than referenced -- there is no supported way for one values.yaml key to
+# point at another. Every duplication is commented at its use site.
+app-template:
+  global:
+    # Pins the generated resource names to `redact-gateway` regardless of the
+    # Helm release name, matching what every resource in this chart was named
+    # before the v4 migration (an unpinned name would rename the
+    # Deployment/Service on upgrade -- an orphan-old, create-new instead of an
+    # in-place update).
+    fullnameOverride: redact-gateway
 
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  runAsGroup: 65532
-  fsGroup: 65532
-  seccompProfile: { type: RuntimeDefault }
+  controllers:
+    main:
+      type: deployment
+      replicas: 1
+      # Preserves the pre-migration default: Kubernetes' own Deployment
+      # defaults (RollingUpdate, revisionHistoryLimit: 10) applied before,
+      # since neither was set. app-template defaults to Recreate / 3.
+      strategy: RollingUpdate
+      revisionHistoryLimit: 10
+      labels:
+        app: redact-gateway
+      pod:
+        # No Kubernetes API access needed.
+        automountServiceAccountToken: false
+        # Preserves the pre-migration behaviour: the template didn't set this
+        # before, so Kubernetes' own default (true) applied. app-template
+        # defaults it to false; set it back explicitly so nothing about the
+        # pod's environment changes as a side effect of the chart migration.
+        enableServiceLinks: true
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          fsGroup: 65532
+          seccompProfile: { type: RuntimeDefault }
+        labels:
+          app: redact-gateway
+      containers:
+        main:
+          image:
+            repository: ghcr.io/adorsys-gis/redact-gateway
+            # Structural default only. Cannot fall back to `.Chart.AppVersion`
+            # the way the pre-migration template did: values.yaml is never
+            # templated, and `.Chart` inside a dependency's own templates
+            # resolves to THAT chart's Chart.yaml (app-template's), not ours.
+            # Keep this in sync with this chart's Chart.yaml `appVersion` --
+            # deployed values (ai-helm-values) always override it regardless.
+            tag: "0.1.0"
+            pullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            LISTEN_ADDR: "0.0.0.0:8080"
+            PROVIDER_BASE_URL: https://core-gateway-internal.envoy-gateway-system.svc.cluster.local
+            PROVIDER_TIMEOUT_SECS: "600"
+            REDACT_PROFILE: coding-assistant
+            # `int64` is load-bearing, not decoration. Helm parses a large
+            # integer as a float, so a bare templated value renders
+            # 33554432 as "3.3554432e+07" -- which clap rejects at startup
+            # with `invalid digit found in string`, crash-looping the pod. It
+            # does NOT reproduce via `--set` (that parses as int64), so a
+            # values-file default is the only place it bites. Same family as
+            # the ai-helm ADR-0109 `"n": 1` YAML-boolean trap. Quoting the
+            # literal directly (as below) sidesteps the float round-trip
+            # entirely rather than relying on a `| int64` cast at render time.
+            MAX_BODY_BYTES: "33554432"
+            # Duplicated from internalCaTrust.mountPath above.
+            PROVIDER_CA_FILE: /etc/internal-ca/ca.crt
+            # Duplicated from externalSecret.saltProperty above.
+            REDACT_HASH_SALT:
+              valueFrom:
+                secretKeyRef:
+                  name: redact-gateway-env
+                  key: redact_gateway_hash_salt
+          probes:
+            liveness:
+              enabled: true
+              type: HTTP
+              path: /livez
+              spec:
+                initialDelaySeconds: 5
+                periodSeconds: 20
+            readiness:
+              enabled: true
+              type: HTTP
+              path: /readyz
+              spec:
+                initialDelaySeconds: 2
+                periodSeconds: 10
+            startup:
+              enabled: false
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
 
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities: { drop: [ALL] }
+  # Duplicated from internalCaTrust.secretName/mountPath above -- mounts the
+  # cert-manager-issued trust bundle (templates/certificate.yaml) the same way
+  # the pre-migration Deployment did.
+  persistence:
+    internal-ca:
+      type: secret
+      name: redact-gateway-internal-ca
+      globalMounts:
+        - path: /etc/internal-ca
+          readOnly: true
+
+  service:
+    main:
+      controller: main
+      primary: true
+      labels:
+        app: redact-gateway
+      ports:
+        http:
+          port: 8080
+          protocol: HTTP
+          primary: true

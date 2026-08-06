@@ -1,0 +1,17 @@
+{{- if .Values.copilot.otlp.host }}
+# Feeds copilot-sync's OTEL_EXPORTER_OTLP_ENDPOINT via envFrom (configMapRef,
+# optional: true -- see app-template.controllers.copilot-sync.containers.main
+# in values.yaml) so the env var is entirely ABSENT, not merely empty, when
+# copilot.otlp.host is unset. Helm values files are never templated, so a
+# plain templated env value can't be made to disappear from an app-template
+# env map based on this setting; this ConfigMap not existing is what makes
+# the env var not exist.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-otlp
+  labels:
+    app: {{ .Values.name }}
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s:%s" .Values.copilot.otlp.host .Values.copilot.otlp.port | quote }}
+{{- end }}

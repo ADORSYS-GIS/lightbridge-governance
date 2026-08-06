@@ -16,6 +16,44 @@
 //! revocation SLA -- already decided and documented in ADR-0006 and
 //! `docs/runbooks/revoke-an-integration-token.md` (currently 60s). This
 //! module does not redecide that; it exists underneath it.
+//!
+//! ## The in-process resolve cache
+//!
+//! ADR-0006, ADR-0007, `config/default.yaml` and the revocation runbook all
+//! describe a `moka` cache in front of `governance_core::credential::resolve`
+//! -- this is it. Every request to `/internal/v1/resolve` was, until now,
+//! a live Postgres query; that is the exact shape of trap the platform
+//! already paid for once (AGENTS.md: the Keycloak-introspection metadata
+//! step, disabled 2026-07-02 because the ext_authz timeout is shorter than
+//! the lookup).
+//!
+//! **Cache key:** a SHA-256 hex digest of the presented credential, computed
+//! here rather than by widening `governance_core`'s public API --
+//! `credential::hash_secret` is a private helper of that module, and adding a
+//! second, cache-only export for what is otherwise the same one-line
+//! computation is not worth the API surface. Never the raw secret: a heap
+//! inspection or crash dump taken during the TTL must not be able to recover
+//! a live credential, only a durably-unreversible digest of one.
+//!
+//! **What is and is not cached:** only a *definitive* answer from the
+//! database -- i.e. `Ok`, a resolved identity -- is ever inserted. Every
+//! `Err` path (timeout, malformed body, bad shared secret, and the
+//! `CredentialRejected` `governance_core::credential::resolve` returns) is
+//! left uncached. This is deliberately more conservative than "cache
+//! definitive negatives, not errors": `credential::resolve`'s own doc
+//! comment says it folds a genuine database error into the *same*
+//! `CredentialRejected` variant as "unknown" and "revoked" ("callers get a
+//! single opaque rejection regardless of cause"), specifically so the HTTP
+//! response is not a credential-enumeration oracle. That folding means this
+//! module cannot tell "the credential genuinely does not exist" apart from
+//! "the query errored" without widening that public type -- out of scope
+//! here (see the PR description for why). Treating every `Err` as ineligible
+//! to cache is therefore the only choice that satisfies the hard rule this
+//! cache exists under: a transient outage must never get pinned as a denial
+//! for a whole TTL. The cost is that a sustained flood of unknown/garbage
+//! credentials still reaches Postgres on every request; that is strictly the
+//! pre-existing behaviour, not a regression, and is bounded by the same
+//! `resolve_timeout` that already protects this path.
 
 use std::{
     sync::Arc,
@@ -29,8 +67,38 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use cratestack::sqlx::PgPool;
+use governance_core::credential::ResolvedIdentity;
+use moka::future::Cache;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+
+/// Token -> resolved identity, keyed by [`cache_key`]. Bounded (`max_capacity`)
+/// and time-limited (`time_to_live`) per `config/default.yaml`'s
+/// `resolveCache` defaults (60s / 10000 entries) -- moka evicts both by
+/// capacity (LFU-ish, per its own docs) and by age on its own background
+/// housekeeping, no manual sweep needed here.
+pub type ResolveCache = Cache<String, ResolvedIdentity>;
+
+/// Builds the cache with the given bounds. A free function (not inlined into
+/// `main.rs`) so tests can build one with a short TTL without going through
+/// `clap`.
+pub fn build_cache(ttl: Duration, max_capacity: u64) -> ResolveCache {
+    Cache::builder()
+        .max_capacity(max_capacity)
+        .time_to_live(ttl)
+        .build()
+}
+
+/// SHA-256 hex digest of the presented credential. Deliberately independent
+/// of `governance_core::credential`'s own (private) `hash_secret` -- same
+/// algorithm, but this is a cache key, not the DB lookup key, and the two
+/// are not required to stay byte-identical for correctness.
+fn cache_key(credential: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(credential.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 #[derive(Clone)]
 pub struct ResolveState {
@@ -43,6 +111,9 @@ pub struct ResolveState {
     /// Keycloak-introspection step (ADR-0006): a dependency's own timeout
     /// must be shorter than the caller's, not left at a generic default.
     pub resolve_timeout: Duration,
+    /// See the module doc comment. Only a definitive `Ok` answer from
+    /// `governance_core::credential::resolve` is ever inserted.
+    pub cache: ResolveCache,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,8 +132,8 @@ struct ResolveResponse {
     integration_id: String,
 }
 
-impl From<governance_core::credential::ResolvedIdentity> for ResolveResponse {
-    fn from(identity: governance_core::credential::ResolvedIdentity) -> Self {
+impl From<ResolvedIdentity> for ResolveResponse {
+    fn from(identity: ResolvedIdentity) -> Self {
         Self {
             tenant_id: identity.tenant_id,
             application_id: identity.application_id,
@@ -118,14 +189,25 @@ async fn handle(
     let request: ResolveRequest =
         serde_json::from_slice(body).map_err(|_| RejectReason::MalformedBody)?;
 
-    tokio::time::timeout(
+    let key = cache_key(&request.credential);
+    if let Some(identity) = state.cache.get(&key).await {
+        return Ok(ResolveResponse::from(identity));
+    }
+
+    let identity = tokio::time::timeout(
         state.resolve_timeout,
         governance_core::credential::resolve(&state.pool, &request.credential),
     )
     .await
     .map_err(|_| RejectReason::Timeout)?
-    .map(ResolveResponse::from)
-    .map_err(|_| RejectReason::CredentialRejected)
+    .map_err(|_| RejectReason::CredentialRejected)?;
+
+    // Only reached on a genuine `Ok` from the database -- see the module doc
+    // comment for why every `Err` path above returns without ever calling
+    // `cache.insert`.
+    state.cache.insert(key, identity.clone()).await;
+
+    Ok(ResolveResponse::from(identity))
 }
 
 pub async fn resolve(
@@ -196,6 +278,7 @@ mod tests {
                 .expect("lazy pool construction never actually connects"),
             internal_token: Arc::from("the-real-token"),
             resolve_timeout: Duration::from_millis(200),
+            cache: build_cache(Duration::from_secs(60), 10_000),
         }
     }
 
@@ -247,7 +330,124 @@ mod tests {
         );
     }
 
-    async fn connected_state() -> Option<ResolveState> {
+    fn sample_identity() -> ResolvedIdentity {
+        ResolvedIdentity {
+            tenant_id: "tenant-1".to_owned(),
+            application_id: "app-1".to_owned(),
+            environment: "prod".to_owned(),
+            integration_id: "integration-1".to_owned(),
+        }
+    }
+
+    /// A pool built the same way as `unreachable_state()`'s can never yield
+    /// `Ok` -- proven directly by the timeout test above. So if `handle`
+    /// returns `Ok` here, given that same unreachable pool, the only
+    /// possible source is the cache: this is a positive proof the cache path
+    /// short-circuits before the DB is ever touched, not an inference from
+    /// timing.
+    #[tokio::test]
+    async fn a_cache_hit_is_served_without_ever_touching_the_db() {
+        let state = unreachable_state();
+        let credential = "gov_cache-hit-test";
+        let identity = sample_identity();
+        state
+            .cache
+            .insert(cache_key(credential), identity.clone())
+            .await;
+
+        let body = serde_json::to_vec(&serde_json::json!({"credential": credential})).unwrap();
+        let result = handle(&state, &headers_with_token("the-real-token"), &body).await;
+
+        assert_eq!(result, Ok(ResolveResponse::from(identity)));
+    }
+
+    /// The single most important correctness rule this cache exists under:
+    /// a timeout (or any other `Err`) must never be inserted, because it
+    /// would pin a transient outage as a denial for the whole TTL. Proven
+    /// two ways: (1) the cache is directly asserted empty afterward, and (2)
+    /// a second lookup pays the full timeout again rather than returning
+    /// near-instantly, which is what a poisoned cache entry would look like.
+    #[tokio::test]
+    async fn a_db_timeout_is_never_cached_so_a_second_lookup_still_attempts_the_db() {
+        let state = unreachable_state();
+        let credential = "gov_never-cached";
+        let body = serde_json::to_vec(&serde_json::json!({"credential": credential})).unwrap();
+
+        let first = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        assert_eq!(first, Err(RejectReason::Timeout));
+        assert!(
+            state.cache.get(&cache_key(credential)).await.is_none(),
+            "a timeout must never be inserted into the cache"
+        );
+
+        let start = Instant::now();
+        let second = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(second, Err(RejectReason::Timeout));
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "a second lookup after a failure must re-attempt the DB (and pay close to the full \
+             {:?} timeout again), not return near-instantly from a cached failure -- took \
+             {elapsed:?}",
+            state.resolve_timeout
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_entries_expire_after_the_configured_ttl() {
+        let cache = build_cache(Duration::from_millis(50), 10_000);
+        let key = cache_key("gov_ttl-test");
+        let identity = sample_identity();
+
+        cache.insert(key.clone(), identity.clone()).await;
+        assert_eq!(
+            cache.get(&key).await,
+            Some(identity),
+            "must be present immediately after insertion"
+        );
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        // moka expires lazily on access/housekeeping; `run_pending_tasks`
+        // forces the sweep so this assertion does not depend on incidental
+        // background-thread timing.
+        cache.run_pending_tasks().await;
+
+        assert_eq!(
+            cache.get(&key).await,
+            None,
+            "entry must be gone once the TTL has elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_is_bounded_by_max_capacity() {
+        let max_capacity = 10_u64;
+        let cache = build_cache(Duration::from_secs(60), max_capacity);
+
+        for i in 0..(max_capacity * 5) {
+            let identity = ResolvedIdentity {
+                tenant_id: format!("tenant-{i}"),
+                application_id: "app".to_owned(),
+                environment: "prod".to_owned(),
+                integration_id: format!("integration-{i}"),
+            };
+            cache.insert(cache_key(&format!("gov_{i}")), identity).await;
+        }
+        cache.run_pending_tasks().await;
+
+        assert!(
+            cache.entry_count() <= max_capacity,
+            "cache must stay bounded at max_capacity ({max_capacity}), had {}",
+            cache.entry_count()
+        );
+    }
+
+    /// `cache` is a parameter (not built internally) so tests can control
+    /// whether a lookup within the test is a warm hit or a cold miss --
+    /// exactly the distinction the two assertions below the revoke call
+    /// depend on.
+    async fn connected_state(cache: ResolveCache) -> Option<ResolveState> {
         let database_url = std::env::var("DATABASE_URL").ok()?;
         let pool = PgPool::connect(&database_url).await.expect("connect");
         governance_core::migrate::run(&pool).await.expect("migrate");
@@ -255,6 +455,7 @@ mod tests {
             pool,
             internal_token: Arc::from("the-real-token"),
             resolve_timeout: Duration::from_secs(2),
+            cache,
         })
     }
 
@@ -263,9 +464,23 @@ mod tests {
     /// JSON parsing, `governance_core::credential::resolve`, response
     /// mapping), not just the credential module in isolation (already
     /// covered by #10's own tests).
+    ///
+    /// Extended, not left as-is, now that `handle` caches positive answers:
+    /// the pre-cache version of this test called `handle` twice against the
+    /// *same* `state` and expected the post-revoke call to be denied
+    /// immediately. That is no longer true by design -- ADR-0006 says so in
+    /// its own words: "revocation propagates within one TTL, not instantly."
+    /// A test asserting instant revocation would now fail for the reason the
+    /// feature exists, not because of a bug. This version asserts BOTH
+    /// halves of that documented tradeoff explicitly: a still-warm cache
+    /// entry keeps resolving (staleness, bounded by the TTL), while a cold
+    /// cache (a fresh process, or the same one once the TTL elapses) sees
+    /// the revoke immediately, because the DB is always authoritative on a
+    /// miss.
     #[tokio::test]
     async fn handle_resolves_a_valid_credential_and_denies_it_once_revoked() {
-        let Some(state) = connected_state().await else {
+        let Some(state) = connected_state(build_cache(Duration::from_secs(60), 10_000)).await
+        else {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
@@ -338,6 +553,14 @@ mod tests {
         assert_eq!(resolved.environment, "dev");
         assert_eq!(resolved.integration_id, issued.integration.id);
 
+        // The first, DB-backed resolution above must have populated the
+        // cache with a definitive answer -- requirement: "a definitive
+        // answer is cached".
+        assert!(
+            state.cache.get(&cache_key(&issued.secret)).await.is_some(),
+            "a successful resolve must be inserted into the cache"
+        );
+
         governance_core::credential::revoke(
             &db,
             &ctx,
@@ -348,11 +571,33 @@ mod tests {
         .await
         .expect("revoke must succeed");
 
-        let after_revoke = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        // Half 1 of ADR-0006's documented tradeoff: the still-warm cache
+        // entry keeps resolving the now-revoked credential -- this is the
+        // "not instantly" a still-warm entry buys, bounded by the TTL.
+        let after_revoke_same_state =
+            handle(&state, &headers_with_token("the-real-token"), &body).await;
         assert_eq!(
-            after_revoke,
+            after_revoke_same_state,
+            Ok(resolved),
+            "a still-warm cache entry must keep resolving until its TTL elapses -- ADR-0006's \
+             documented revocation SLA, not a bug"
+        );
+
+        // Half 2: a cold cache (a fresh process, or the same one once the
+        // TTL elapses) is never stale -- the DB is authoritative on a miss,
+        // so revocation is visible immediately once the cache isn't in the
+        // way. This is the fail-closed guarantee the pre-cache version of
+        // this test was actually checking.
+        let fresh_state = ResolveState {
+            cache: build_cache(Duration::from_secs(60), 10_000),
+            ..state.clone()
+        };
+        let after_revoke_cold_cache =
+            handle(&fresh_state, &headers_with_token("the-real-token"), &body).await;
+        assert_eq!(
+            after_revoke_cold_cache,
             Err(RejectReason::CredentialRejected),
-            "a revoked credential must be denied by resolve, not silently accepted"
+            "a revoked credential must be denied on a cache miss, not silently accepted"
         );
     }
 }
