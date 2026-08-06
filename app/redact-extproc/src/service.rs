@@ -135,6 +135,14 @@ struct ResponseState {
     /// used in [`ResponseBodyMode::Sse`].
     utf8_carry: Vec<u8>,
     mode: ResponseBodyMode,
+    /// Header VALUES only (never a body), captured purely for diagnostics on
+    /// a `handle_buffered_response_chunk` JSON-parse failure -- see that
+    /// function's own comment on why a body snippet must never be logged
+    /// (AGENTS.md: never log a request/response body) even though these two
+    /// headers alone are usually enough to tell "this was compressed" from
+    /// "this genuinely isn't JSON" apart.
+    content_type: Option<String>,
+    content_encoding: Option<String>,
 }
 
 impl ResponseState {
@@ -146,6 +154,8 @@ impl ResponseState {
             // Safe default until (or unless) the response headers say
             // otherwise — see the module doc's "Buffered" bullet.
             mode: ResponseBodyMode::Buffered(Vec::new()),
+            content_type: None,
+            content_encoding: None,
         }
     }
 
@@ -153,23 +163,33 @@ impl ResponseState {
     /// explicit `text/event-stream` `Content-Type` selects
     /// [`ResponseBodyMode::Sse`]; a missing header, or any other value,
     /// leaves the [`ResponseBodyMode::Buffered`] default from [`Self::new`]
-    /// in place.
+    /// in place. Also captures `Content-Type`/`Content-Encoding` verbatim
+    /// into [`Self::content_type`]/[`Self::content_encoding`] regardless of
+    /// which mode is selected -- see those fields' own doc.
     ///
     /// Header keys arrive lower-cased already (Envoy's guarantee, see
     /// `HttpHeaders::headers`'s doc), but the value is matched
     /// case-insensitively and by prefix (`; charset=utf-8` and similar
     /// parameters are common) rather than relying on that.
     fn set_mode_from_headers(&mut self, headers: &HttpHeaders) {
-        let is_sse = headers.headers.as_ref().is_some_and(|hm| {
-            hm.headers.iter().any(|h| {
-                h.key.eq_ignore_ascii_case("content-type")
-                    && h.value
-                        .to_ascii_lowercase()
-                        .starts_with("text/event-stream")
-            })
+        let Some(hm) = headers.headers.as_ref() else {
+            return;
+        };
+        let is_sse = hm.headers.iter().any(|h| {
+            h.key.eq_ignore_ascii_case("content-type")
+                && h.value
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
         });
         if is_sse {
             self.mode = ResponseBodyMode::Sse;
+        }
+        for h in &hm.headers {
+            if h.key.eq_ignore_ascii_case("content-type") {
+                self.content_type = Some(h.value.clone());
+            } else if h.key.eq_ignore_ascii_case("content-encoding") {
+                self.content_encoding = Some(h.value.clone());
+            }
         }
     }
 }
@@ -435,7 +455,15 @@ fn handle_response_chunk(
     end_of_stream: bool,
 ) -> ProcessingResponse {
     if let ResponseBodyMode::Buffered(buf) = &mut state.mode {
-        return handle_buffered_response_chunk(engine, metrics, buf, chunk, end_of_stream);
+        return handle_buffered_response_chunk(
+            engine,
+            metrics,
+            buf,
+            chunk,
+            end_of_stream,
+            state.content_type.as_deref(),
+            state.content_encoding.as_deref(),
+        );
     }
 
     let ResponseState {
@@ -561,6 +589,8 @@ fn handle_buffered_response_chunk(
     buf: &mut Vec<u8>,
     chunk: &[u8],
     end_of_stream: bool,
+    content_type: Option<&str>,
+    content_encoding: Option<&str>,
 ) -> ProcessingResponse {
     if buf.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
         tracing::warn!(
@@ -581,13 +611,36 @@ fn handle_buffered_response_chunk(
         return body_response(Direction::Response, Vec::new());
     }
 
-    let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(buf) else {
-        return refuse_or_block(
-            Direction::Response,
-            engine,
-            metrics,
-            "response body is not JSON",
-        );
+    let mut json = match serde_json::from_slice::<serde_json::Value>(buf) {
+        Ok(json) => json,
+        Err(e) => {
+            // Diagnostics only, deliberately narrow: header VALUES, byte
+            // count, a gzip-magic-byte check, and serde_json's own error
+            // (position/expected-token, never the offending bytes) -- never
+            // the body itself, or even a snippet of it. AGENTS.md is
+            // explicit that a request/response body is never logged, and
+            // this is exactly the component that exists to keep PII/secrets
+            // in a response from leaking anywhere they shouldn't -- logging
+            // a "sample" of the very body this filter couldn't clear would
+            // defeat its own purpose. This is deliberately enough to
+            // distinguish "the response was compressed and we're trying to
+            // parse ciphertext-looking bytes as JSON" from "the response
+            // genuinely isn't JSON" without ever needing the content itself.
+            tracing::error!(
+                content_type,
+                content_encoding,
+                body_len = buf.len(),
+                looks_gzip = buf.starts_with(&[0x1f, 0x8b]),
+                parse_error = %e,
+                "buffered response body did not parse as JSON"
+            );
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                "response body is not JSON",
+            );
+        }
     };
 
     match scan_response(engine, &mut json) {
