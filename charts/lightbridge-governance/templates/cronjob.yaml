@@ -41,12 +41,16 @@ spec:
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}
               env:
-                - name: DATABASE_URL
+                # DB_PASSWORD must come BEFORE DATABASE_URL -- see deployment.yaml's
+                # comment on Kubernetes' $(VAR_NAME) substitution ordering.
+                - name: DB_PASSWORD
                   valueFrom:
                     secretKeyRef:
                       name: {{ .Values.name }}-env
-                      key: {{ .Values.externalSecret.databaseUrlProperty }}
+                      key: {{ .Values.externalSecret.dbPasswordProperty }}
                       optional: false
+                - name: DATABASE_URL
+                  value: {{ .Values.databaseUrl | quote }}
                 - name: TENANT_ID
                   value: {{ .Values.copilot.tenantId | quote }}
                 - name: GH_ORG

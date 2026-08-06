@@ -29,12 +29,32 @@ helm template charts/lightbridge-governance --set externalSecret.enabled=false
 
 ## The `ExternalSecret` property names are an assumption, not a verified fact
 
-`externalSecret.databaseUrlProperty` (`governance_database_url`) and
-`externalSecret.internalResolveTokenProperty` (`governance_internal_resolve_token`) are this
-chart's best guess at what the two properties are named inside the shared
+`externalSecret.dbPasswordProperty` (`governance_db_password`),
+`externalSecret.internalResolveTokenProperty` (`governance_internal_resolve_token`) and
+`externalSecret.internalIngestTokenProperty` (`governance_internal_ingest_token`) are this
+chart's best guess at what these properties are named inside the shared
 `ai/camer/digital/prod/env` secret store entry. Unlike `redact-gateway`'s `saltProperty`
 (verified against the live entry when that chart was written), these have **not** been
 confirmed against the real store. Check before relying on this in a real environment.
+
+All three are plain random opaque values (`openssl rand -hex 32` or similar) — there is
+nothing to compute or derive for any of them.
+
+## `DATABASE_URL` is assembled from parts, not a single opaque secret
+
+`.Values.databaseUrl` is a plain (non-secret) value set per-environment in
+`ai-helm-values`, e.g. `postgresql://governance:$(DB_PASSWORD)@<cnpg-rw-service>:5432/governance`.
+`DB_PASSWORD` is a real env var (sourced from `dbPasswordProperty` via `secretKeyRef`,
+defined immediately before `DATABASE_URL` in both `deployment.yaml` and `cronjob.yaml`) —
+Kubernetes' native `$(VAR_NAME)` substitution resolves it into the container's actual
+process environment at start, and is **not** visible in `kubectl get pod -o yaml` (the API
+object keeps the literal `$(DB_PASSWORD)` string; only the kubelet-constructed process env
+has the real value). Same technique `lightbridge-code-intelligence`'s `DATABASE_URL` already
+uses in `ai-helm-values`. Nothing needs manual assembly — the host/port/database name are
+known, non-secret literals, and the password is whatever's synced to `dbPasswordProperty`
+(the **same** `ai/camer/digital/prod/env` property ai-helm's `charts/lightbridge-db` reads
+for the `governance` CNPG role's own password Secret, so the two can never drift out of
+sync — an operator generates that one password once, and both sides pick it up via ESO).
 
 ## Never `optional: true` on a `secretKeyRef`
 
