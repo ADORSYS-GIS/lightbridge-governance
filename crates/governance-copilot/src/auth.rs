@@ -75,9 +75,21 @@ impl<'c> AppAuth<'c> {
             .map_err(CopilotError::Transport)?;
         let status = resp.status().as_u16();
         let text = resp.text().await.map_err(CopilotError::Transport)?;
-        let json = serde_json::from_str(&text)
-            .map_err(|e| CopilotError::github(kind_for(url), status, e.to_string()))?;
-        Ok((status, json))
+        // Surface the real failure instead of a parse error when GitHub (or a
+        // proxy) answers 4xx/5xx with a non-JSON body -- e.g. the plain-text
+        // 403 "Request forbidden... User-Agent" page. Losing the body behind
+        // "expected value at line 2 column 1" made a config bug unreadable.
+        match serde_json::from_str(&text) {
+            Ok(json) => Ok((status, json)),
+            Err(e) if status == 200 => {
+                Err(CopilotError::github(kind_for(url), status, e.to_string()))
+            }
+            Err(_) => Err(CopilotError::github(
+                kind_for(url),
+                status,
+                text.trim().chars().take(300).collect::<String>(),
+            )),
+        }
     }
 
     /// Resolve the numeric installation id for `org` (case-insensitive, as
