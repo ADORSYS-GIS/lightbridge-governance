@@ -7,21 +7,42 @@
 //!   Envoy hands us exactly one `RequestBody` message covering the whole
 //!   payload). Identical logic to `redact-gateway`'s request path, since the
 //!   input shape is identical.
-//! - **Response** — scanned incrementally via
-//!   [`governance_redact::SseHoldBack`] as chunks arrive under
-//!   `processingMode.response.body: Streamed`, so output lags input by a
-//!   bounded window rather than by the length of the completion.
-//!   `SseHoldBack` is frame-aware: it extracts exactly `delta.content` before
-//!   redacting anything (the same rule
-//!   [`governance_redact::scan_sse`]'s buffered path uses) and snaps every
-//!   release to a whole SSE frame boundary, so a redaction operator's
-//!   replacement can never land partway through a frame's JSON — the
-//!   front-proxy-era limitation this module used to carry (a raw-byte
-//!   [`governance_redact::HoldBack`] with no notion of SSE structure) is
-//!   closed.
+//! - **Response** — Envoy's `processingMode.response.body: Streamed` sends
+//!   *every* response through this path, not only genuine SSE completions:
+//!   `stream: false` completions and embeddings responses arrive the same
+//!   way, in chunks. Which of the two shapes a given response actually has
+//!   is resolved from the upstream `Content-Type` header (see
+//!   [`ResponseState::set_mode_from_headers`]) into one of two handling
+//!   modes:
+//!   - **SSE** (`Content-Type: text/event-stream`): scanned incrementally via
+//!     [`governance_redact::SseHoldBack`] as chunks arrive, so output lags
+//!     input by a bounded window rather than by the length of the
+//!     completion. `SseHoldBack` is frame-aware: it extracts `delta.content`
+//!     and every tool call's `function.arguments` before redacting anything
+//!     (the same rule [`governance_redact::scan_sse`]'s buffered path uses)
+//!     and snaps every release to a whole SSE frame boundary, so a redaction
+//!     operator's replacement can never land partway through a frame's JSON
+//!     — the front-proxy-era limitation this module used to carry (a
+//!     raw-byte [`governance_redact::HoldBack`] with no notion of SSE
+//!     structure) is closed.
+//!   - **Buffered** (anything else, including a missing or unrecognised
+//!     Content-Type): accumulated in full and scanned in one pass at
+//!     `end_of_stream`, mirroring `redact-gateway`'s non-streaming response
+//!     path. This is the fail-closed default — `SseHoldBack` only ever
+//!     examines `data:` lines, so feeding it a plain JSON body (because SSE
+//!     was wrongly assumed) would release every byte as
+//!     `Frame::Passthrough` with zero calls to `engine.scan`. That was a
+//!     real gap: prior to this mode existing, every non-SSE response body
+//!     ext_proc's `Streamed` setting handed us went out completely
+//!     unscanned. An ambiguous Content-Type buffers rather than streams —
+//!     "unknown" routes to the branch that inspects the whole body before
+//!     releasing anything, not to the one that assumes it is safe to
+//!     stream through.
 //!
-//! A response chunk boundary landing mid-UTF-8 codepoint is handled by
-//! carrying the incomplete trailing bytes over to the next chunk (see
+//! A response chunk boundary landing mid-UTF-8 codepoint (SSE mode only —
+//! the buffered mode hands raw bytes straight to `serde_json`, which does
+//! its own UTF-8 validation over the complete body) is handled by carrying
+//! the incomplete trailing bytes over to the next chunk (see
 //! [`decode_chunk_with_carry`]) rather than failing the request — this is
 //! a routine consequence of chunked delivery, not evidence of anything
 //! wrong with the content, and treating it as an error broke nearly every
@@ -34,14 +55,14 @@ use std::sync::Arc;
 use envoy_types::pb::envoy::{
     config::core::v3::{HeaderValue, HeaderValueOption},
     service::ext_proc::v3::{
-        BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse,
+        BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, HttpHeaders,
         ImmediateResponse, ProcessingRequest, ProcessingResponse, body_mutation,
         common_response::ResponseStatus, external_processor_server::ExternalProcessor,
         processing_request::Request as Req, processing_response::Response as Resp,
     },
     r#type::v3::{HttpStatus, StatusCode},
 };
-use governance_redact::{Engine, ScanReport, SseEmit, SseHoldBack, scan_request};
+use governance_redact::{Engine, ScanReport, SseEmit, SseHoldBack, scan_request, scan_response};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -90,16 +111,30 @@ enum Phase {
     ResponseBody(ResponseState),
 }
 
+/// Which shape a response body actually has, resolved from the upstream
+/// `Content-Type` header. See the module doc for why the default (set in
+/// [`ResponseState::new`]) is [`Self::Buffered`], not [`Self::Sse`].
+enum ResponseBodyMode {
+    /// `Content-Type: text/event-stream`. Handled incrementally via
+    /// [`SseHoldBack`].
+    Sse,
+    /// Everything else. The accumulated raw bytes, scanned as one JSON body
+    /// at `end_of_stream` — see [`handle_buffered_response_chunk`].
+    Buffered(Vec<u8>),
+}
+
 /// State threaded across every `ResponseBody` chunk of one HTTP exchange.
 struct ResponseState {
     hold: Box<SseHoldBack>,
     /// Redactions reported as of the last chunk, so the cumulative counter
     /// `SseHoldBack::redactions` can be turned into a per-chunk delta for
-    /// the Prometheus counter.
+    /// the Prometheus counter. Only advances in [`ResponseBodyMode::Sse`].
     last_redactions: usize,
     /// Trailing bytes from the previous chunk that did not form a complete
-    /// UTF-8 codepoint on their own. See [`decode_chunk_with_carry`].
+    /// UTF-8 codepoint on their own. See [`decode_chunk_with_carry`]. Only
+    /// used in [`ResponseBodyMode::Sse`].
     utf8_carry: Vec<u8>,
+    mode: ResponseBodyMode,
 }
 
 impl ResponseState {
@@ -108,6 +143,33 @@ impl ResponseState {
             hold: Box::new(SseHoldBack::with_window(window)),
             last_redactions: 0,
             utf8_carry: Vec::new(),
+            // Safe default until (or unless) the response headers say
+            // otherwise — see the module doc's "Buffered" bullet.
+            mode: ResponseBodyMode::Buffered(Vec::new()),
+        }
+    }
+
+    /// Resolves [`Self::mode`] from the upstream response headers. Only an
+    /// explicit `text/event-stream` `Content-Type` selects
+    /// [`ResponseBodyMode::Sse`]; a missing header, or any other value,
+    /// leaves the [`ResponseBodyMode::Buffered`] default from [`Self::new`]
+    /// in place.
+    ///
+    /// Header keys arrive lower-cased already (Envoy's guarantee, see
+    /// `HttpHeaders::headers`'s doc), but the value is matched
+    /// case-insensitively and by prefix (`; charset=utf-8` and similar
+    /// parameters are common) rather than relying on that.
+    fn set_mode_from_headers(&mut self, headers: &HttpHeaders) {
+        let is_sse = headers.headers.as_ref().is_some_and(|hm| {
+            hm.headers.iter().any(|h| {
+                h.key.eq_ignore_ascii_case("content-type")
+                    && h.value
+                        .to_ascii_lowercase()
+                        .starts_with("text/event-stream")
+            })
+        });
+        if is_sse {
+            self.mode = ResponseBodyMode::Sse;
         }
     }
 }
@@ -144,6 +206,19 @@ impl ExternalProcessor for RedactProcessor {
 
                 let out = match (req, &mut phase) {
                     (Req::RequestHeaders(_), _) => continue_headers(Direction::Request),
+
+                    // Resolves SSE-vs-buffered before any `ResponseBody`
+                    // chunk arrives (Envoy always sends headers first) — see
+                    // `ResponseState::set_mode_from_headers`.
+                    (Req::ResponseHeaders(headers), Phase::ResponseBody(state)) => {
+                        state.set_mode_from_headers(&headers);
+                        continue_headers(Direction::Response)
+                    }
+                    // Response headers arriving before the request finished
+                    // (should not happen, per Envoy's own ordering): nothing
+                    // to attach the mode to yet, so just continue — the
+                    // `ResponseBody` phase transition still starts every
+                    // stream on the safe `Buffered` default.
                     (Req::ResponseHeaders(_), _) => continue_headers(Direction::Response),
 
                     (Req::RequestBody(body), Phase::RequestBody(buf)) => {
@@ -310,10 +385,11 @@ fn decode_chunk_with_carry(carry: &mut Vec<u8>, chunk: &[u8]) -> Result<String, 
     }
 }
 
-/// Feeds one response chunk through the incremental redactor.
+/// Dispatches one response chunk to whichever handling mode
+/// [`ResponseState::set_mode_from_headers`] resolved for this exchange.
 ///
-/// See the module doc for the known SSE-framing gap this does not yet
-/// close.
+/// See the module doc for why a response is not assumed to be SSE just
+/// because it arrived through `processingMode.response.body: Streamed`.
 fn handle_response_chunk(
     engine: &Engine,
     metrics: &Metrics,
@@ -321,10 +397,15 @@ fn handle_response_chunk(
     chunk: &[u8],
     end_of_stream: bool,
 ) -> ProcessingResponse {
+    if let ResponseBodyMode::Buffered(buf) = &mut state.mode {
+        return handle_buffered_response_chunk(engine, metrics, buf, chunk, end_of_stream);
+    }
+
     let ResponseState {
         hold,
         last_redactions,
         utf8_carry,
+        ..
     } = state;
 
     let Ok(text) = decode_chunk_with_carry(utf8_carry, chunk) else {
@@ -407,6 +488,90 @@ fn handle_response_chunk(
                     "response blocked: content matched a prohibited category ({})",
                     entities.join(", ")
                 ),
+            )
+        }
+        Err(e) => refuse_or_block(
+            Direction::Response,
+            engine,
+            metrics,
+            &format!("response scan failed: {e}"),
+        ),
+    }
+}
+
+/// Ceiling on a buffered (non-SSE) response body, mirroring
+/// `redact-gateway`'s `read_capped` cap. `SseHoldBack` bounds its own memory
+/// to the hold-back window regardless of stream length, but the buffered
+/// path accumulates the whole body before it can be scanned — the same
+/// trade `redact-gateway::read_capped`'s doc explains — so without a
+/// ceiling a provider that never sets `Content-Type: text/event-stream` but
+/// streams without stopping would grow this buffer until the pod is
+/// OOM-killed.
+const MAX_BUFFERED_RESPONSE_BYTES: usize = 33_554_432;
+
+/// Accumulates a non-SSE response body — a plain JSON completion or
+/// embeddings response, or anything whose `Content-Type` was not
+/// `text/event-stream` — and scans it in one pass at `end_of_stream`, the
+/// same way `redact-gateway`'s buffered response path (`scan_response`)
+/// does. Nothing is released to the client before then: every non-final
+/// chunk answers with an empty `body_mutation`, and the whole redacted body
+/// is attached to the final one. `SseHoldBack`'s frame-by-frame release
+/// cannot be reused here — it only ever looks inside `data:` lines, and a
+/// plain JSON body has none, which is exactly the gap this function closes.
+fn handle_buffered_response_chunk(
+    engine: &Engine,
+    metrics: &Metrics,
+    buf: &mut Vec<u8>,
+    chunk: &[u8],
+    end_of_stream: bool,
+) -> ProcessingResponse {
+    if buf.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
+        tracing::warn!(
+            max_bytes = MAX_BUFFERED_RESPONSE_BYTES,
+            "buffered response exceeded size cap"
+        );
+        return refuse_or_block(
+            Direction::Response,
+            engine,
+            metrics,
+            &format!("response exceeded {MAX_BUFFERED_RESPONSE_BYTES} bytes"),
+        );
+    }
+    buf.extend_from_slice(chunk);
+
+    if !end_of_stream {
+        // Nothing is safe to release until the whole body has been scanned.
+        return body_response(Direction::Response, Vec::new());
+    }
+
+    let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(buf) else {
+        return refuse_or_block(
+            Direction::Response,
+            engine,
+            metrics,
+            "response body is not JSON",
+        );
+    };
+
+    match scan_response(engine, &mut json) {
+        Ok(report) => {
+            record(metrics, &report);
+            if report.is_blocked() {
+                metrics.blocked_total.inc();
+                tracing::warn!(entities = ?report.blocked, "blocked response: prohibited content");
+                return immediate_response(
+                    Direction::Response,
+                    StatusCode::UnprocessableEntity,
+                    "content_blocked",
+                    &format!(
+                        "response blocked: content matched a prohibited category ({})",
+                        report.blocked.join(", ")
+                    ),
+                );
+            }
+            body_response(
+                Direction::Response,
+                serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone()),
             )
         }
         Err(e) => refuse_or_block(
@@ -515,6 +680,7 @@ fn body_response(dir: Direction, bytes: Vec<u8>) -> ProcessingResponse {
 
 #[cfg(test)]
 mod tests {
+    use envoy_types::pb::envoy::config::core::v3::HeaderMap;
     use governance_redact::Profile;
 
     use super::*;
@@ -525,6 +691,27 @@ mod tests {
 
     fn metrics() -> Metrics {
         Metrics::new().expect("metrics")
+    }
+
+    /// Synthesizes the `ResponseHeaders` message Envoy sends before any
+    /// `ResponseBody` chunk, carrying one `Content-Type` value, and applies
+    /// it the way `process()`'s message loop does — so tests exercise the
+    /// real routing decision (`ResponseState::set_mode_from_headers`)
+    /// instead of relying on `ResponseState::new`'s default.
+    fn response_state_with_content_type(window: usize, content_type: &str) -> ResponseState {
+        let mut state = ResponseState::new(window);
+        state.set_mode_from_headers(&HttpHeaders {
+            headers: Some(HeaderMap {
+                headers: vec![HeaderValue {
+                    key: "content-type".to_string(),
+                    value: content_type.to_string(),
+                    raw_value: Vec::new(),
+                }],
+            }),
+            attributes: std::collections::HashMap::new(),
+            end_of_stream: false,
+        });
+        state
     }
 
     fn extract_body(resp: &ProcessingResponse) -> Option<Vec<u8>> {
@@ -582,7 +769,11 @@ mod tests {
     fn split_codepoint_across_response_chunks_does_not_fail_the_request() {
         let e = engine();
         let m = metrics();
-        let mut state = ResponseState::new(64);
+        // Content-Type is what routes this to the SSE path under test; a
+        // response with no headers at all would take the safe Buffered
+        // default instead (see the module doc), which is the wrong path for
+        // this specific incident.
+        let mut state = response_state_with_content_type(64, "text/event-stream");
 
         let frame =
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\u{2014}there\"}}]}\n\n";
@@ -621,11 +812,99 @@ mod tests {
     fn genuinely_malformed_final_chunk_still_fails_closed() {
         let e = engine();
         let m = metrics();
-        let mut state = ResponseState::new(64);
+        // Routed via the SSE path specifically -- this is the UTF-8 carry
+        // integration under test, not the Buffered path's independent
+        // "not valid JSON" refusal (which would also fail closed here, but
+        // for a different reason than the one this test names).
+        let mut state = response_state_with_content_type(64, "text/event-stream");
         let resp = handle_response_chunk(&e, &m, &mut state, &[0xFF, 0xFE], true);
         assert!(
             matches!(&resp.response, Some(Resp::ImmediateResponse(_))),
             "genuinely malformed UTF-8 must still fail closed: {resp:?}"
+        );
+    }
+
+    // ── Non-SSE response bodies: the P0 this file used to miss entirely.
+    //    Every response chunk went into `SseHoldBack`, which only ever
+    //    looks inside `data:` lines -- a `stream: false` JSON completion
+    //    has none, so it sailed through as `Frame::Passthrough` with zero
+    //    calls to `engine.scan`. ─────────────────────────────────────────
+
+    #[test]
+    fn non_streaming_json_response_with_secret_is_blocked_not_forwarded_unscanned() {
+        let e = engine();
+        let m = metrics();
+        let mut state = response_state_with_content_type(64, "application/json");
+        let body = r#"{"choices":[{"message":{"content":"here: ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}]}"#;
+        let resp = handle_response_chunk(&e, &m, &mut state, body.as_bytes(), true);
+        match &resp.response {
+            Some(Resp::ImmediateResponse(imm)) => {
+                assert_eq!(
+                    imm.status.as_ref().map(|s| s.code),
+                    Some(StatusCode::UnprocessableEntity as i32),
+                    "expected a content_blocked refusal, got {imm:?}"
+                );
+            }
+            other => panic!("expected the credential to block the non-SSE response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_streaming_json_response_with_pii_is_redacted_not_leaked() {
+        let e = engine();
+        let m = metrics();
+        let mut state = response_state_with_content_type(64, "application/json");
+        let body = r#"{"choices":[{"message":{"content":"it is jane@example.com"}}]}"#;
+        let resp = handle_response_chunk(&e, &m, &mut state, body.as_bytes(), true);
+        assert!(
+            !matches!(&resp.response, Some(Resp::ImmediateResponse(_))),
+            "PII-only response (redacted, not a credential) must not be refused: {resp:?}"
+        );
+        let out = extract_body(&resp).expect("redacted body forwarded");
+        let out = String::from_utf8(out).expect("utf8");
+        assert!(!out.contains("jane@example.com"), "leaked: {out}");
+    }
+
+    /// No `ResponseHeaders` message at all — exactly what a malfunctioning
+    /// upstream, or a bug in Envoy's own header forwarding, would look
+    /// like. The ambiguity must resolve toward the scanning path, not
+    /// toward treating an unrecognised shape as safe to stream through.
+    #[test]
+    fn ambiguous_content_type_defaults_to_buffered_not_sse_passthrough() {
+        let e = engine();
+        let m = metrics();
+        let mut state = ResponseState::new(64);
+        let body = r#"{"choices":[{"message":{"content":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}]}"#;
+        let resp = handle_response_chunk(&e, &m, &mut state, body.as_bytes(), true);
+        assert!(
+            matches!(&resp.response, Some(Resp::ImmediateResponse(_))),
+            "an unlabelled response must still be scanned and blocked, got {resp:?}"
+        );
+    }
+
+    #[test]
+    fn non_streaming_response_body_split_across_chunks_is_still_scanned_whole() {
+        let e = engine();
+        let m = metrics();
+        let mut state = response_state_with_content_type(64, "application/json");
+        let body = r#"{"choices":[{"message":{"content":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}]}"#;
+        let (chunk1, chunk2) = body.as_bytes().split_at(body.len() / 2);
+
+        let resp1 = handle_response_chunk(&e, &m, &mut state, chunk1, false);
+        assert!(
+            !matches!(&resp1.response, Some(Resp::ImmediateResponse(_))),
+            "must not decide anything before end_of_stream: {resp1:?}"
+        );
+        assert_eq!(
+            extract_body(&resp1),
+            Some(Vec::new()),
+            "nothing releases before the whole body has been scanned"
+        );
+
+        let resp2 = handle_response_chunk(&e, &m, &mut state, chunk2, true);
+        assert!(
+            matches!(&resp2.response, Some(Resp::ImmediateResponse(_))),
+            "a credential split across response chunks must still block, got {resp2:?}"
         );
     }
 }

@@ -14,18 +14,28 @@
 //! replacement can in principle land inside the JSON surrounding `delta.content`
 //! rather than only inside the content string itself, corrupting that frame.
 //! [`crate::scan_sse`] (the buffered path, in the [`crate::streaming`] module) avoids
-//! this by extracting exactly `delta.content` before touching anything —
-//! [`SseHoldBack`] gets the same precision incrementally.
+//! this by extracting exactly `delta.content` and each tool call's
+//! `function.arguments` before touching anything — [`SseHoldBack`] gets the
+//! same precision incrementally, via the identical extraction rule
+//! (`crate::streaming::delta_contents`) so the two paths never disagree
+//! about what counts as redactable.
 //!
 //! # The approach
 //!
-//! Each choice index gets its own ephemeral redactor, which accumulates that
-//! choice's `delta.content` text and — like [`crate::HoldBack`] — releases a
+//! Each (choice, field) pair — a choice's `content`, or one of its tool
+//! calls' `function.arguments` — gets its own ephemeral redactor, which
+//! accumulates that field's text and — like [`crate::HoldBack`] — releases a
 //! prefix once nothing still open can extend into it. The one addition:
 //! **a release is always snapped down to a whole SSE frame boundary.** A
 //! frame's content is never split across two release batches, so "attach the
 //! released text to one frame, blank the others" is always exact — never a
 //! partial string glued mid-frame.
+//!
+//! A `data:` line whose payload fails to parse as JSON has no delta
+//! structure to extract from, so it cannot go through a per-field
+//! accumulator — but it is still scanned (as opaque text, synchronously,
+//! since the whole line is already assembled) rather than released
+//! unexamined. See `crate::streaming::ClassifiedLine::Opaque`.
 //!
 //! Frames that carry no redactable content (structural SSE lines, `[DONE]`,
 //! role/`finish_reason`-only chunks) have nothing to wait on and are ready
@@ -56,7 +66,7 @@ use crate::{
     error::Result,
     holdback::safe_prefix,
     profile::Action,
-    streaming::{ClassifiedLine, classify_line, delta_contents, set_delta_content},
+    streaming::{ClassifiedLine, ContentKey, classify_line, delta_contents, set_delta_content},
 };
 
 /// What the caller should do after feeding a chunk. Mirrors
@@ -93,7 +103,14 @@ pub struct SseHoldBack {
     /// zero) means ready; only frames with redactable content ever gain an
     /// entry above zero.
     awaiting: HashMap<u64, usize>,
-    choices: HashMap<u64, ChoiceRedactor>,
+    /// One accumulator per (choice, field) — `content` and each tool call's
+    /// `arguments` stream independently and must not be coalesced together.
+    choices: HashMap<ContentKey, ChoiceRedactor>,
+    /// Spans rewritten in a `data:` line that failed to parse as JSON and
+    /// was scanned as opaque text (see `ClassifiedLine::Opaque`). Tracked
+    /// separately from `choices` because there is no per-choice redactor for
+    /// text we could not attribute to a delta field.
+    opaque_redactions: usize,
     blocked: bool,
 }
 
@@ -111,14 +128,16 @@ impl SseHoldBack {
             frames: HashMap::new(),
             awaiting: HashMap::new(),
             choices: HashMap::new(),
+            opaque_redactions: 0,
             blocked: false,
         }
     }
 
-    /// Total spans rewritten so far, across every choice.
+    /// Total spans rewritten so far, across every choice/field and every
+    /// opaque (unparseable) line.
     #[must_use]
     pub fn redactions(&self) -> usize {
-        self.choices.values().map(|c| c.redactions).sum()
+        self.choices.values().map(|c| c.redactions).sum::<usize>() + self.opaque_redactions
     }
 
     /// Feeds the next slice of raw response bytes (already UTF-8 decoded)
@@ -168,9 +187,9 @@ impl SseHoldBack {
             }
         }
 
-        let indices: Vec<u64> = self.choices.keys().copied().collect();
-        for index in indices {
-            while let Some(choice) = self.choices.get_mut(&index) {
+        let keys: Vec<ContentKey> = self.choices.keys().copied().collect();
+        for key in keys {
+            while let Some(choice) = self.choices.get_mut(&key) {
                 let result = choice.flush(engine, self.window)?;
                 match result {
                     ChoicePush::Nothing => break,
@@ -179,7 +198,7 @@ impl SseHoldBack {
                         return Ok(SseEmit::Blocked(entities));
                     }
                     ChoicePush::Release { text, frame_ids } => {
-                        self.apply_release(index, &text, &frame_ids);
+                        self.apply_release(key, &text, &frame_ids);
                     }
                 }
             }
@@ -224,22 +243,45 @@ impl SseHoldBack {
                 self.order.push_back(frame_id);
                 Ok(None)
             }
+            // A `data:` payload that failed to parse as JSON. It cannot be
+            // routed into a per-choice accumulator (there is no delta
+            // structure to read an index from), but it must not be released
+            // unexamined either — see `ClassifiedLine::Opaque`'s doc. The
+            // whole line is available now (line-buffering already
+            // reassembled it), so it is scanned synchronously rather than
+            // held: there is nothing further to wait for.
+            ClassifiedLine::Opaque => {
+                match engine.scan(line)? {
+                    Verdict::Clean => {
+                        self.frames
+                            .insert(frame_id, Frame::Passthrough(line.to_string()));
+                    }
+                    Verdict::Redacted { text, count } => {
+                        self.opaque_redactions += count;
+                        self.frames.insert(frame_id, Frame::Passthrough(text));
+                    }
+                    Verdict::Blocked { entities } => return Ok(Some(entities)),
+                }
+                self.order.push_back(frame_id);
+                Ok(None)
+            }
             ClassifiedLine::Data(chunk) => {
                 let contributions = delta_contents(&chunk);
                 self.frames.insert(frame_id, Frame::Data(chunk));
                 self.order.push_back(frame_id);
                 if contributions.is_empty() {
-                    // No content field on this frame — nothing to wait on.
+                    // No content or tool-call field on this frame — nothing
+                    // to wait on.
                     return Ok(None);
                 }
                 self.awaiting.insert(frame_id, contributions.len());
-                for (index, content) in contributions {
-                    let choice = self.choices.entry(index).or_default();
+                for (key, content) in contributions {
+                    let choice = self.choices.entry(key).or_default();
                     match choice.push(engine, self.window, frame_id, &content)? {
                         ChoicePush::Nothing => {}
                         ChoicePush::Blocked(entities) => return Ok(Some(entities)),
                         ChoicePush::Release { text, frame_ids } => {
-                            self.apply_release(index, &text, &frame_ids);
+                            self.apply_release(key, &text, &frame_ids);
                         }
                     }
                 }
@@ -248,15 +290,15 @@ impl SseHoldBack {
         }
     }
 
-    /// Writes a choice's released text onto the first frame in the covered
-    /// batch and blanks the rest — the same redistribution rule
+    /// Writes a choice/field's released text onto the first frame in the
+    /// covered batch and blanks the rest — the same redistribution rule
     /// [`crate::streaming::rewrite_deltas`] uses buffered, applied to one
     /// resolved batch instead of the whole stream.
-    fn apply_release(&mut self, index: u64, text: &str, frame_ids: &[u64]) {
+    fn apply_release(&mut self, key: ContentKey, text: &str, frame_ids: &[u64]) {
         for (i, &fid) in frame_ids.iter().enumerate() {
             let replacement = if i == 0 { text } else { "" };
             if let Some(Frame::Data(chunk)) = self.frames.get_mut(&fid) {
-                set_delta_content(chunk, index, replacement);
+                set_delta_content(chunk, key, replacement);
             }
             if let Some(count) = self.awaiting.get_mut(&fid) {
                 *count = count.saturating_sub(1);
@@ -435,6 +477,8 @@ impl ChoiceRedactor {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::{SseEmit, SseHoldBack};
     use crate::{engine::Engine, profile::Profile};
 
@@ -458,7 +502,7 @@ mod tests {
             if p == "[DONE]" || p.is_empty() {
                 continue;
             }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(p) else {
+            let Ok(v) = serde_json::from_str::<Value>(p) else {
                 continue;
             };
             if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
@@ -467,6 +511,50 @@ mod tests {
                         .get("delta")
                         .and_then(|d| d.get("content"))
                         .and_then(|c| c.as_str())
+                    {
+                        out.push_str(s);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Concatenates one tool call's `function.arguments` fragments, keyed by
+    /// that tool call's own `index` — the sibling of [`concat_deltas`] for
+    /// tool-call arguments instead of `content`.
+    fn concat_tool_call_args(body: &str, call_index: u64) -> String {
+        let mut out = String::new();
+        for line in body.lines() {
+            let Some(p) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if p == "[DONE]" || p.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(p) else {
+                continue;
+            };
+            let Some(choices) = v.get("choices").and_then(|c| c.as_array()) else {
+                continue;
+            };
+            for choice in choices {
+                let Some(calls) = choice
+                    .get("delta")
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                else {
+                    continue;
+                };
+                for call in calls {
+                    let idx = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                    if idx != call_index {
+                        continue;
+                    }
+                    if let Some(s) = call
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|a| a.as_str())
                     {
                         out.push_str(s);
                     }
@@ -664,7 +752,7 @@ mod tests {
             let Some(p) = line.strip_prefix("data:").map(str::trim) else {
                 continue;
             };
-            let v: serde_json::Value = serde_json::from_str(p).expect("json");
+            let v: Value = serde_json::from_str(p).expect("json");
             let content = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
             assert!(
                 valid.contains(&content),
@@ -672,5 +760,127 @@ mod tests {
             );
         }
         assert_eq!(concat_deltas(&body), "abcdefghijklmnopqrst");
+    }
+
+    // ── Tool-call arguments: the P0 this module used to miss entirely. ─────
+    // `delta_contents` extracted only `delta.content`, so a credential
+    // riding in `delta.tool_calls[].function.arguments` was invisible to
+    // the incremental scanner and rode straight through to the client.
+
+    #[test]
+    fn tool_call_arguments_split_across_frames_block_the_stream() {
+        let e = engine();
+        let mut h = SseHoldBack::with_window(64);
+        h.push(
+            &e,
+            &frame(
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ghp_abcdefghijkl"}}]}}]}"#,
+            ),
+        )
+        .expect("push");
+        let out = h
+            .push(
+                &e,
+                &frame(
+                    r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mnopqrstuvwxyz0123456789"}}]}}]}"#,
+                ),
+            )
+            .expect("push");
+        match out {
+            SseEmit::Blocked(entities) => {
+                assert!(
+                    entities.iter().any(|s| s.contains("Secret")),
+                    "{entities:?}"
+                );
+            }
+            other => panic!("expected the split tool_call token to block, got {other:?}"),
+        }
+    }
+
+    /// Adversarial chunking: the same credential as above, but fed one byte
+    /// at a time. Proves the fix does not depend on convenient chunk
+    /// boundaries -- if tool-call arguments were still unscanned, this would
+    /// simply reassemble and release the whole credential with nothing ever
+    /// blocking.
+    #[test]
+    fn tool_call_arguments_leak_via_one_byte_chunks_is_caught() {
+        let e = engine();
+        let mut h = SseHoldBack::with_window(64);
+        let full = frame(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}]}}]}"#,
+        );
+        let mut blocked = false;
+        let mut released = String::new();
+        for byte in full.as_bytes() {
+            let chunk = std::str::from_utf8(std::slice::from_ref(byte))
+                .expect("this frame is pure ASCII, so every single byte is valid UTF-8 alone");
+            match h.push(&e, chunk).expect("push") {
+                SseEmit::Blocked(entities) => {
+                    blocked = true;
+                    assert!(
+                        entities.iter().any(|s| s.contains("Secret")),
+                        "{entities:?}"
+                    );
+                    break;
+                }
+                SseEmit::Release(s) => released.push_str(&s),
+                SseEmit::Nothing => {}
+            }
+        }
+        assert!(
+            blocked,
+            "one-byte-chunked tool_call argument credential was not blocked; released={released:?}"
+        );
+    }
+
+    #[test]
+    fn tool_call_arguments_pii_split_across_frames_is_redacted_not_leaked() {
+        let e = engine();
+        let mut h = SseHoldBack::with_window(4); // shorter than the email
+        let body = drive(
+            &mut h,
+            &e,
+            &[
+                &frame(
+                    r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mail jane.doe@ex"}}]}}]}"#,
+                ),
+                &frame(
+                    r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ample.com now"}}]}}]}"#,
+                ),
+            ],
+        );
+        let args = concat_tool_call_args(&body, 0);
+        assert!(
+            !args.contains("jane.doe@example.com"),
+            "email leaked: {args}"
+        );
+        assert!(!args.contains("jane.doe@ex"), "fragment leaked: {args}");
+        assert!(args.contains("mail"), "surrounding text lost: {args}");
+    }
+
+    // ── Malformed `data:` payloads: must be scanned, never released
+    //    unexamined. ─────────────────────────────────────────────────────
+
+    #[test]
+    fn malformed_data_line_with_secret_is_blocked() {
+        let e = engine();
+        let mut h = SseHoldBack::with_window(64);
+        // Missing the final closing brace: invalid JSON, but the credential
+        // inside is plainly there for a text scan to find.
+        let out = h
+            .push(
+                &e,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"}}]\n\n",
+            )
+            .expect("push");
+        match out {
+            SseEmit::Blocked(entities) => {
+                assert!(
+                    entities.iter().any(|s| s.contains("Secret")),
+                    "{entities:?}"
+                );
+            }
+            other => panic!("expected the malformed frame's credential to block, got {other:?}"),
+        }
     }
 }
