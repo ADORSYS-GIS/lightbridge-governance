@@ -47,6 +47,12 @@ spec:
                   name: {{ .Values.name }}-env
                   key: {{ .Values.externalSecret.internalResolveTokenProperty }}
                   optional: false
+            - name: INTERNAL_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.name }}-env
+                  key: {{ .Values.externalSecret.internalIngestTokenProperty }}
+                  optional: false
           # `/livez` and `/readyz` are unauthenticated and check only that the
           # process is up -- they do not touch the database (ADR-0006's
           # resolve endpoint is the one place a DB check belongs, and even

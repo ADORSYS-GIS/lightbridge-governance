@@ -70,16 +70,21 @@ networkPolicy:
 # credential and fail auth forever (the context7 MCP_TOKEN incident). Required
 # means the pod waits in ContainerCreating until ESO has synced.
 #
-# NOTE: `databaseUrlProperty`/`internalResolveTokenProperty` name properties
-# inside `remoteKey` that this chart assumes but has not verified live against
-# the actual secret store entry (unlike redact-gateway's `saltProperty`, which
-# was) -- confirm they match before relying on this in a real environment.
+# NOTE: `databaseUrlProperty`/`internalResolveTokenProperty`/
+# `internalIngestTokenProperty` name properties inside `remoteKey` that this
+# chart assumes but has not verified live against the actual secret store
+# entry (unlike redact-gateway's `saltProperty`, which was) -- confirm they
+# match before relying on this in a real environment.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
   remoteKey: ai/camer/digital/prod/env
   databaseUrlProperty: governance_database_url
   internalResolveTokenProperty: governance_internal_resolve_token
+  # Shared secret for the OTel Collector's /internal/v1/ingest (Foundry OTLP,
+  # RFC-0002). Required -- main.rs has no default, so a pod started without
+  # it never comes up (clap errors "required argument missing").
+  internalIngestTokenProperty: governance_internal_ingest_token
   # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
   # users all read). Property names must be created in the remote entries when

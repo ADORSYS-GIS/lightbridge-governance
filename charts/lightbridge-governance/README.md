@@ -29,9 +29,10 @@ helm template charts/lightbridge-governance --set externalSecret.enabled=false
 
 ## The `ExternalSecret` property names are an assumption, not a verified fact
 
-`externalSecret.databaseUrlProperty` (`governance_database_url`) and
-`externalSecret.internalResolveTokenProperty` (`governance_internal_resolve_token`) are this
-chart's best guess at what the two properties are named inside the shared
+`externalSecret.databaseUrlProperty` (`governance_database_url`),
+`externalSecret.internalResolveTokenProperty` (`governance_internal_resolve_token`) and
+`externalSecret.internalIngestTokenProperty` (`governance_internal_ingest_token`) are this
+chart's best guess at what these properties are named inside the shared
 `ai/camer/digital/prod/env` secret store entry. Unlike `redact-gateway`'s `saltProperty`
 (verified against the live entry when that chart was written), these have **not** been
 confirmed against the real store. Check before relying on this in a real environment.
