@@ -331,6 +331,22 @@ mod tests {
         assert!(v.is_blocked(), "a private key must block, got {v:?}");
     }
 
+    /// Standard PKCS#8 armour for a password-protected key — what
+    /// `openssl pkcs8` and `ssh-keygen -p` actually write for most modern
+    /// tooling. Matched no branch of the original pattern set: it is not
+    /// `RSA `, `EC `, `DSA `, `OPENSSH ` or `PGP ` prefixed.
+    #[test]
+    fn encrypted_pkcs8_private_key_blocks_the_request() {
+        let e = engine(Profile::coding_assistant());
+        let v = e
+            .scan("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0w...")
+            .expect("scan");
+        assert!(
+            v.is_blocked(),
+            "an encrypted PKCS#8 private key must block, got {v:?}"
+        );
+    }
+
     #[test]
     fn blocked_verdict_never_carries_the_secret_value() {
         let e = engine(Profile::coding_assistant());

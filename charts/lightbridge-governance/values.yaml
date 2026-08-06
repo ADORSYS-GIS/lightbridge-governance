@@ -4,18 +4,6 @@
 # ignoreMissingValueFiles silently falls back to these defaults.
 name: lightbridge-governance
 
-image:
-  repository: ghcr.io/adorsys-gis/lightbridge-governance
-  tag: ""            # defaults to .Chart.AppVersion
-  pullPolicy: IfNotPresent
-
-api:
-  replicas: 1
-  port: 8080
-  resources:
-    requests: { cpu: 50m, memory: 64Mi }
-    limits: { cpu: 500m, memory: 256Mi }
-
 # ADR-0057: deployment-specific (the CNPG cluster's Service DNS name, the
 # database name) -- empty here, supplied per-environment in ai-helm-values.
 # Only the PASSWORD is a secret (externalSecret.dbPasswordProperty, below);
@@ -23,28 +11,38 @@ api:
 # operator to "assemble" -- set this to
 #   postgresql://governance:$(DB_PASSWORD)@<cnpg-rw-service>:5432/governance
 # and Kubernetes' native $(VAR_NAME) substitution (resolved by the kubelet
-# from the DB_PASSWORD env var defined earlier in the same container, NOT
-# visible in `kubectl get pod -o yaml`) fills in the password at container
-# start. Same technique lightbridge-code-intelligence's DATABASE_URL already
-# uses in ai-helm-values.
-databaseUrl: ""
+# from the DB_PASSWORD env var defined earlier in the same container's env
+# list, NOT visible in `kubectl get pod -o yaml`) fills in the password at
+# container start. Same technique lightbridge-code-intelligence's
+# DATABASE_URL already uses in ai-helm-values. `image`/`api` top-level keys
+# from the pre-app-template-v4 chart are gone -- the equivalent settings now
+# live under `app-template.controllers.api` below.
+#
+# ⚠️ MUST live under `global`, not as a plain top-level key: DATABASE_URL's
+# embedded `$(DB_PASSWORD)` reference only expands correctly if it is a
+# literal `env` list entry (Kubernetes never expands `$(VAR_NAME)` inside an
+# `envFrom`- or `valueFrom`-sourced value, only inside a plain `value:`
+# string -- see the DB_PASSWORD/DATABASE_URL pair in
+# `app-template.controllers.*.containers.main.env` below), which forces this
+# through app-template's env-string `tpl` pass rather than the ConfigMap
+# technique `templates/configmap-copilot.yaml` uses for TENANT_ID/GH_ORG/etc.
+# `tpl` there runs against app-template's OWN scoped context, where
+# `.Values` is limited to `app-template.*` plus `global.*` -- a plain
+# top-level key like the old `databaseUrl` would render as empty inside that
+# env string regardless of what a deployed override set it to. `global.*` is
+# the one path Helm propagates into every subchart unchanged, so it is the
+# only key path that actually reaches the container.
+#
+# ⚠️ THE DEPLOYED VALUE MUST MATCH: ai-helm-values' own
+# environments/<env>/values/lightbridge-governance.yaml must set
+# `global.databaseUrl`, not a bare top-level `databaseUrl` -- confirm this
+# before relying on a deployed override, the same values-repo-FIRST caution
+# as the top of this file.
+global:
+  databaseUrl: ""
 
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
-sync:
-  schedule: "0 */6 * * *"
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 5
-  backoffLimit: 4
-  activeDeadlineSeconds: 1800
-
-# The Copilot collector (governance-ctl, runs as the copilot-sync CronJob).
-# The GitHub App needs `Organization Copilot metrics: Read`, `Copilot seat
-# management: Read` and `Metadata: Read` -- spike-0007 proved `Members: Read`
-# is NOT required (the vendor docs and RFC-0001 §2 still say it is). The org's
-# "Copilot metrics API access policy" toggle must be ON: it is an org SETTING,
-# not a permission, and until it is, every request 403s.
 copilot:
   # The deployment's single tenant (ADR-0001). Set in the deployed values.
   tenantId: ""
@@ -63,6 +61,14 @@ copilot:
   # Redact-gateway's precedent uses the `observability` namespace; 4317 is the
   # OTLP/gRPC receiver port. Confirm the service name against the deployed
   # Alloy before enabling.
+  #
+  # Wired to the copilot-sync container via envFrom on the local `otlp` ConfigMap
+  # below (templates/configmap-otlp.yaml), not a plain templated env value:
+  # Helm values files are never templated, so a value string can't be made to
+  # disappear from an `app-template` env map based on this setting -- it would
+  # always render OTEL_EXPORTER_OTLP_ENDPOINT, just empty when host is unset.
+  # Present-but-empty is not "no env var and no egress". The optional
+  # configMapRef gives the same "absent when unset" behaviour instead.
   otlp:
     host: ""
     port: "4317"
@@ -83,6 +89,15 @@ networkPolicy:
 # credential and fail auth forever (the context7 MCP_TOKEN incident). Required
 # means the pod waits in ContainerCreating until ESO has synced.
 #
+# app-template v4's own values.schema.json does not accept an `optional` key on
+# secretKeyRef at all (verified: `helm template` rejects it with "Additional
+# property optional is not allowed"), so the container env entries below in
+# `app-template.controllers.*` cannot spell out `optional: false` explicitly.
+# Every one of them omits the field instead, which is functionally identical --
+# the Kubernetes API defaults `optional` to `false` (required) when it is
+# absent -- but the "waits in ContainerCreating until ESO has synced" behaviour
+# depends on that Kubernetes default rather than on an explicit chart setting.
+#
 # NOTE: `dbPasswordProperty`/`internalResolveTokenProperty`/
 # `internalIngestTokenProperty` name properties inside `remoteKey` that this
 # chart assumes but has not verified live against the actual secret store
@@ -100,9 +115,12 @@ externalSecret:
   # above for why that would be redundant.
   dbPasswordProperty: governance_db_password
   internalResolveTokenProperty: governance_internal_resolve_token
-  # Shared secret for the OTel Collector's /internal/v1/ingest (Foundry OTLP,
-  # RFC-0002). Required -- main.rs has no default, so a pod started without
-  # it never comes up (clap errors "required argument missing").
+  # Shared secret the OpenTelemetry Collector presents on `/internal/v1/ingest`
+  # (#30, RFC-0002). Wired the same way as internalResolveTokenProperty: an
+  # ExternalSecret `data` entry below and a required (never-optional)
+  # secretKeyRef in the `app-template.controllers.api` container env.
+  # Required -- main.rs has no default, so a pod started without it never
+  # comes up (clap errors "required argument missing").
   internalIngestTokenProperty: governance_internal_ingest_token
   # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
@@ -119,12 +137,256 @@ externalSecret:
   s3AccessKeyProperty: s3_backup_cnpg_client_id
   s3SecretKeyProperty: s3_backup_cnpg_secret
 
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  seccompProfile: { type: RuntimeDefault }
+# bjw-s/app-template v4 (ADR-independent chart migration) expresses the API
+# Deployment, the copilot-sync CronJob, their containers/probes/security
+# contexts and the Service. It does not cover ExternalSecret,
+# CiliumNetworkPolicy or ServiceMonitor -- those stay as local templates
+# (templates/externalsecret.yaml, templates/ciliumnetworkpolicy.yaml,
+# templates/servicemonitor.yaml) and key off `.Values.name`/`.Values.copilot.*`/
+# `.Values.externalSecret.*` above, exactly as before the migration.
+#
+# Helm values files are never templated (only templates/*.yaml are), so any
+# value typed directly into this block is frozen at whatever literal was
+# written here -- it cannot track a deployed override of the corresponding
+# top-level key. Structural literals that are genuinely stable per
+# deployment (the chart name, the ExternalSecret property names) are
+# duplicated instead, and every duplication is commented at its use site.
+# Values that DO vary per deployment (copilot.tenantId/org/s3.*) are instead
+# routed through templates/configmap-copilot.yaml and consumed via envFrom,
+# which is a real template and so can read them -- see that file's header
+# comment for why.
+app-template:
+  global:
+    # Pins every generated resource's fullname to `lightbridge-governance`
+    # regardless of the Helm release name, matching what every resource in
+    # this chart was named before the v4 migration (an unpinned name would
+    # rename the Deployment/CronJob/Service on upgrade -- an orphan-old,
+    # create-new instead of an in-place update).
+    fullnameOverride: lightbridge-governance
 
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities: { drop: [ALL] }
+  # Shared between both controllers below (identical before the migration).
+  defaultPodOptions:
+    # No Kubernetes API access needed, for either the API or the collector.
+    automountServiceAccountToken: false
+    # Preserves the pre-migration behaviour: neither template set this before,
+    # so Kubernetes' own default (true) applied. app-template defaults it to
+    # false; set it back explicitly so nothing about the pod's environment
+    # changes as a side effect of the chart migration.
+    enableServiceLinks: true
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      seccompProfile: { type: RuntimeDefault }
+
+  controllers:
+    api:
+      type: deployment
+      # Without forceRename, having two enabled controllers makes app-template
+      # suffix the identifier onto the fullname ("lightbridge-governance-api").
+      forceRename: lightbridge-governance
+      replicas: 1
+      # Preserves the pre-migration default: Kubernetes' own Deployment
+      # defaults (RollingUpdate, revisionHistoryLimit: 10) applied before,
+      # since neither was set. app-template defaults to Recreate / 3.
+      strategy: RollingUpdate
+      revisionHistoryLimit: 10
+      labels:
+        app: lightbridge-governance
+      pod:
+        labels:
+          app: lightbridge-governance
+      containers:
+        main:
+          image:
+            repository: ghcr.io/adorsys-gis/lightbridge-governance
+            # Structural default only. Cannot fall back to `.Chart.AppVersion`
+            # the way the pre-migration template did: values.yaml is never
+            # templated, and `.Chart` inside a dependency's own templates
+            # resolves to THAT chart's Chart.yaml (app-template's), not ours.
+            # Keep this in sync with this chart's Chart.yaml `appVersion` --
+            # deployed values (ai-helm-values) always override it regardless.
+            tag: "0.1.0"
+            pullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            LISTEN_ADDR: "0.0.0.0:8080"
+            # Duplicated from externalSecret.dbPasswordProperty above (see the
+            # app-template block's top comment for why). Must be defined
+            # before DATABASE_URL in the rendered env list for its
+            # `$(DB_PASSWORD)` reference to resolve -- `dependsOn` on
+            # DATABASE_URL below is what guarantees that ordering, since this
+            # env block is a YAML map and app-template does not otherwise
+            # preserve key order (see `global.databaseUrl`'s comment in this
+            # file for the full reasoning).
+            DB_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
+            INTERNAL_RESOLVE_TOKEN:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_internal_resolve_token
+            INTERNAL_INGEST_TOKEN:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_internal_ingest_token
+            # Both have safe defaults in the binary (60s / 10000 entries) --
+            # exposed here as ordinary, always-optional values.
+            RESOLVE_CACHE_TTL_SECS: "60"
+            RESOLVE_CACHE_MAX_CAPACITY: "10000"
+          # `/livez` and `/readyz` are unauthenticated and check only that the
+          # process is up -- they do not touch the database (ADR-0006's
+          # resolve endpoint is the one place a DB check belongs, and even
+          # there it fails closed rather than gating this probe).
+          probes:
+            liveness:
+              enabled: true
+              type: HTTP
+              path: /livez
+              spec:
+                initialDelaySeconds: 5
+                periodSeconds: 20
+            readiness:
+              enabled: true
+              type: HTTP
+              path: /readyz
+              spec:
+                initialDelaySeconds: 2
+                periodSeconds: 10
+            startup:
+              enabled: false
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+
+    copilot-sync:
+      type: cronjob
+      forceRename: copilot-sync
+      labels:
+        app: lightbridge-governance
+      pod:
+        labels:
+          app: lightbridge-governance
+          # Distinct from the API Deployment so the egress CNP can select the
+          # CronJob pods alone (they share the `app` label otherwise).
+          app.kubernetes.io/component: copilot-sync
+      cronjob:
+        schedule: "0 */6 * * *"
+        concurrencyPolicy: Forbid
+        # Well under the 6-hour schedule interval: without this, a delayed
+        # tick (a control-plane hiccup around the trigger time) is silently
+        # skipped instead of started late.
+        startingDeadlineSeconds: 900
+        successfulJobsHistory: 3
+        failedJobsHistory: 5
+        backoffLimit: 4
+        activeDeadlineSeconds: 1800
+      containers:
+        main:
+          image:
+            repository: ghcr.io/adorsys-gis/lightbridge-governance
+            tag: "0.1.0"
+            pullPolicy: IfNotPresent
+          # Same image as the API Deployment -- both binaries are built into
+          # it (.docker/Dockerfile). Override the image's own ENTRYPOINT
+          # (lightbridge-governance) to run the collector CLI.
+          command: ["/usr/local/bin/governance-ctl"]
+          args: ["sync"]
+          env:
+            # See the api container's env above for why DB_PASSWORD must
+            # come before DATABASE_URL (`dependsOn`) and why DATABASE_URL
+            # reads `.Values.global.databaseUrl`, not a plain top-level key.
+            DB_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
+            GH_APP_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_github_app_id
+            # The PEM is mounted as a file (Config reads a path, never an env
+            # value) via the `persistence.github-app-key` item below, and the
+            # key is fetched by ExternalSecret.
+            GH_APP_PRIVATE_KEY_FILE: /etc/lightbridge/github-app.pem
+            AWS_ACCESS_KEY_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_client_id
+            AWS_SECRET_ACCESS_KEY:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_secret
+          # TENANT_ID, GH_ORG and the AWS_ENDPOINT_URL/AWS_REGION/
+          # AWS_FORCE_PATH_STYLE/S3_BUCKET quartet come from the local `copilot`
+          # ConfigMap (templates/configmap-copilot.yaml), not a plain templated
+          # env value here: this env map is never templated, so a value typed
+          # in it can't track copilot.tenantId/org/s3.* overrides from the
+          # deployed values -- see that ConfigMap's own header comment. Always
+          # required (never optional): TENANT_ID has no safe default, and its
+          # absence must surface as the collector's own required-arg failure,
+          # not a silently-missing env var.
+          #
+          # OTEL_EXPORTER_OTLP_ENDPOINT comes from the separate, optional
+          # `otlp` ConfigMap (templates/configmap-otlp.yaml), which only
+          # renders when copilot.otlp.host is set -- see the comment on that
+          # value above.
+          envFrom:
+            - configMapRef:
+                name: lightbridge-governance-copilot
+            - configMapRef:
+                name: lightbridge-governance-otlp
+                optional: true
+          resources:
+            # A batch job doing paginated GitHub/S3 I/O with up to a 28-day
+            # backfill; a bit more headroom than the always-on API.
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 1000m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+
+  persistence:
+    # Duplicated from externalSecret.githubAppPrivateKeyProperty above.
+    github-app-key:
+      type: secret
+      name: lightbridge-governance-env
+      items:
+        - key: governance_github_app_private_key
+          path: github-app.pem
+      advancedMounts:
+        copilot-sync:
+          main:
+            - path: /etc/lightbridge
+              readOnly: true
+
+  service:
+    main:
+      controller: api
+      primary: true
+      labels:
+        app: lightbridge-governance
+      ports:
+        http:
+          port: 8080
+          protocol: HTTP
+          primary: true

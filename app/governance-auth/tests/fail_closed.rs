@@ -22,7 +22,10 @@ fn now_unix() -> Result<u64> {
 #[tokio::test]
 async fn token_fails_closed_with_no_cached_session() -> Result<()> {
     // Never reachable: `token` must bail before ever calling discovery.
-    let harness = Harness::new("http://unreachable.invalid.example")?;
+    // `.invalid` is guaranteed (RFC 2606) never to resolve; `https://` so
+    // this is rejected for being unreachable, not for being insecure --
+    // see `oauth::discovery`/`config::parse_issuer` for the latter.
+    let harness = Harness::new("https://unreachable.invalid.example")?;
 
     let output = harness.run(&["token"]).await?;
 
@@ -40,9 +43,9 @@ async fn token_fails_closed_with_no_cached_session() -> Result<()> {
 
 #[tokio::test]
 async fn token_fails_closed_when_expired_and_no_refresh_token() -> Result<()> {
-    let harness = Harness::new("http://unreachable.invalid.example")?;
+    let harness = Harness::new("https://unreachable.invalid.example")?;
     harness.seed_session(&serde_json::json!({
-        "issuer": "http://unreachable.invalid.example",
+        "issuer": "https://unreachable.invalid.example",
         "client_id": "test-client",
         "access_token": "expired-access-token",
         "refresh_token": null,

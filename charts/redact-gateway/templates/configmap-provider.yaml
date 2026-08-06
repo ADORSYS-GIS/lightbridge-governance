@@ -1,0 +1,36 @@
+# The upstream endpoint, the redaction profile and the body-size ceiling are
+# per-deployment values (provider.baseUrl/timeoutSecs, profile, maxBodyBytes
+# above) that app-template.controllers.main.containers.main.env cannot read
+# directly: Helm values files are never templated, so a literal typed into
+# that block freezes at whatever was written there regardless of a deployed
+# override -- a deployed `provider.baseUrl` would never reach the container.
+# Route them through a ConfigMap instead and wire it via envFrom, the same
+# technique lightbridge-governance's templates/configmap-otlp.yaml and
+# templates/configmap-copilot.yaml use for the same reason.
+#
+# Unconditional: none of these four has a meaningful "off" state, so there is
+# nothing to make this ConfigMap's existence conditional on.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-provider
+  labels:
+    app: {{ .Values.name }}
+data:
+  PROVIDER_BASE_URL: {{ .Values.provider.baseUrl | quote }}
+  # Piped through int64 before quote, not a bare pipe to quote: Helm/sprig
+  # decodes a values-file integer as float64, so a bare quote risks the same
+  # scientific-notation round-trip documented below for MAX_BODY_BYTES once
+  # the value is large enough. int64 converts back to an integer first,
+  # sidestepping it regardless of magnitude.
+  PROVIDER_TIMEOUT_SECS: {{ .Values.provider.timeoutSecs | int64 | quote }}
+  REDACT_PROFILE: {{ .Values.profile | quote }}
+  # `int64` is load-bearing, not decoration, for the same reason as above:
+  # Helm parses a large integer as a float, so a bare templated value renders
+  # 33554432 as "3.3554432e+07" -- which clap rejects at startup with
+  # `invalid digit found in string`, crash-looping the pod. It does NOT
+  # reproduce via `--set` (that parses as int64), so a values-file default is
+  # the only place it bites -- same family as the ai-helm ADR-0109 `"n": 1`
+  # YAML-boolean trap. `int64` converts back to an integer before `quote`
+  # turns it into a string, sidestepping the float round-trip entirely.
+  MAX_BODY_BYTES: {{ .Values.maxBodyBytes | int64 | quote }}

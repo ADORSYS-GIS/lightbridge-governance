@@ -52,6 +52,23 @@ struct Args {
     #[arg(long, env = "RESOLVE_TIMEOUT_MS", default_value_t = 500)]
     resolve_timeout_ms: u64,
 
+    /// TTL for the in-process `/internal/v1/resolve` cache (ADR-0006,
+    /// ADR-0007). This *is* the revocation SLA the runbook documents --
+    /// `docs/runbooks/revoke-an-integration-token.md` -- so it must match
+    /// `config/default.yaml`'s `resolveCache.ttlSeconds` default. Has a
+    /// `default_value_t` deliberately: an env var with no default is how the
+    /// `INTERNAL_INGEST_TOKEN` chart gap became a CrashLoopBackOff (see
+    /// AGENTS.md); this one must never repeat that.
+    #[arg(long, env = "RESOLVE_CACHE_TTL_SECS", default_value_t = 60)]
+    resolve_cache_ttl_secs: u64,
+
+    /// Max entries the `/internal/v1/resolve` cache holds before moka starts
+    /// evicting. Must match `config/default.yaml`'s
+    /// `resolveCache.maxCapacity` default. See `resolve_cache_ttl_secs` for
+    /// why this also carries a `default_value_t`.
+    #[arg(long, env = "RESOLVE_CACHE_MAX_CAPACITY", default_value_t = 10_000)]
+    resolve_cache_max_capacity: u64,
+
     /// Max `/internal/v1/ingest` requests per integration per
     /// `INGEST_RATE_WINDOW_SECS`. A throttle, not a billing meter.
     #[arg(long, env = "INGEST_RATE_MAX_PER_WINDOW", default_value_t = 600)]
@@ -76,6 +93,10 @@ async fn main() -> Result<()> {
         pool: pool.clone(),
         internal_token: internal_token.clone(),
         resolve_timeout: std::time::Duration::from_millis(args.resolve_timeout_ms),
+        cache: resolve::build_cache(
+            std::time::Duration::from_secs(args.resolve_cache_ttl_secs),
+            args.resolve_cache_max_capacity,
+        ),
     };
     let db = Cratestack::builder(pool.clone()).build();
     let metrics = Arc::new(metrics::Metrics::new());

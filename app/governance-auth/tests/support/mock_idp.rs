@@ -41,10 +41,23 @@ pub enum TokenBehavior {
     },
 }
 
+/// Lets a test override what the discovery document advertises for
+/// `token_endpoint`, independent of where this server actually listens --
+/// used to simulate exactly the shape `oauth::discovery::require_same_origin`
+/// exists to reject: a discovery response whose `issuer` matches what was
+/// requested (so the RFC 8414 §3.1.2 check passes) but whose `token_endpoint`
+/// is at a different origin. `None` means "advertise this server's own
+/// `/token`", the previous (and still default) behavior.
+#[derive(Clone, Default)]
+pub struct DiscoveryOverrides {
+    pub token_endpoint: Option<String>,
+}
+
 struct Inner {
     base_url: String,
     behavior: TokenBehavior,
     token_calls: u32,
+    discovery_overrides: DiscoveryOverrides,
 }
 
 #[derive(Clone)]
@@ -55,6 +68,13 @@ pub struct MockIdp {
 
 impl MockIdp {
     pub async fn start(behavior: TokenBehavior) -> Result<Self> {
+        Self::start_with_discovery_overrides(behavior, DiscoveryOverrides::default()).await
+    }
+
+    pub async fn start_with_discovery_overrides(
+        behavior: TokenBehavior,
+        discovery_overrides: DiscoveryOverrides,
+    ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .context("binding mock idp listener")?;
@@ -67,6 +87,7 @@ impl MockIdp {
             base_url: base_url.clone(),
             behavior,
             token_calls: 0,
+            discovery_overrides,
         }));
 
         let router = Router::new()
@@ -101,10 +122,15 @@ async fn discovery(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse 
         return (StatusCode::INTERNAL_SERVER_ERROR, "mock idp lock poisoned").into_response();
     };
     let base_url = guard.base_url.clone();
+    let token_endpoint = guard
+        .discovery_overrides
+        .token_endpoint
+        .clone()
+        .unwrap_or_else(|| format!("{base_url}/token"));
     Json(json!({
         "issuer": base_url,
         "authorization_endpoint": format!("{base_url}/authorize"),
-        "token_endpoint": format!("{base_url}/token"),
+        "token_endpoint": token_endpoint,
         "device_authorization_endpoint": format!("{base_url}/device"),
     }))
     .into_response()

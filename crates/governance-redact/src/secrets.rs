@@ -65,6 +65,18 @@ const PATTERNS: &[SecretPattern] = &[
         score: 0.99,
         private_key: true,
     },
+    // Standard PKCS#8 armour for a password-protected key. Deliberately a
+    // separate pattern rather than folding into the one above: the prefix
+    // alternation there is closed over specific key kinds, and "ENCRYPTED"
+    // is not one of them, so a naive extension would need its own branch
+    // anyway. Most modern tooling (`openssl pkcs8`, `ssh-keygen -p`) writes
+    // this exact armour for a password-protected key.
+    SecretPattern {
+        id: "secret_encrypted_private_key_pem",
+        pattern: r"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        score: 0.99,
+        private_key: true,
+    },
     // --- GitHub -------------------------------------------------------------
     // ghp_ personal, gho_ oauth, ghu_/ghs_ App user/server, ghr_ refresh.
     // github_pat_ is the fine-grained form. Both shapes are fixed-length.

@@ -91,7 +91,11 @@ impl IntoResponse for Refusal {
 ///
 /// On a non-UTF-8 chunk: a split codepoint is carried forward and retried;
 /// a genuine corruption (invalid byte sequence) triggers the `fail_closed`
-/// split the same way. Because HTTP headers are committed before scanning
+/// path the same way. If the stream ends with an incomplete codepoint still
+/// held in `carry` — no chunk boundary artifact, since there is no further
+/// chunk coming to complete it — that is treated as truncation and also
+/// takes the `fail_closed` path, rather than silently dropping the
+/// trailing bytes. Because HTTP headers are committed before scanning
 /// begins, the status code stays 200; the in-band error payload signals the
 /// block to OpenAI-compatible clients.
 ///
@@ -235,6 +239,12 @@ fn scan_sse_streaming(
                     });
                     // observe-only: stop feeding holdback (it has latched); forward
                     // remaining chunks raw so the client sees the rest of the stream.
+                    // This is the one place in this file that genuinely continues
+                    // past a would-be-blocking result rather than refusing -- see
+                    // `refuse`'s doc for the contrast with the (non-continuing)
+                    // indeterminate-result path, and `redact-extproc`'s
+                    // `refuse_or_block` for the same distinction on that side.
+                    state.metrics.fail_open_total.inc();
                     observe_passthrough = true;
                     // Fall through to next loop iteration where the passthrough guard
                     // above will kick in.
@@ -257,6 +267,37 @@ fn scan_sse_streaming(
                     return;
                 }
             }
+        }
+
+        // End of stream. A non-empty `carry` here means the response ended
+        // mid-codepoint with no further bytes ever coming to complete it —
+        // genuine truncation, not a chunk-boundary artifact (a boundary
+        // artifact is resolved by the next chunk, which by definition
+        // cannot arrive once the loop above has exited). Silently dropping
+        // those trailing bytes would mean up to 3 bytes of the response
+        // vanish with a 200 OK — an "unknown" resolved as "allow", which
+        // the crate's fail-closed house rule forbids. Mirrors
+        // `redact-extproc::service::handle_response_chunk`'s identical
+        // check so the two deployments agree.
+        if !carry.is_empty() {
+            tracing::warn!(
+                carry_len = carry.len(),
+                "upstream response ended mid UTF-8 codepoint"
+            );
+            if fail_closed {
+                let _ = tx
+                    .send(Ok(Bytes::from(sse_error_event(
+                        "redaction_unavailable",
+                        "upstream response ended mid UTF-8 codepoint",
+                    ))))
+                    .await;
+            }
+            state.metrics.record(&ScanReport {
+                redactions: holdback.redactions(),
+                scanned_fields: data_frames,
+                ..Default::default()
+            });
+            return;
         }
 
         // Flush any held text at end-of-stream.
@@ -549,23 +590,50 @@ async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Result<String, 
     String::from_utf8(buf).map_err(|e| format!("upstream response is not UTF-8: {e}"))
 }
 
-/// Applies a refusal, honouring the profile's fail-closed setting.
+/// Applies a refusal for an indeterminate scanning result: a body that would
+/// not parse, an engine error, or an upstream response this proxy could not
+/// read.
 ///
-/// On an `observe-only` profile an undetermined result is logged and the
-/// request proceeds — that profile promises nothing. On every other profile it
-/// is refused.
+/// ⚠️ This refuses on **every** profile, including `observe-only` — it always
+/// has, despite what an earlier version of this doc comment (and this
+/// function's own `fail_open_total` counter) used to claim. Both branches
+/// below return the same [`Refusal::into_response`] regardless of
+/// `fail_closed`; there never was a code path here that forwarded anything.
+///
+/// A genuine `observe-only` continuation at these call sites would mean
+/// forwarding the *original, unscanned* request or response through the rest
+/// of [`handle`]'s pipeline — the upstream round trip, and, for a
+/// response-side failure, a second still-unscanned leg back to the client —
+/// not just returning a different [`Response`] value from this one function.
+/// That is a control-flow change to [`handle`] itself, not something `refuse`
+/// alone can do, and it has not been implemented; closing this gap is
+/// tracked separately rather than faked here. `redact-extproc`'s equivalent
+/// (`refuse_or_block`) genuinely does continue on `observe-only`, but only
+/// because Envoy — not the ext_proc sidecar — owns the original bytes and
+/// "continue" is a protocol-level instruction to forward what Envoy already
+/// has. This gateway *is* the round trip, so that shortcut does not exist
+/// for it.
+///
+/// `refused_total` is incremented on every profile here, because a refusal
+/// is what actually happens on every profile. `fail_open_total` — reserved
+/// for [`scan_sse_streaming`]'s mid-stream `Blocked` handling, which *does*
+/// genuinely continue on `observe-only` — is deliberately not touched here;
+/// incrementing it in this function would report a continuation that never
+/// occurred.
 fn refuse(state: &Arc<AppState>, fail_closed: bool, refusal: Refusal) -> Response {
-    if fail_closed {
-        state.metrics.refused_total.inc();
-        if let Refusal::Undetermined(ref why) = refusal {
+    state.metrics.refused_total.inc();
+    if let Refusal::Undetermined(ref why) = refusal {
+        if fail_closed {
             tracing::error!(reason = %why, "failing closed");
+        } else {
+            tracing::error!(
+                reason = %why,
+                "redaction indeterminate on a non-fail-closed profile; refusing anyway \
+                 (this call site cannot continue -- see `refuse`'s doc comment)"
+            );
         }
-        return refusal.into_response();
     }
-
-    state.metrics.fail_open_total.inc();
-    tracing::warn!("redaction indeterminate on a non-fail-closed profile; continuing");
-    (StatusCode::BAD_GATEWAY, "redaction unavailable").into_response()
+    refusal.into_response()
 }
 
 /// The subset of client headers forwarded upstream.
@@ -601,5 +669,155 @@ impl Metrics {
         }
         self.scanned_fields_total
             .inc_by(report.scanned_fields as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use governance_redact::{Engine, Profile};
+    use tokio::{io::AsyncWriteExt, net::TcpListener};
+
+    use super::*;
+
+    fn app_state(profile: Profile, client: reqwest::Client) -> Arc<AppState> {
+        Arc::new(AppState {
+            engine: Engine::new(profile, "test-salt").expect("engine"),
+            client,
+            provider_base_url: String::new(),
+            metrics: Metrics::new().expect("metrics"),
+            max_body_bytes: 1_000_000,
+        })
+    }
+
+    /// Starts a bare TCP listener that writes one HTTP/1.1 response whose SSE
+    /// body ends mid-UTF-8-codepoint and then closes the connection — no
+    /// further bytes ever arrive to complete it. Returns the URL to hit.
+    ///
+    /// A real socket rather than a mocked `reqwest::Response`, deliberately:
+    /// the bug this test proves a fix for is specifically about how
+    /// `scan_sse_streaming` behaves once `upstream.chunk()` returns
+    /// `Ok(None)` with a still-incomplete `carry` — that end-of-stream
+    /// transition is what a hand-built `reqwest::Response` cannot easily
+    /// reproduce, but a closed TCP connection does exactly.
+    async fn spawn_truncated_upstream() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            // Drain (and ignore) the request so the client's write side
+            // completes before we start writing the response.
+            let mut buf = [0_u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+
+            let body =
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\u{2014}\"}}]}\n\n";
+            // Cut after the em dash's first byte (of 3) -- a genuine
+            // mid-codepoint truncation, not a chunk-boundary artifact: the
+            // connection closes right after, so nothing completes it.
+            let dash_at = body.find('\u{2014}').expect("frame contains the dash");
+            let truncated = &body.as_bytes()[..=dash_at];
+
+            let head =
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(head).await;
+            let _ = socket.write_all(truncated).await;
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{addr}/v1/chat/completions")
+    }
+
+    async fn collect_body(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("collect response body");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// P1: proves `carry` is inspected at end-of-stream, not silently
+    /// dropped. Before the fix, `scan_sse_streaming`'s flush path drained
+    /// only `holdback`, never `carry` — a truncated trailing codepoint (up
+    /// to 3 bytes) vanished with a plain 200 OK and no error frame,
+    /// exactly the "unknown resolved as allow" failure the crate's
+    /// fail-closed house rule forbids.
+    #[tokio::test]
+    async fn truncated_utf8_at_end_of_stream_fails_closed_not_silently_dropped() {
+        let url = spawn_truncated_upstream().await;
+        let client = reqwest::Client::new();
+        let upstream = client
+            .get(&url)
+            .send()
+            .await
+            .expect("connect to mock upstream");
+        let state = app_state(Profile::coding_assistant(), client);
+
+        let resp = scan_sse_streaming(state, StatusCode::OK, upstream, true);
+        let body = collect_body(resp).await;
+        assert!(
+            body.contains("redaction_unavailable"),
+            "truncated UTF-8 at end of stream must fail closed, not silently drop bytes: {body:?}"
+        );
+    }
+
+    /// `observe-only` makes no fail-closed promise, so the truncation is
+    /// logged (see the non-test code) rather than surfaced as an in-band
+    /// error -- this just pins that the fail_closed=false branch does not
+    /// panic or hang on the same input.
+    #[tokio::test]
+    async fn truncated_utf8_at_end_of_stream_on_observe_only_does_not_panic() {
+        let url = spawn_truncated_upstream().await;
+        let client = reqwest::Client::new();
+        let upstream = client
+            .get(&url)
+            .send()
+            .await
+            .expect("connect to mock upstream");
+        let state = app_state(Profile::observe_only(), client);
+
+        let resp = scan_sse_streaming(state, StatusCode::OK, upstream, false);
+        let _body = collect_body(resp).await;
+    }
+
+    /// P2: `refuse()`'s doc comment and its `fail_open_total` counter used
+    /// to claim `observe-only` "continues" past an indeterminate result.
+    /// It never did — both branches always returned a refusal. This pins
+    /// the honest version: refuses on both profiles, and only
+    /// `refused_total` moves; `fail_open_total` (reserved for
+    /// `scan_sse_streaming`'s genuine mid-stream continuation) must stay
+    /// at zero, since nothing was allowed through here.
+    #[tokio::test]
+    async fn refuse_refuses_on_every_profile_not_just_fail_closed() {
+        let client = reqwest::Client::new();
+        for fail_closed in [true, false] {
+            let profile = if fail_closed {
+                Profile::coding_assistant()
+            } else {
+                Profile::observe_only()
+            };
+            let state = app_state(profile, client.clone());
+
+            let resp = refuse(
+                &state,
+                fail_closed,
+                Refusal::Undetermined("test".to_string()),
+            );
+
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_GATEWAY,
+                "fail_closed={fail_closed}: refuse() must refuse regardless of profile"
+            );
+            assert_eq!(
+                state.metrics.refused_total.get(),
+                1,
+                "fail_closed={fail_closed}: a refusal happened, so refused_total must move"
+            );
+            assert_eq!(
+                state.metrics.fail_open_total.get(),
+                0,
+                "fail_closed={fail_closed}: refuse() must never claim a continuation it did not perform"
+            );
+        }
     }
 }
