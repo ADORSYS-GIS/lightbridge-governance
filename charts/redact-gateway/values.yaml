@@ -119,11 +119,17 @@ networkPolicy:
 # off `.Values.name`/`.Values.networkPolicy.*`/`.Values.internalCaTrust.*` etc
 # above, exactly as before the migration.
 #
-# Helm values files are never templated (only templates/*.yaml are), so the
-# literals below that also appear above (the chart name, the port, the salt
-# property name, internalCaTrust's fields) are necessarily duplicated rather
-# than referenced -- there is no supported way for one values.yaml key to
-# point at another. Every duplication is commented at its use site.
+# Helm values files are never templated (only templates/*.yaml are), so any
+# value typed directly into this block is frozen at whatever literal was
+# written here -- it cannot track a deployed override of the corresponding
+# top-level key. Structural literals that are genuinely stable per
+# deployment (the chart name, the port, the salt property name,
+# internalCaTrust's fields) are duplicated instead, and every duplication is
+# commented at its use site. Values that DO vary per deployment
+# (provider.baseUrl/timeoutSecs, profile, maxBodyBytes) are instead routed
+# through templates/configmap-provider.yaml and consumed via envFrom, which
+# is a real template and so can read them -- see that file's header comment
+# for why.
 app-template:
   global:
     # Pins the generated resource names to `redact-gateway` regardless of the
@@ -177,19 +183,6 @@ app-template:
               containerPort: 8080
           env:
             LISTEN_ADDR: "0.0.0.0:8080"
-            PROVIDER_BASE_URL: https://core-gateway-internal.envoy-gateway-system.svc.cluster.local
-            PROVIDER_TIMEOUT_SECS: "600"
-            REDACT_PROFILE: coding-assistant
-            # `int64` is load-bearing, not decoration. Helm parses a large
-            # integer as a float, so a bare templated value renders
-            # 33554432 as "3.3554432e+07" -- which clap rejects at startup
-            # with `invalid digit found in string`, crash-looping the pod. It
-            # does NOT reproduce via `--set` (that parses as int64), so a
-            # values-file default is the only place it bites. Same family as
-            # the ai-helm ADR-0109 `"n": 1` YAML-boolean trap. Quoting the
-            # literal directly (as below) sidesteps the float round-trip
-            # entirely rather than relying on a `| int64` cast at render time.
-            MAX_BODY_BYTES: "33554432"
             # Duplicated from internalCaTrust.mountPath above.
             PROVIDER_CA_FILE: /etc/internal-ca/ca.crt
             # Duplicated from externalSecret.saltProperty above.
@@ -198,6 +191,16 @@ app-template:
                 secretKeyRef:
                   name: redact-gateway-env
                   key: redact_gateway_hash_salt
+          # PROVIDER_BASE_URL, PROVIDER_TIMEOUT_SECS, REDACT_PROFILE and
+          # MAX_BODY_BYTES come from the local `provider` ConfigMap
+          # (templates/configmap-provider.yaml), not a plain templated env
+          # value here: this env map is never templated, so a value typed in
+          # it can't track provider.baseUrl/timeoutSecs, profile or
+          # maxBodyBytes overrides from the deployed values -- see that
+          # ConfigMap's own header comment.
+          envFrom:
+            - configMapRef:
+                name: redact-gateway-provider
           probes:
             liveness:
               enabled: true
