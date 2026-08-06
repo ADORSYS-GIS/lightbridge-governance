@@ -17,6 +17,20 @@ use crate::{CopilotError, Result};
 /// generous without letting a dead request wedge the run.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Explicit `User-Agent`. reqwest's default client sends no `User-Agent`, and
+/// `api.github.com` responds `403` "Request forbidden by administrative rules
+/// ... make sure your request has a User-Agent header" (a plain-text,
+/// multi-line body) to any request without one. The App installation and
+/// credentials are irrelevant until this header is present, so the whole
+/// daily run 403ed before the first real call. Verified empirically: GitHub
+/// returns that 403 for `-A ""`, and a correctly-signed request with a UA
+/// passes. GitHub wants a descriptive agent, not curl's.
+const USER_AGENT: &str = concat!(
+    "lightbridge-governance/",
+    env!("CARGO_PKG_VERSION"),
+    " (Copilot collector)"
+);
+
 /// Owned HTTP client for GitHub API + signed-report-download calls.
 #[derive(Clone)]
 pub struct GithubClient {
@@ -30,11 +44,12 @@ impl GithubClient {
     }
 
     /// The live client: a shared `reqwest::Client` with a per-request
-    /// timeout so a stalled GitHub API call fails this run instead of
-    /// hanging it.
+    /// timeout and an explicit `User-Agent` (GitHub rejects UA-less requests
+    /// with a 403) so calls fail fast and are accepted by the API.
     pub fn for_github() -> Result<Self> {
         let inner = ReqwestClient::builder()
             .timeout(REQUEST_TIMEOUT)
+            .user_agent(USER_AGENT)
             .build()
             .map_err(CopilotError::Transport)?;
         Ok(Self::new(inner))
