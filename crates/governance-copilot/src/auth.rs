@@ -75,10 +75,11 @@ impl<'c> AppAuth<'c> {
             .map_err(CopilotError::Transport)?;
         let status = resp.status().as_u16();
         let text = resp.text().await.map_err(CopilotError::Transport)?;
-        // Surface the real failure instead of a parse error when GitHub (or a
-        // proxy) answers 4xx/5xx with a non-JSON body -- e.g. the plain-text
-        // 403 "Request forbidden... User-Agent" page. Losing the body behind
-        // "expected value at line 2 column 1" made a config bug unreadable.
+        // A 200 whose body is not JSON is a genuinely unexpected shape. A
+        // 4xx/5xx with a non-JSON body (e.g. GitHub's plain-text "Request
+        // forbidden... User-Agent" page) is reported by status only -- never
+        // echo a response body into an error (AGENTS.md: never log a request/
+        // response body; `CopilotError::github` is built to take no body).
         match serde_json::from_str(&text) {
             Ok(json) => Ok((status, json)),
             Err(e) if status == 200 => {
@@ -87,7 +88,7 @@ impl<'c> AppAuth<'c> {
             Err(_) => Err(CopilotError::github(
                 kind_for(url),
                 status,
-                text.trim().chars().take(300).collect::<String>(),
+                "unparseable (non-JSON) error body".to_owned(),
             )),
         }
     }
