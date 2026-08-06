@@ -1,0 +1,67 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Egress for the copilot-sync CronJob only (RFC-0001, #12 AC: "Egress to GitHub
+AND to the signed-download host is allowed explicitly").
+
+Why this shape:
+- The cluster runs Cilium default-deny-egress; a plain NetworkPolicy ipBlock
+  does NOT match on Cilium -- only a CiliumNetworkPolicy toFQDNs does.
+- The signed-download host is PINNED from spike-0007's live run, not guessed:
+  the report envelope's `url` host was `copilot-reports.github.com`, verbatim.
+  GitHub's blob storage backs it, so `*.blob.core.windows.net` is included as
+  the redirect target the pinned host may resolve to.
+- Scoped to `app.kubernetes.io/component: copilot-sync` because the API
+  Deployment shares the `app` label -- selecting `app` would also cut the
+  API's Postgres egress.
+- DNS egress is required for toFQDNs to resolve (Cilium resolves FQDNs via
+  cluster DNS, then caches by TTL).
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Values.name }}-copilot-sync-egress
+  labels:
+    app: {{ .Values.name }}
+spec:
+  description: >-
+    copilot-sync may resolve DNS and reach GitHub's API, the pinned
+    copilot-reports.github.com signed-download host (spike-0007) and the S3
+    raw archive. Nothing else.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/component: copilot-sync
+  egress:
+    # DNS, with L7 visibility (required for toFQDNs resolution).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    # GitHub API (installation tokens + report envelopes) and the S3 archive.
+    - toFQDNs:
+        - matchName: api.github.com
+        - matchName: copilot-reports.github.com
+        - matchPattern: "*.blob.core.windows.net"
+        - matchName: nbg1.your-objectstorage.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- if .Values.copilot.otlp.host }}
+    # OTLP metrics push to Alloy (push, not scrape: CronJob pods die after
+    # each run). Only emitted when copilot.otlp.host is set in the values.
+    - toFQDNs:
+        - matchName: {{ .Values.copilot.otlp.host | quote }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.copilot.otlp.port | quote }}
+              protocol: TCP
+    {{- end }}
+{{- end }}

@@ -21,6 +21,9 @@ spec:
         metadata:
           labels:
             app: {{ .Values.name }}
+            # Distinct from the API Deployment so the egress CNP can select the
+            # CronJob pods alone (they share the `app` label otherwise).
+            app.kubernetes.io/component: copilot-sync
         spec:
           restartPolicy: Never
           automountServiceAccountToken: false
@@ -44,3 +47,52 @@ spec:
                       name: {{ .Values.name }}-env
                       key: {{ .Values.externalSecret.databaseUrlProperty }}
                       optional: false
+                - name: TENANT_ID
+                  value: {{ .Values.copilot.tenantId | quote }}
+                - name: GH_ORG
+                  value: {{ .Values.copilot.org | quote }}
+                - name: GH_APP_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.name }}-env
+                      key: {{ .Values.externalSecret.githubAppIdProperty }}
+                      optional: false
+                - name: GH_APP_PRIVATE_KEY_FILE
+                  value: /etc/lightbridge/github-app.pem
+                # The PEM is mounted as a file (Config reads a path, never an
+                # env value), and the key is fetched by ExternalSecret.
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.name }}-env
+                      key: {{ .Values.externalSecret.s3AccessKeyProperty }}
+                      optional: false
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.name }}-env
+                      key: {{ .Values.externalSecret.s3SecretKeyProperty }}
+                      optional: false
+                - name: AWS_ENDPOINT_URL
+                  value: {{ .Values.copilot.s3.endpoint | quote }}
+                - name: AWS_REGION
+                  value: {{ .Values.copilot.s3.region | quote }}
+                - name: AWS_FORCE_PATH_STYLE
+                  value: {{ .Values.copilot.s3.forcePathStyle | quote }}
+                - name: S3_BUCKET
+                  value: {{ .Values.copilot.s3.bucket | quote }}
+                {{- if .Values.copilot.otlp.host }}
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: {{ printf "http://%s:%s" .Values.copilot.otlp.host .Values.copilot.otlp.port | quote }}
+                {{- end }}
+              volumeMounts:
+                - name: github-app-key
+                  mountPath: /etc/lightbridge
+                  readOnly: true
+          volumes:
+            - name: github-app-key
+              secret:
+                secretName: {{ .Values.name }}-env
+                items:
+                  - key: {{ .Values.externalSecret.githubAppPrivateKeyProperty }}
+                    path: github-app.pem

@@ -24,12 +24,14 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 
 # --- crypto / jwt ---
-# `rust_crypto` is REQUIRED and still is on v11: jsonwebtoken makes the crypto
-# backend an explicit feature choice (`rust_crypto` or `aws_lc_rs`, neither in
-# `default`) and signing PANICS at runtime with neither selected. Declare it
-# explicitly rather than relying on another crate in the graph enabling it —
-# lightbridge-authz was silently depending on authkestra for exactly this.
-jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
+# jsonwebtoken makes the crypto backend an explicit feature choice (`rust_crypto`
+# or `aws_lc_rs`, neither in `default`) and signing PANICS at runtime with neither
+# selected. Declare it explicitly rather than relying on another crate in the
+# graph enabling it — lightbridge-authz was silently depending on authkestra for
+# exactly this. `aws_lc_rs` is used rather than `rust_crypto`: the latter pulls
+# the `rsa` crate, which has RUSTSEC-2023-0071 (Marvin attack, no fix released —
+# rsa 0.9.10 is the latest) and would fail the SAST advisories gate.
+jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 # Integration credentials are 256-bit CSPRNG-generated, not human-chosen --
 # argon2id/bcrypt exist to slow down brute-forcing *low-entropy* secrets, which
 # buys nothing against a uniformly random 256-bit value and only adds real
