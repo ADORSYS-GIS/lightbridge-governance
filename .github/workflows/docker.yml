@@ -13,6 +13,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing (push runs only) needs to mint its own OIDC
+      # token from the GitHub Actions identity provider.
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +67,8 @@ jobs:
 
       # The Dockerfiles build with cargo-auditable. Without it a Trivy scan of
       # these images reports zero Rust packages and a meaningless clean result.
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -74,3 +78,17 @@ jobs:
           # Scoped per image, or the builds share one cache key and thrash.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # Keyless cosign signing of the pushed digest (push runs only -- PR
+      # builds never push, so there is nothing to sign). This is what lets
+      # argocd-image-updater verify provenance before auto-promoting a new
+      # tag (signature-type: cosign, matching lightbridge-code-intelligence's
+      # own image-updater config) instead of blindly floating to whatever was
+      # last pushed. One digest per matrix image; every tag in
+      # steps.meta.outputs.tags for a build already points at the same
+      # digest, so signing the digest once covers all of them.
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+      - name: Sign image
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes "${{ matrix.image }}@${{ steps.build.outputs.digest }}"
