@@ -4,6 +4,43 @@
 # ignoreMissingValueFiles silently falls back to these defaults.
 name: lightbridge-governance
 
+# ADR-0057: deployment-specific (the CNPG cluster's Service DNS name, the
+# database name) -- empty here, supplied per-environment in ai-helm-values.
+# Only the PASSWORD is a secret (externalSecret.dbPasswordProperty, below);
+# everything else is a known, non-secret literal, so there is nothing for an
+# operator to "assemble" -- set this to
+#   postgresql://governance:$(DB_PASSWORD)@<cnpg-rw-service>:5432/governance
+# and Kubernetes' native $(VAR_NAME) substitution (resolved by the kubelet
+# from the DB_PASSWORD env var defined earlier in the same container's env
+# list, NOT visible in `kubectl get pod -o yaml`) fills in the password at
+# container start. Same technique lightbridge-code-intelligence's
+# DATABASE_URL already uses in ai-helm-values. `image`/`api` top-level keys
+# from the pre-app-template-v4 chart are gone -- the equivalent settings now
+# live under `app-template.controllers.api` below.
+#
+# ⚠️ MUST live under `global`, not as a plain top-level key: DATABASE_URL's
+# embedded `$(DB_PASSWORD)` reference only expands correctly if it is a
+# literal `env` list entry (Kubernetes never expands `$(VAR_NAME)` inside an
+# `envFrom`- or `valueFrom`-sourced value, only inside a plain `value:`
+# string -- see the DB_PASSWORD/DATABASE_URL pair in
+# `app-template.controllers.*.containers.main.env` below), which forces this
+# through app-template's env-string `tpl` pass rather than the ConfigMap
+# technique `templates/configmap-copilot.yaml` uses for TENANT_ID/GH_ORG/etc.
+# `tpl` there runs against app-template's OWN scoped context, where
+# `.Values` is limited to `app-template.*` plus `global.*` -- a plain
+# top-level key like the old `databaseUrl` would render as empty inside that
+# env string regardless of what a deployed override set it to. `global.*` is
+# the one path Helm propagates into every subchart unchanged, so it is the
+# only key path that actually reaches the container.
+#
+# ⚠️ THE DEPLOYED VALUE MUST MATCH: ai-helm-values' own
+# environments/<env>/values/lightbridge-governance.yaml must set
+# `global.databaseUrl`, not a bare top-level `databaseUrl` -- confirm this
+# before relying on a deployed override, the same values-repo-FIRST caution
+# as the top of this file.
+global:
+  databaseUrl: ""
+
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
 copilot:
@@ -61,21 +98,29 @@ networkPolicy:
 # absent -- but the "waits in ContainerCreating until ESO has synced" behaviour
 # depends on that Kubernetes default rather than on an explicit chart setting.
 #
-# NOTE: `databaseUrlProperty`/`internalResolveTokenProperty`/
+# NOTE: `dbPasswordProperty`/`internalResolveTokenProperty`/
 # `internalIngestTokenProperty` name properties inside `remoteKey` that this
-# chart assumes but has not verified live against the actual secret store entry
-# (unlike redact-gateway's `saltProperty`, which was) -- confirm they match
-# before relying on this in a real environment.
+# chart assumes but has not verified live against the actual secret store
+# entry (unlike redact-gateway's `saltProperty`, which was) -- confirm they
+# match before relying on this in a real environment. All three are plain
+# random opaque values (e.g. `openssl rand -hex 32`) -- there is no format to
+# derive or compute for any of them; an operator just needs to generate one
+# and write it to the store once.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
   remoteKey: ai/camer/digital/prod/env
-  databaseUrlProperty: governance_database_url
+  # The `governance` CNPG role's password (ai-helm's charts/lightbridge-db).
+  # NOT a full connection string -- see the comment on .Values.databaseUrl
+  # above for why that would be redundant.
+  dbPasswordProperty: governance_db_password
   internalResolveTokenProperty: governance_internal_resolve_token
   # Shared secret the OpenTelemetry Collector presents on `/internal/v1/ingest`
-  # (#30). Wired the same way as internalResolveTokenProperty: an ExternalSecret
-  # `data` entry below and a required (never-optional) secretKeyRef in the
-  # `app-template.controllers.api` container env.
+  # (#30, RFC-0002). Wired the same way as internalResolveTokenProperty: an
+  # ExternalSecret `data` entry below and a required (never-optional)
+  # secretKeyRef in the `app-template.controllers.api` container env.
+  # Required -- main.rs has no default, so a pod started without it never
+  # comes up (clap errors "required argument missing").
   internalIngestTokenProperty: governance_internal_ingest_token
   # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
@@ -167,13 +212,22 @@ app-template:
               containerPort: 8080
           env:
             LISTEN_ADDR: "0.0.0.0:8080"
-            # Duplicated from externalSecret.databaseUrlProperty above (see the
-            # app-template block's top comment for why).
-            DATABASE_URL:
+            # Duplicated from externalSecret.dbPasswordProperty above (see the
+            # app-template block's top comment for why). Must be defined
+            # before DATABASE_URL in the rendered env list for its
+            # `$(DB_PASSWORD)` reference to resolve -- `dependsOn` on
+            # DATABASE_URL below is what guarantees that ordering, since this
+            # env block is a YAML map and app-template does not otherwise
+            # preserve key order (see `global.databaseUrl`'s comment in this
+            # file for the full reasoning).
+            DB_PASSWORD:
               valueFrom:
                 secretKeyRef:
                   name: lightbridge-governance-env
-                  key: governance_database_url
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
             INTERNAL_RESOLVE_TOKEN:
               valueFrom:
                 secretKeyRef:
@@ -251,11 +305,17 @@ app-template:
           command: ["/usr/local/bin/governance-ctl"]
           args: ["sync"]
           env:
-            DATABASE_URL:
+            # See the api container's env above for why DB_PASSWORD must
+            # come before DATABASE_URL (`dependsOn`) and why DATABASE_URL
+            # reads `.Values.global.databaseUrl`, not a plain top-level key.
+            DB_PASSWORD:
               valueFrom:
                 secretKeyRef:
                   name: lightbridge-governance-env
-                  key: governance_database_url
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
             GH_APP_ID:
               valueFrom:
                 secretKeyRef:
