@@ -16,6 +16,19 @@ api:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: 500m, memory: 256Mi }
 
+# ADR-0057: deployment-specific (the CNPG cluster's Service DNS name, the
+# database name) -- empty here, supplied per-environment in ai-helm-values.
+# Only the PASSWORD is a secret (externalSecret.dbPasswordProperty, below);
+# everything else is a known, non-secret literal, so there is nothing for an
+# operator to "assemble" -- set this to
+#   postgresql://governance:$(DB_PASSWORD)@<cnpg-rw-service>:5432/governance
+# and Kubernetes' native $(VAR_NAME) substitution (resolved by the kubelet
+# from the DB_PASSWORD env var defined earlier in the same container, NOT
+# visible in `kubectl get pod -o yaml`) fills in the password at container
+# start. Same technique lightbridge-code-intelligence's DATABASE_URL already
+# uses in ai-helm-values.
+databaseUrl: ""
+
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
 sync:
@@ -70,16 +83,22 @@ networkPolicy:
 # credential and fail auth forever (the context7 MCP_TOKEN incident). Required
 # means the pod waits in ContainerCreating until ESO has synced.
 #
-# NOTE: `databaseUrlProperty`/`internalResolveTokenProperty`/
+# NOTE: `dbPasswordProperty`/`internalResolveTokenProperty`/
 # `internalIngestTokenProperty` name properties inside `remoteKey` that this
 # chart assumes but has not verified live against the actual secret store
 # entry (unlike redact-gateway's `saltProperty`, which was) -- confirm they
-# match before relying on this in a real environment.
+# match before relying on this in a real environment. All three are plain
+# random opaque values (e.g. `openssl rand -hex 32`) -- there is no format to
+# derive or compute for any of them; an operator just needs to generate one
+# and write it to the store once.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
   remoteKey: ai/camer/digital/prod/env
-  databaseUrlProperty: governance_database_url
+  # The `governance` CNPG role's password (ai-helm's charts/lightbridge-db).
+  # NOT a full connection string -- see the comment on .Values.databaseUrl
+  # above for why that would be redundant.
+  dbPasswordProperty: governance_db_password
   internalResolveTokenProperty: governance_internal_resolve_token
   # Shared secret for the OTel Collector's /internal/v1/ingest (Foundry OTLP,
   # RFC-0002). Required -- main.rs has no default, so a pod started without

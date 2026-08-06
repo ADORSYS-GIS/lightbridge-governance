@@ -32,15 +32,22 @@ spec:
           env:
             - name: LISTEN_ADDR
               value: "0.0.0.0:{{ .Values.api.port }}"
-            - name: DATABASE_URL
+            # DB_PASSWORD must come BEFORE DATABASE_URL in this list -- Kubernetes'
+            # $(VAR_NAME) substitution only resolves references to env vars already
+            # defined earlier in the same container. The password is the only secret
+            # part of the connection string; everything else is .Values.databaseUrl,
+            # a plain (non-secret) value set per-environment.
+            - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.name }}-env
-                  key: {{ .Values.externalSecret.databaseUrlProperty }}
+                  key: {{ .Values.externalSecret.dbPasswordProperty }}
                   # ⚠️ NEVER optional. See values.yaml's comment above
                   # `externalSecret` -- an optional ref lets a pod that beats
-                  # ESO capture an empty connection string and never recover.
+                  # ESO capture an empty password and never recover.
                   optional: false
+            - name: DATABASE_URL
+              value: {{ .Values.databaseUrl | quote }}
             - name: INTERNAL_RESOLVE_TOKEN
               valueFrom:
                 secretKeyRef:
