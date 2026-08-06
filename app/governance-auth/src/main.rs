@@ -14,6 +14,7 @@ mod cache;
 mod config;
 mod oauth;
 mod redacted;
+mod security;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -65,6 +66,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let http = reqwest::Client::builder()
+        // `--issuer`/discovery already reject an insecure *initial* request
+        // URL (config::parse_issuer, oauth::discovery::require_same_origin)
+        // -- this redirect policy is the other half: it re-checks every hop
+        // of every redirect chain, so a same-origin HTTPS request can't be
+        // walked down to plaintext HTTP by a 3xx response from a
+        // compromised or misconfigured server. Defence in depth, not
+        // redundant: this is the only layer that sees a redirect target.
+        .redirect(security::redirect_policy())
         .build()
         .context("building the HTTP client")?;
 
