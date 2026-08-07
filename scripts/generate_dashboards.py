@@ -251,6 +251,47 @@ def pg_timeseries_panel(
     }
 
 
+def pg_stat_panel(
+    ids: Ids,
+    *,
+    title: str,
+    description: str,
+    sql: str,
+    unit: str,
+    grid: dict[str, int],
+    mappings: list[dict[str, Any]] | None = None,
+    thresholds_steps: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": ids.take(),
+        "type": "stat",
+        "title": title,
+        "description": description,
+        "datasource": PG_DS,
+        "gridPos": grid,
+        "fieldConfig": _base_field_config(
+            unit=unit, mappings=mappings, thresholds_steps=thresholds_steps
+        ),
+        "options": {
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+        },
+        "targets": [
+            {
+                "datasource": PG_DS,
+                "rawSql": sql,
+                "format": "table",
+                "editorMode": "code",
+                "refId": "A",
+            }
+        ],
+    }
+
+
 def pg_table_panel(
     ids: Ids,
     *,
@@ -383,6 +424,159 @@ FROM ingest_manifests
 WHERE tenant_id = '$tenant_id'
   AND provider = 'github_copilot'
 ORDER BY report_type, report_day DESC, completed_at DESC NULLS LAST"""
+
+# --------------------------------------------------------------------------
+# Seat hygiene SQL (copilot_seat_snapshots). RFC-0001 Motivation, verbatim:
+# "who has a seat and has never used it", "what does adoption look like by
+# team", "what are we paying per active user".
+#
+# copilot_seat_snapshots is current-state, one row per user per
+# snapshot_day, with no history before ingestion started -- there is no
+# meaningful trend yet. Every query below therefore pins to the LATEST
+# snapshot_day via a `MAX(snapshot_day)` subquery scoped to $tenant_id,
+# rather than assuming the dashboard's selected time range contains data
+# (it may not, especially on day one). Note the column is `snapshot_day`,
+# not `report_day` like every other copilot_* table.
+#
+# NULL semantics are load-bearing, not incidental:
+#   - last_activity_at IS NULL means "never used" -- this is the exact
+#     signal RFC-0001 asks for and must never be coalesced to a date or a
+#     zero, which would silently misrepresent an unused seat as a used one.
+#   - seat_assigned_at IS NULL means "assignment time unknown" -- also left
+#     as NULL rather than defaulted, so a table column renders it visibly
+#     blank instead of a fabricated date.
+#
+# seat_state is NOT NULL and only ever 'active' or 'pending_cancellation'
+# (derived by the connector from GitHub's pending_cancellation_date; a
+# cancelled seat simply disappears from the listing, so there is no
+# 'cancelled' state to see here).
+# --------------------------------------------------------------------------
+
+SQL_SEAT_NEVER_USED_COUNT = """\
+SELECT COUNT(*) AS never_used_seats
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+  AND last_activity_at IS NULL"""
+
+SQL_SEAT_NEVER_USED_TABLE = """\
+SELECT
+  user_login,
+  seat_assigned_at,
+  (snapshot_day::date - seat_assigned_at::date) AS days_assigned
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+  AND last_activity_at IS NULL
+ORDER BY seat_assigned_at ASC NULLS FIRST"""
+
+# $idle_threshold_days is a dashboard variable (custom, default 30) rather
+# than a hardcoded number -- interpolated as a plain integer into the
+# interval literal below.
+SQL_SEAT_IDLE_COUNT = """\
+SELECT COUNT(*) AS idle_seats
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+  AND last_activity_at IS NOT NULL
+  AND last_activity_at < snapshot_day - ('$idle_threshold_days days')::interval"""
+
+SQL_SEAT_IDLE_TABLE = """\
+SELECT
+  user_login,
+  last_activity_at,
+  last_activity_editor,
+  (snapshot_day::date - last_activity_at::date) AS days_idle
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+  AND last_activity_at IS NOT NULL
+  AND last_activity_at < snapshot_day - ('$idle_threshold_days days')::interval
+ORDER BY last_activity_at ASC"""
+
+SQL_SEAT_TOTAL_COUNT = """\
+SELECT COUNT(*) AS seats_assigned
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )"""
+
+SQL_SEAT_PENDING_CANCELLATION_COUNT = """\
+SELECT COUNT(*) AS pending_cancellation_seats
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+  AND seat_state = 'pending_cancellation'"""
+
+SQL_SEAT_STATE_BREAKDOWN = """\
+SELECT
+  seat_state,
+  COUNT(*) AS seats
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+GROUP BY seat_state
+ORDER BY seat_state"""
+
+SQL_SEAT_EDITOR_BREAKDOWN = """\
+SELECT
+  COALESCE(last_activity_editor, 'never used') AS editor,
+  COUNT(*) AS seats
+FROM copilot_seat_snapshots
+WHERE tenant_id = '$tenant_id'
+  AND snapshot_day = (
+    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+  )
+GROUP BY COALESCE(last_activity_editor, 'never used')
+ORDER BY seats DESC"""
+
+# Active users = seats with any recorded usage ever (last_activity_at NOT
+# NULL) on the latest snapshot day, joined against the most recent
+# available copilot_org_dailys cost row for the tenant (seat snapshots and
+# org daily reports are independent ingests and are not guaranteed to share
+# a day). Money is integer micro-USD in storage (ADR-0008); the /1e6 below
+# is a presentation-only conversion inside this read-only SELECT, exactly
+# like the existing cost panels above -- no stored column changes type.
+# A NULL result (no active seats, or no cost row yet for the tenant) is
+# left as NULL rather than defaulted to 0, so the panel visibly reads "no
+# data" instead of a misleading zero cost.
+SQL_SEAT_COST_PER_ACTIVE_USER = """\
+SELECT
+  CASE
+    WHEN (
+      SELECT COUNT(*) FROM copilot_seat_snapshots
+      WHERE tenant_id = '$tenant_id'
+        AND snapshot_day = (
+          SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+        )
+        AND last_activity_at IS NOT NULL
+    ) = 0 THEN NULL
+    ELSE (
+      (SELECT net_cost_micro_usd FROM copilot_org_dailys
+       WHERE tenant_id = '$tenant_id'
+       ORDER BY report_day DESC LIMIT 1)::float8 / 1e6
+    ) / (
+      SELECT COUNT(*) FROM copilot_seat_snapshots
+      WHERE tenant_id = '$tenant_id'
+        AND snapshot_day = (
+          SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'
+        )
+        AND last_activity_at IS NOT NULL
+    )
+  END AS cost_per_active_user_usd"""
 
 
 def build_dashboard() -> dict[str, Any]:
@@ -665,23 +859,154 @@ def build_dashboard() -> dict[str, Any]:
                 "not a bug."
             ),
             sql=SQL_INGEST_MANIFEST_HEALTH,
+            grid={"h": 8, "w": 24, "x": 0, "y": y},
+        )
+    )
+    y += 8
+
+    # ---------------------------------------------------------------
+    # Section 4 -- Seat hygiene (Postgres, ADR-0003). RFC-0001's headline
+    # motivation: "who has a seat and has never used it", "what does
+    # adoption look like by team", "what are we paying per active user".
+    # copilot_seat_snapshots is current-state only (PR #70) -- every panel
+    # here pins to the latest snapshot_day rather than the dashboard's time
+    # range; see the SQL_SEAT_* constants above for the NULL-semantics and
+    # latest-snapshot rationale in full.
+    # ---------------------------------------------------------------
+    panels.append(row(ids, "Seat hygiene (Postgres -- ADR-0003, RFC-0001)", y))
+    y += 1
+
+    panels.append(
+        pg_stat_panel(
+            ids,
+            title="Never-used seats",
+            description=(
+                "Seats on the latest snapshot day with last_activity_at IS NULL -- assigned "
+                "but never touched. This is the licence you are paying for and nobody has "
+                "used; NULL here is 'never used', deliberately not coalesced to a date or a "
+                "zero. See the table below for names."
+            ),
+            sql=SQL_SEAT_NEVER_USED_COUNT,
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 0, "y": y},
+            mappings=[NO_DATA_MAPPING],
+            thresholds_steps=[{"color": "green", "value": None}, {"color": "orange", "value": 1}],
+        )
+    )
+    panels.append(
+        pg_stat_panel(
+            ids,
+            title="Idle seats (> $idle_threshold_days d)",
+            description=(
+                "Seats used at some point (last_activity_at NOT NULL) but not within the last "
+                "$idle_threshold_days days as of the latest snapshot day. Threshold is a "
+                "dashboard variable, not hardcoded -- change it in the picker above."
+            ),
+            sql=SQL_SEAT_IDLE_COUNT,
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 6, "y": y},
+            mappings=[NO_DATA_MAPPING],
+            thresholds_steps=[{"color": "green", "value": None}, {"color": "orange", "value": 1}],
+        )
+    )
+    panels.append(
+        pg_stat_panel(
+            ids,
+            title="Seats assigned (latest snapshot)",
+            description="Total copilot_seat_snapshots rows for $tenant_id on the latest snapshot_day.",
+            sql=SQL_SEAT_TOTAL_COUNT,
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 12, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        pg_stat_panel(
+            ids,
+            title="Pending cancellation seats",
+            description=(
+                "seat_state = 'pending_cancellation' on the latest snapshot day -- derived by "
+                "the connector from GitHub's pending_cancellation_date. GitHub exposes no "
+                "other lifecycle field; a fully cancelled seat simply disappears from the "
+                "listing rather than appearing as a third state."
+            ),
+            sql=SQL_SEAT_PENDING_CANCELLATION_COUNT,
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 18, "y": y},
+            mappings=[NO_DATA_MAPPING],
+            thresholds_steps=[{"color": "green", "value": None}, {"color": "yellow", "value": 1}],
+        )
+    )
+    y += 8
+
+    panels.append(
+        pg_table_panel(
+            ids,
+            title="Never-used seats -- who",
+            description=(
+                "Latest snapshot day, last_activity_at IS NULL. days_assigned is NULL when "
+                "seat_assigned_at itself is unknown (also NULL, not defaulted)."
+            ),
+            sql=SQL_SEAT_NEVER_USED_TABLE,
             grid={"h": 8, "w": 12, "x": 0, "y": y},
         )
     )
     panels.append(
-        text_panel(
+        pg_table_panel(
             ids,
-            title="Seat snapshots -- pending",
-            content=(
-                "**Seat ingestion is not implemented yet (known RFC-0001 gap).** "
-                "`copilot_seat_snapshots` exists in the schema but has 0 rows in every "
-                "environment today. Rather than ship a query panel against an empty table "
-                "(which would look identical to a broken connector), this panel is a plain "
-                "marker: there is nothing to query yet. Replace with real panels "
-                "(seat_state breakdown, last_activity_at freshness) once a collector actually "
-                "writes to this table."
+            title="Idle seats -- who",
+            description=(
+                "Latest snapshot day, used at some point but not within $idle_threshold_days "
+                "days. last_activity_editor shows which tooling they last used."
             ),
+            sql=SQL_SEAT_IDLE_TABLE,
             grid={"h": 8, "w": 12, "x": 12, "y": y},
+        )
+    )
+    y += 8
+
+    panels.append(
+        pg_table_panel(
+            ids,
+            title="Seats by state",
+            description=(
+                "seat_state breakdown on the latest snapshot day -- only ever 'active' or "
+                "'pending_cancellation' (see the connector note above)."
+            ),
+            sql=SQL_SEAT_STATE_BREAKDOWN,
+            grid={"h": 8, "w": 8, "x": 0, "y": y},
+        )
+    )
+    panels.append(
+        pg_table_panel(
+            ids,
+            title="Editor breakdown",
+            description=(
+                "last_activity_editor on the latest snapshot day, which tooling is actually in "
+                "use. 'never used' is its own bucket (last_activity_editor IS NULL because "
+                "last_activity_at IS NULL), not folded into any real editor's count."
+            ),
+            sql=SQL_SEAT_EDITOR_BREAKDOWN,
+            grid={"h": 8, "w": 8, "x": 8, "y": y},
+        )
+    )
+    panels.append(
+        pg_stat_panel(
+            ids,
+            title="Cost per active user",
+            description=(
+                "Latest copilot_org_dailys.net_cost_micro_usd for $tenant_id, divided by the "
+                "count of seats with any recorded usage on the latest seat snapshot day. "
+                "Integer micro-USD in storage (ADR-0008); the /1e6 happens only in this "
+                "read-only SELECT's projection, for display -- a presentation conversion, not "
+                "a stored float. Seat snapshots and org daily reports are independent ingests "
+                "and are not guaranteed to land on the same day. NULL (not 0) when there are "
+                "no active seats or no cost row yet."
+            ),
+            sql=SQL_SEAT_COST_PER_ACTIVE_USER,
+            unit="currencyUSD",
+            grid={"h": 8, "w": 8, "x": 16, "y": y},
+            mappings=[NO_DATA_MAPPING],
         )
     )
     y += 8
@@ -709,20 +1034,67 @@ def build_dashboard() -> dict[str, Any]:
                 {
                     "current": {},
                     "datasource": PG_DS,
-                    "definition": "SELECT DISTINCT tenant_id FROM ingest_manifests ORDER BY tenant_id",
+                    # Union across every table this dashboard queries by tenant_id, not just
+                    # ingest_manifests -- copilot_seat_snapshots (PR #70) has ~21 tenants in
+                    # local dev with no ingest_manifests row at all (seat-only test fixtures),
+                    # and a tenant-scoped variable that can't select them would silently break
+                    # every Section 4 panel for those tenants. `tenant_id <> ''` excludes the
+                    # empty-string tenant a real deployment can have from a misconfigured
+                    # TENANT_ID env var (see AGENTS.md's secretKeyRef trap and the values.yaml
+                    # fix landing alongside this) -- Grafana's query-variable "current" default
+                    # picks the alphabetically-first option, and '' sorts before every real
+                    # tenant name, so leaving it in would make a broken deployment's blank
+                    # tenant the dashboard's silent default. Excluding it does not error even
+                    # when such rows exist; it just never offers them.
+                    "definition": (
+                        "SELECT DISTINCT tenant_id FROM (\n"
+                        "  SELECT tenant_id FROM ingest_manifests\n"
+                        "  UNION\n"
+                        "  SELECT tenant_id FROM copilot_seat_snapshots\n"
+                        ") all_tenants\n"
+                        "WHERE tenant_id <> ''\n"
+                        "ORDER BY tenant_id"
+                    ),
                     "hide": 0,
                     "includeAll": False,
                     "label": "Tenant",
                     "multi": False,
                     "name": "tenant_id",
                     "options": [],
-                    "query": "SELECT DISTINCT tenant_id FROM ingest_manifests ORDER BY tenant_id",
+                    "query": (
+                        "SELECT DISTINCT tenant_id FROM (\n"
+                        "  SELECT tenant_id FROM ingest_manifests\n"
+                        "  UNION\n"
+                        "  SELECT tenant_id FROM copilot_seat_snapshots\n"
+                        ") all_tenants\n"
+                        "WHERE tenant_id <> ''\n"
+                        "ORDER BY tenant_id"
+                    ),
                     "refresh": 1,
                     "regex": "",
                     "skipUrlSync": False,
                     "sort": 1,
                     "type": "query",
-                }
+                },
+                {
+                    "current": {"text": "30", "value": "30"},
+                    "hide": 0,
+                    "includeAll": False,
+                    "label": "Idle threshold (days)",
+                    "multi": False,
+                    "name": "idle_threshold_days",
+                    "options": [
+                        {"text": "7", "value": "7", "selected": False},
+                        {"text": "14", "value": "14", "selected": False},
+                        {"text": "30", "value": "30", "selected": True},
+                        {"text": "60", "value": "60", "selected": False},
+                        {"text": "90", "value": "90", "selected": False},
+                    ],
+                    "query": "7,14,30,60,90",
+                    "queryValue": "",
+                    "skipUrlSync": False,
+                    "type": "custom",
+                },
             ]
         },
         "annotations": {"list": []},
