@@ -1,0 +1,87 @@
+{{- if .Values.copilotOtel.enabled }}
+{{- /*
+Ingress/egress for the dedicated OTLP collector CR in templates/otelcollector.yaml.
+Exactly two ingress callers: copilot-sync itself (same namespace, pushes
+OTLP/gRPC on 4317) and Alloy in the observability namespace (pulls /metrics
+on the prometheus port). The Alloy selector follows the existing
+charts/redact-gateway/templates/ciliumnetworkpolicy.yaml precedent verbatim
+(k8s:app.kubernetes.io/name: alloy, k8s:io.kubernetes.pod.namespace via
+networkPolicy.otlpNamespace).
+
+The endpointSelector below matches the operator's own SelectorLabels for
+this CR -- see templates/servicemonitor-copilot-otel.yaml for exactly how
+those were determined (read from operator source) and the confidence level.
+The Deployment the operator creates must carry at least its own selector
+labels on the pod template (standard Kubernetes requirement -- a Deployment's
+pod template labels are always a superset of spec.selector.matchLabels), so
+these are guaranteed to be on the collector's pods, not just its Service.
+
+⚠️ Any CiliumNetworkPolicy with an `ingress:` block makes the selected pods
+deny-by-default for ingress -- including kubelet's own liveness/readiness
+probes, which arrive with `host`/`remote-node` identity, not a pod identity.
+That's the exact trap charts/redact-gateway's own CNP documents and was
+verified there live. Without `fromEntities: [host, remote-node, health]`
+below, this collector would never go Ready and would read exactly like a
+crash loop rather than a network policy problem.
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "lightbridge-governance.otelCollectorName" . }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  description: >-
+    The copilot-sync OTLP collector accepts pushes from copilot-sync on 4317
+    and is scraped by Alloy (observability namespace) on the prometheus
+    port. Nothing else reaches it, and it reaches out to nothing but DNS.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: opentelemetry-operator
+      app.kubernetes.io/component: opentelemetry-collector
+      app.kubernetes.io/instance: {{ printf "%s.%s" .Release.Namespace (include "lightbridge-governance.otelCollectorName" .) }}
+  ingress:
+    # copilot-sync's OTLP/gRPC push. Same namespace, so no `k8s:` source
+    # prefix or explicit pod-namespace label is needed (unprefixed
+    # matchLabels are implicitly scoped to this CiliumNetworkPolicy's own
+    # namespace) -- matches this chart's existing local-selector style.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/component: copilot-sync
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+    # Alloy's scrape. Cross-namespace, so every key is `k8s:`-prefixed --
+    # matches redact-gateway's Alloy rule exactly.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.otlpNamespace }}
+            k8s:app.kubernetes.io/name: alloy
+      toPorts:
+        - ports:
+            - port: {{ .Values.copilotOtel.prometheusPort | quote }}
+              protocol: TCP
+    # Kubelet probes -- see the trap called out above this policy.
+    - fromEntities: [host, remote-node, health]
+  egress:
+    # DNS only. This pipeline (otlp receiver -> resource processor ->
+    # prometheus exporter) makes no outbound calls of its own -- the
+    # prometheus exporter is pull-only, and there's no second exporter
+    # forwarding anywhere. Kept anyway for consistency with the rest of this
+    # chart's CiliumNetworkPolicies, and so a future pipeline change (e.g.
+    # adding an otlp exporter to forward traces too) isn't silently dropped
+    # at the DNS layer on top of needing its own egress rule.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+{{- end }}

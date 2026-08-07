@@ -15,6 +15,13 @@ Why this shape:
   API's Postgres egress.
 - DNS egress is required for toFQDNs to resolve (Cilium resolves FQDNs via
   cluster DNS, then caches by TTL).
+- The OTLP egress rule below is toEndpoints (in-cluster collector, the
+  default) XOR toFQDNs (manual external override), never both -- see
+  templates/otelcollector.yaml and copilotOtel/copilot.otlp.host's comments
+  in values.yaml. The collector's own ingress side (accepting this push,
+  plus Alloy's scrape) lives in the separate
+  templates/ciliumnetworkpolicy-copilot-otel.yaml, gated on the same
+  copilotOtel.enabled toggle.
 */}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -54,9 +61,28 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-    {{- if .Values.copilot.otlp.host }}
-    # OTLP metrics push to Alloy (push, not scrape: CronJob pods die after
-    # each run). Only emitted when copilot.otlp.host is set in the values.
+    {{- if .Values.copilotOtel.enabled }}
+    # OTLP metrics push to the dedicated in-cluster collector (push, not
+    # scrape: CronJob pods die after each run -- see
+    # templates/otelcollector.yaml). Same namespace as this CronJob, so
+    # toEndpoints + a plain (unprefixed) label match, not toFQDNs -- an
+    # in-cluster Service has no DNS name worth pinning by FQDN the way the
+    # external GitHub/S3 hosts above do, and toEndpoints is enforced by
+    # identity rather than by a resolved-and-cached DNS answer.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/managed-by: opentelemetry-operator
+            app.kubernetes.io/component: opentelemetry-collector
+            app.kubernetes.io/instance: {{ printf "%s.%s" .Release.Namespace (include "lightbridge-governance.otelCollectorName" .) }}
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+    {{- else if .Values.copilot.otlp.host }}
+    # Manual/external override path only (copilotOtel.enabled: false) -- see
+    # copilot.otlp.host's comment in values.yaml. Only emitted when a host
+    # is actually set; toFQDNs is correct here because this target is
+    # outside the cluster.
     - toFQDNs:
         - matchName: {{ .Values.copilot.otlp.host | quote }}
       toPorts:

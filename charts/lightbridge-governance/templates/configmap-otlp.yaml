@@ -1,11 +1,39 @@
-{{- if .Values.copilot.otlp.host }}
-# Feeds copilot-sync's OTEL_EXPORTER_OTLP_ENDPOINT via envFrom (configMapRef,
-# optional: true -- see app-template.controllers.copilot-sync.containers.main
-# in values.yaml) so the env var is entirely ABSENT, not merely empty, when
-# copilot.otlp.host is unset. Helm values files are never templated, so a
-# plain templated env value can't be made to disappear from an app-template
-# env map based on this setting; this ConfigMap not existing is what makes
-# the env var not exist.
+{{- /*
+Feeds copilot-sync's OTEL_EXPORTER_OTLP_ENDPOINT via envFrom (configMapRef,
+optional: true -- see app-template.controllers.copilot-sync.containers.main
+in values.yaml) so the env var is entirely ABSENT, not merely empty, when
+neither path below has a host. Helm values files are never templated, so a
+plain templated env value can't be made to disappear from an app-template
+env map based on this setting; this ConfigMap not existing is what makes the
+env var not exist.
+
+The effective host is computed here, not read straight off a single value,
+because there are now two mutually exclusive sources for it:
+  - copilotOtel.enabled (the default): the dedicated in-cluster collector
+    this chart renders itself (templates/otelcollector.yaml) via its
+    generated Service, "<CR name>-collector" -- reachable by short name
+    since copilot-sync and the collector are always in the same namespace.
+  - copilotOtel.enabled: false: falls back to the manual/external override,
+    .Values.copilot.otlp.host (e.g. a real Alloy FQDN).
+
+This ordering is what keeps the "toggle off" case safe: turning
+copilotOtel.enabled off removes the collector, its Service, its
+ServiceMonitor and its network rules (templates/otelcollector.yaml,
+templates/servicemonitor-copilot-otel.yaml,
+templates/ciliumnetworkpolicy-copilot-otel.yaml) in the same render, and
+this ConfigMap stops pointing at that now-nonexistent Service in the same
+render too -- it falls back to copilot.otlp.host, which defaults to empty,
+so by default the ConfigMap simply stops rendering rather than leaving a
+dangling endpoint that would make every copilot-sync run log a failed push
+forever.
+*/}}
+{{- $otelHost := "" }}
+{{- if .Values.copilotOtel.enabled }}
+{{- $otelHost = printf "%s-collector" (include "lightbridge-governance.otelCollectorName" .) }}
+{{- else }}
+{{- $otelHost = .Values.copilot.otlp.host }}
+{{- end }}
+{{- if $otelHost }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,5 +41,5 @@ metadata:
   labels:
     app: {{ .Values.name }}
 data:
-  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s:%s" .Values.copilot.otlp.host .Values.copilot.otlp.port | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s:%s" $otelHost .Values.copilot.otlp.port | quote }}
 {{- end }}

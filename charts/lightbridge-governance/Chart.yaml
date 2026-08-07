@@ -5,8 +5,11 @@ description: |
   connectors -- GitHub Copilot (pull, RFC-0001) and Microsoft Foundry (push over
   OTLP, RFC-0002).
 
-  Renders the API Deployment, the copilot-sync CronJob and the ServiceMonitor.
-  The OTLP collector for Foundry is a separate OpenTelemetryCollector CR.
+  Renders the API Deployment, the copilot-sync CronJob and the ServiceMonitor,
+  plus (copilotOtel.enabled, default true) a dedicated OpenTelemetryCollector
+  CR that bridges copilot-sync's push-based OTLP metrics into this platform's
+  pull-based scrape model for Alloy/Mimir. The OTLP collector for Foundry is
+  a separate OpenTelemetryCollector CR (not this one).
 
   Published to OCI on merge and consumed by ai-helm, matching the
   lightbridge-authz convention (charts live with the code that they deploy).

@@ -55,12 +55,19 @@ copilot:
     endpoint: https://nbg1.your-objectstorage.com
     region: us-east-1
     forcePathStyle: "true"
-  # OTLP metrics receiver (Alloy) for the push-based collector metrics (#12 AC
-  # "operational metrics"). Empty host = no env var and no egress; the push is
-  # skipped (and, when set, a failed push is a WARN, never a run failure).
-  # Redact-gateway's precedent uses the `observability` namespace; 4317 is the
-  # OTLP/gRPC receiver port. Confirm the service name against the deployed
-  # Alloy before enabling.
+  # OTLP metrics receiver for the push-based collector metrics (#12 AC
+  # "operational metrics"). 4317 is the OTLP/gRPC receiver port.
+  #
+  # This is now a MANUAL/EXTERNAL OVERRIDE, not the primary wiring: by
+  # default (copilotOtel.enabled: true, below) copilot-sync is pointed at
+  # the dedicated in-cluster collector automatically -- see
+  # templates/configmap-otlp.yaml, which computes the effective endpoint and
+  # only falls back to this host when copilotOtel.enabled is false. Leave
+  # this empty unless you specifically want to bypass the bundled collector
+  # and push straight to some other OTLP/gRPC receiver (e.g. a real Alloy
+  # endpoint reachable by FQDN). Empty host (with copilotOtel also disabled)
+  # = no env var and no egress; the push is skipped (and, when set, a failed
+  # push is a WARN, never a run failure).
   #
   # Wired to the copilot-sync container via envFrom on the local `otlp` ConfigMap
   # below (templates/configmap-otlp.yaml), not a plain templated env value:
@@ -73,16 +80,80 @@ copilot:
     host: ""
     port: "4317"
 
+# Dedicated push -> pull bridge for copilot-sync's operational OTLP metrics.
+#
+# ADR-0007 is explicit that metrics on this platform are pull-based: Alloy
+# discovers ServiceMonitor/PodMonitor CRDs cluster-wide and remote-writes to
+# Mimir, and "OTLP to Alloy carries traces, not first-party metrics" -- with
+# the ADR itself naming the reason why a CronJob can't just push and be done:
+# "a CronJob pod that exits cannot be scraped". copilot-sync does exactly
+# that (one force_flush, then the pod dies), so this OpenTelemetryCollector
+# CR sits in between and turns the one-shot push into something Alloy can
+# pull continuously, without contradicting ADR-0007's decision -- it doesn't
+# reintroduce a pushgateway or a second copy of `governance_connector_*` (the
+# API still owns those, derived from ingest_manifest); it only carries what
+# copilot-sync emits about its OWN run (duration, records processed, etc.):
+#
+#   copilot-sync --OTLP/gRPC:4317--> collector --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+#
+# Requires the OpenTelemetry Operator to be installed on the cluster
+# (confirmed present; not something this chart can verify at render time).
+copilotOtel:
+  enabled: true
+  replicas: 1
+  # Core `otelcol` distribution, NOT `-contrib`: verified against
+  # open-telemetry/opentelemetry-collector-releases'
+  # distributions/otelcol/manifest.yaml that otlpreceiver, resourceprocessor
+  # and prometheusexporter -- everything this pipeline's `config` uses below
+  # (templates/otelcollector.yaml) -- all ship in core. No need for the much
+  # larger contrib image just for this three-component pipeline.
+  image: "otel/opentelemetry-collector:0.158.0"
+  resources:
+    # A push->pull bridge for one CronJob's small burst of gauges/counters
+    # every 6h -- not a fleet-wide collector. Sized accordingly.
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  # Listen port for the prometheus exporter (templates/otelcollector.yaml);
+  # duplicated there and in templates/ciliumnetworkpolicy-copilot-otel.yaml
+  # since values.yaml can't be referenced from itself or from another
+  # values key -- both sites are commented at point of use.
+  prometheusPort: 8889
+  # THE STALENESS TRAP: the CronJob schedule (app-template.controllers.
+  # copilot-sync.cronjob.schedule, below) is `0 */6 * * *` -- every 6h -- and
+  # copilot-sync does one `force_flush` then the pod dies. The prometheus
+  # exporter's own default (metric_expiration: 5m) would make every series
+  # vanish from /metrics ~5 minutes after each run -- no stale marker, no
+  # zero, just gone -- so a dashboard would read empty ~99% of the time and a
+  # "no data for N minutes" freshness alert could never fire (no data is not
+  # the same signal as stale data).
+  #
+  # 30h = 5 x the 6h schedule interval: survives 4 FULLY missed runs back to
+  # back (24h -- e.g. a stuck ExternalSecret sync, a GitHub outage that fails
+  # every attempt, a node-drain window) plus one extra interval of slack for
+  # the CronJob's own `startingDeadlineSeconds: 900` skew, while still
+  # eventually expiring -- so a pipeline that's actually been dead for days
+  # reads as *missing* at /metrics, not as a silently-stale number from a
+  # week ago quietly passing as "fine".
+  metricExpiration: 30h
+
 serviceMonitor:
   enabled: true
   interval: 30s
 
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
-# copilot-reports.github.com signed-download host (spike-0007) and the S3
-# archive. Scoped to the CronJob pods via the component label; the API
-# Deployment's egress is untouched.
+# copilot-reports.github.com signed-download host (spike-0007), the S3
+# archive and (when copilotOtel.enabled) the in-cluster OTLP collector.
+# Scoped to the CronJob pods via the component label; the API Deployment's
+# egress is untouched.
+#
+# `otlpNamespace` is the redact-gateway precedent
+# (charts/redact-gateway/templates/ciliumnetworkpolicy.yaml) for reaching
+# Alloy: same value, same `k8s:app.kubernetes.io/name: alloy` selector,
+# reused in templates/ciliumnetworkpolicy-copilot-otel.yaml for the
+# collector's own ingress-from-Alloy rule.
 networkPolicy:
   enabled: true
+  otlpNamespace: observability
 
 # ⚠️ Never `optional: true` on a secretKeyRef env: env vars bind once at pod start
 # and never refresh, so an optional ref lets a pod that beats ESO capture an EMPTY
