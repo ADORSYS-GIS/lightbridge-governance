@@ -1,0 +1,154 @@
+{{- if .Values.grafanaDashboard.enabled }}
+{{- /*
+Ships dashboards/copilot-connector.json to Grafana as a GrafanaDashboard
+custom resource, per ADR-0003's precedent (ai-helm ADR-0063's
+read-only-Postgres-`GrafanaDatasource` pattern for Grafana-Operator-managed
+resources). This platform runs the Grafana Operator, which watches
+Grafana/GrafanaDashboard/GrafanaDatasource/GrafanaFolder CRs and pushes their
+content into Grafana's own HTTP API -- it does NOT use the older
+grafana.com sidecar/ConfigMap-label convention some other charts use, so this
+is deliberately a CR, not a `grafana_dashboard: "1"`-labelled ConfigMap.
+
+apiVersion/kind: `grafana.integreatly.org/v1beta1` `GrafanaDashboard`. This is
+the Grafana Operator v5 API -- the operator's v4 -> v5 migration renamed the
+CRD group from `integreatly.org/v1alpha1` to `grafana.integreatly.org/v1beta1`
+and MOVED `instanceSelector` onto the GrafanaDashboard/GrafanaFolder/
+GrafanaDatasource CRs themselves (v4 had a single cluster-wide operator flag
+instead) -- v4 and v5 manifests are not interchangeable, and this targets v5.
+
+VERIFICATION (done in this session, no live cluster available):
+  - context7 (`/grafana/grafana-operator`, the operator's own docs corpus)
+    queried directly for the GrafanaDashboard spec shape, `instanceSelector`
+    examples and the `datasources` mapping field, all returned in terms of
+    `grafana.integreatly.org/v1beta1`.
+  - Cross-checked against the operator's own CRD, fetched directly:
+    raw.githubusercontent.com/grafana/grafana-operator/master/config/crd/
+    bases/grafana.integreatly.org_grafanadashboards.yaml -- confirmed
+    `spec.json` (dashboard model as a STRING, not nested YAML -- the mirror
+    image of OpenTelemetryCollector's v1beta1 spec.config in
+    otelcollector.yaml, which IS a nested object; getting these two backwards
+    is the classic mistake with either CRD) and `spec.instanceSelector`
+    directly, not inferred or guessed.
+CONFIDENCE: high on the schema shape (apiVersion/kind/spec.json/
+spec.instanceSelector/spec.datasources all read directly from the CRD source
+and current docs, not memory or a blog post). NOT verified against whichever
+operator version is actually installed on this cluster -- neither this
+session nor any prior one here has a live cluster. If the CR applies cleanly
+but the dashboard never appears in Grafana, the first two things to check are
+(a) does `kubectl get grafanadashboard <name> -o yaml` show a
+`status.conditions` entry indicating it resolved an instance, and (b) does
+`kubectl get crd grafanadashboards.grafana.integreatly.org -o
+jsonpath='{.spec.versions[*].name}'` actually list `v1beta1` on the deployed
+operator.
+
+spec.json also has sibling alternatives on this same CRD --
+spec.configMapRef (dashboard sourced from a ConfigMap), spec.url (fetched
+over HTTP(S) at sync time), spec.grafanaCom (imported by ID from
+grafana.com), spec.oci (pulled from an OCI artifact) -- all rejected here in
+favour of embedding via `.Files.Get`: the file already lives in this chart,
+so there is nothing to fetch at runtime and nothing else to keep in sync.
+*/}}
+{{- $dashboardPath := "dashboards/copilot-connector.json" }}
+{{- $rawJson := .Files.Get $dashboardPath }}
+{{- if not $rawJson }}
+{{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/copilot-connector.json (the concurrent agent producing the real dashboard must land it at this exact path)." $dashboardPath) }}
+{{- end }}
+{{- /*
+DATASOURCE UID SUBSTITUTION -- MECHANISM AND WHY.
+
+The dashboard JSON needs two datasource UIDs (Postgres, per ADR-0003, and
+Prometheus/Mimir), and neither can be hardcoded in the JSON file: a UID is
+assigned per-deployment by whatever created the corresponding
+GrafanaDatasource CR, and this chart cannot see or verify that. Two
+mechanisms exist to get a per-deployment value into the JSON:
+
+  (a) The operator's OWN `spec.datasources` field (confirmed via context7's
+      read of controllers/content/resolver.go: an array of
+      {inputName, datasourceName} that the OPERATOR ITSELF byte-replaces
+      `${inputName}` -> `datasourceName` with, at Grafana-sync time, after
+      this chart's `helm template`/`helm install` has already finished).
+  (b) Helm-side string substitution over literal placeholder tokens in the
+      raw JSON file, resolved entirely at `helm template` time, before the
+      CR is ever submitted to the cluster.
+
+This template uses (b), on explicit instruction (the tokens below,
+`__DS_POSTGRES__`/`__DS_PROMETHEUS__`, are a fixed contract with whatever
+produces dashboards/copilot-connector.json -- not invented by this
+template). The reasoning still holds independent of that instruction: under
+(a), a mismatched inputName/token is invisible to `helm template` -- the
+rendered manifest contains the literal `${inputName}` string and is
+perfectly valid YAML/JSON either way, so nothing in this chart's own
+verification could ever catch it. Under (b), the same mismatch is directly
+visible in `helm template` output as the token string still sitting in
+`spec.json`, which is exactly what the `fail` guard immediately below
+checks for automatically, and what a human reviewer can `grep` for. (b) also
+ships a fully self-contained CR with no dependency on the operator's
+resolver running correctly -- one fewer moving part whose failure is silent,
+in the same spirit as ADR-0007 declining a pushgateway-shaped component.
+
+FAILURE MODE, wrong VALUE (right mechanism, e.g. prometheusUid does not
+match any real datasource UID in the deployed Grafana): the CR still renders
+and still applies cleanly. Grafana just can't find a datasource with that
+UID, so every panel bound to it silently shows "Datasource not found"
+(structured panels) or an empty graph (time-series panels) -- NOT
+distinguishable at `helm template` time, only once rendered inside a live
+Grafana. This is why values.yaml flags `grafanaDashboard.datasources.
+prometheusUid` as an unconfirmed guess in loud, repeated language.
+
+FAILURE MODE, wrong TOKEN (mechanism mismatch, e.g. the JSON generator emits
+a different token spelling than expected): `replace` below is then a no-op
+for that token, so the literal placeholder string ships inside `spec.json`
+verbatim, and Grafana treats it as a literal (invalid) datasource UID --
+same visible symptom as a wrong value once deployed, but THIS failure mode
+IS caught at `helm template` time by the `fail` guard immediately below,
+which asserts neither token string survives substitution.
+*/}}
+{{- $dashboardJson := $rawJson | replace "__DS_POSTGRES__" .Values.grafanaDashboard.datasources.postgresUid | replace "__DS_PROMETHEUS__" .Values.grafanaDashboard.datasources.prometheusUid }}
+{{- if or (contains "__DS_POSTGRES__" $dashboardJson) (contains "__DS_PROMETHEUS__" $dashboardJson) }}
+{{- fail (printf "%s still contains an unsubstituted __DS_POSTGRES__/__DS_PROMETHEUS__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from the __DS_POSTGRES__/__DS_PROMETHEUS__ contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every affected panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
+{{- end }}
+{{- /*
+SECOND, BROADER GUARD -- caught a real gap while testing this template: the
+two `contains` checks above only detect the exact two contracted spellings
+surviving. They CANNOT detect a token that was renamed to something else
+entirely (e.g. a generator that emits `__DS_PROM__` instead of the
+contracted `__DS_PROMETHEUS__`) -- after `replace` that string is untouched,
+neither `contains` check matches it (it isn't either exact contracted
+string), and the render would have proceeded with a literal, wrong,
+unsubstituted UID reaching Grafana in total silence. Verified this gap
+exists by deliberately renaming a token in the placeholder JSON and
+confirming the two checks above did not fire.
+
+This second, pattern-based guard closes that gap: ANY leftover
+`__DS_<UPPERCASE_AND_UNDERSCORES>__`-shaped token after substitution is
+almost certainly a placeholder that didn't get replaced (real dashboard JSON
+from Grafana's own export/editor has no reason to contain this shape), so
+fail on it regardless of its exact spelling, not just the two names this
+template happens to know about.
+*/}}
+{{- if regexMatch "__DS_[A-Z0-9_]+__" $dashboardJson }}
+{{- fail (printf "%s still contains an unrecognized __DS_..._..__-shaped placeholder token after substitution -- this doesn't match either contracted token (__DS_POSTGRES__/__DS_PROMETHEUS__) by name, but its shape strongly suggests it's an unreplaced datasource placeholder from a token spelling this template doesn't know about. Fix the token spelling in the dashboard JSON (or this template's replace calls) to match the __DS_POSTGRES__/__DS_PROMETHEUS__ contract -- do not ship an unsubstituted placeholder, it becomes a literal invalid datasource UID with no error anywhere in Grafana." $dashboardPath) }}
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ .Values.name }}-copilot-connector
+  labels:
+    app: {{ .Values.name }}
+spec:
+  # See values.yaml's grafanaDashboard.instanceSelector for the full caveat:
+  # this MUST match the labels on the deployed `Grafana` CR (ai-helm, not
+  # visible to this chart) or the operator never selects this dashboard --
+  # a silent non-render, not an error.
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  # A literal YAML block scalar (`|`), not a double-quoted string: JSON is
+  # full of characters (`"`, `\`) that would otherwise need re-escaping to
+  # survive being embedded in a quoted YAML string, and a block scalar takes
+  # its content completely literally instead -- the standard-safe way to
+  # embed JSON inside YAML. `spec.json` on this CRD is confirmed to be a
+  # plain string field (see the verification note at the top of this file),
+  # so this is exactly what the operator expects, not nested YAML.
+  json: |
+{{ $dashboardJson | indent 4 }}
+{{- end }}

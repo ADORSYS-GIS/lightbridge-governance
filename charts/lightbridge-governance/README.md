@@ -121,6 +121,47 @@ default) instead of continuing to point at a Service that no longer exists:
 helm template charts/lightbridge-governance --set copilotOtel.enabled=false
 ```
 
+## `grafanaDashboard`: a `GrafanaDashboard` CR, and what's unverified about it
+
+`grafanaDashboard.enabled` (default `true`) renders a `grafana.integreatly.org/v1beta1`
+`GrafanaDashboard` CR (`templates/grafanadashboard.yaml`) embedding
+`dashboards/copilot-connector.json` — the Grafana Operator's own resource for shipping a
+dashboard, matching ADR-0003's precedent (ai-helm ADR-0063's read-only Postgres
+`GrafanaDatasource`) rather than a sidecar-labelled ConfigMap.
+
+Two datasource UIDs (`grafanaDashboard.datasources.postgresUid`/`prometheusUid`) are
+substituted into the dashboard JSON's `__DS_POSTGRES__`/`__DS_PROMETHEUS__` placeholder
+tokens at `helm template` time — see that template's header comment for why this was
+chosen over the operator's own `spec.datasources` mapping field, and for the two distinct
+"wrong value" vs. "wrong token" failure modes. The template `fail`s the render (rather
+than shipping silently) if either contracted token, or anything shaped like an
+unrecognized `__DS_..._..__` token, survives substitution — both guards were verified by
+deliberately breaking the substitution and confirming the render fails for the reason
+predicted, then restoring it.
+
+Two things here are **not** verified against a live cluster:
+
+- **The `apiVersion`/`kind`/`spec.json` shape.** Confirmed via context7 (`/grafana/grafana-operator`)
+  against the operator's own docs and its `grafanadashboards` CRD directly — high confidence on the
+  schema, not confirmed against whichever operator version is actually installed here.
+- **`instanceSelector` (`dashboards: "grafana"` by default).** Must match the labels on the
+  deployed `Grafana` CR, which lives in ai-helm and which this chart cannot see. Wrong labels
+  don't error — the CR applies cleanly and the operator simply never selects it.
+- **`grafanaDashboard.datasources.prometheusUid` (`mimir` by default).** Not recorded anywhere
+  in this repo, unlike the Postgres UID (`governance`, pinned by ADR-0003). A wrong value doesn't
+  fail to render either — every Prometheus-backed panel silently shows "no data", indistinguishable
+  from a real outage.
+
+Toggle it off and the resource disappears cleanly:
+
+```bash
+helm template charts/lightbridge-governance --set grafanaDashboard.enabled=false
+```
+
+`dashboards/copilot-connector.json` in this chart is currently a **placeholder** (a minimal
+valid dashboard exercising both substitution tokens) written so this template has something
+real to render and verify against — it must be overwritten with the actual dashboard.
+
 ## `/metrics`, `/livez`, `/readyz` are real but `/metrics` is empty
 
 The API server's `/metrics` endpoint exists (added alongside this chart, since a
