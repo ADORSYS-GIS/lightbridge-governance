@@ -27,19 +27,61 @@
           "type": "grafana-postgresql-datasource",
           "uid": "__DS_POSTGRES__"
         },
-        "definition": "SELECT DISTINCT tenant_id FROM ingest_manifests ORDER BY tenant_id",
+        "definition": "SELECT DISTINCT tenant_id FROM (\n  SELECT tenant_id FROM ingest_manifests\n  UNION\n  SELECT tenant_id FROM copilot_seat_snapshots\n) all_tenants\nWHERE tenant_id <> ''\nORDER BY tenant_id",
         "hide": 0,
         "includeAll": false,
         "label": "Tenant",
         "multi": false,
         "name": "tenant_id",
         "options": [],
-        "query": "SELECT DISTINCT tenant_id FROM ingest_manifests ORDER BY tenant_id",
+        "query": "SELECT DISTINCT tenant_id FROM (\n  SELECT tenant_id FROM ingest_manifests\n  UNION\n  SELECT tenant_id FROM copilot_seat_snapshots\n) all_tenants\nWHERE tenant_id <> ''\nORDER BY tenant_id",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {
+          "text": "30",
+          "value": "30"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Idle threshold (days)",
+        "multi": false,
+        "name": "idle_threshold_days",
+        "options": [
+          {
+            "text": "7",
+            "value": "7",
+            "selected": false
+          },
+          {
+            "text": "14",
+            "value": "14",
+            "selected": false
+          },
+          {
+            "text": "30",
+            "value": "30",
+            "selected": true
+          },
+          {
+            "text": "60",
+            "value": "60",
+            "selected": false
+          },
+          {
+            "text": "90",
+            "value": "90",
+            "selected": false
+          }
+        ],
+        "query": "7,14,30,60,90",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
       }
     ]
   },
@@ -1043,7 +1085,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 59
       },
@@ -1072,18 +1114,530 @@
     },
     {
       "id": 20,
-      "type": "text",
-      "title": "Seat snapshots -- pending",
+      "type": "row",
+      "title": "Seat hygiene (Postgres -- ADR-0003, RFC-0001)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Never-used seats",
+      "description": "Seats on the latest snapshot day with last_activity_at IS NULL -- assigned but never touched. This is the licence you are paying for and nobody has used; NULL here is 'never used', deliberately not coalesced to a date or a zero. See the table below for names.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT COUNT(*) AS never_used_seats\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\n  AND last_activity_at IS NULL",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Idle seats (> $idle_threshold_days d)",
+      "description": "Seats used at some point (last_activity_at NOT NULL) but not within the last $idle_threshold_days days as of the latest snapshot day. Threshold is a dashboard variable, not hardcoded -- change it in the picker above.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT COUNT(*) AS idle_seats\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\n  AND last_activity_at IS NOT NULL\n  AND last_activity_at < snapshot_day - ('$idle_threshold_days days')::interval",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Seats assigned (latest snapshot)",
+      "description": "Total copilot_seat_snapshots rows for $tenant_id on the latest snapshot_day.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT COUNT(*) AS seats_assigned\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Pending cancellation seats",
+      "description": "seat_state = 'pending_cancellation' on the latest snapshot day -- derived by the connector from GitHub's pending_cancellation_date. GitHub exposes no other lifecycle field; a fully cancelled seat simply disappears from the listing rather than appearing as a third state.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT COUNT(*) AS pending_cancellation_seats\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\n  AND seat_state = 'pending_cancellation'",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "table",
+      "title": "Never-used seats -- who",
+      "description": "Latest snapshot day, last_activity_at IS NULL. days_assigned is NULL when seat_assigned_at itself is unknown (also NULL, not defaulted).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT\n  user_login,\n  seat_assigned_at,\n  (snapshot_day::date - seat_assigned_at::date) AS days_assigned\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\n  AND last_activity_at IS NULL\nORDER BY seat_assigned_at ASC NULLS FIRST",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "Idle seats -- who",
+      "description": "Latest snapshot day, used at some point but not within $idle_threshold_days days. last_activity_editor shows which tooling they last used.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 59
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
       },
       "options": {
-        "mode": "markdown",
-        "content": "**Seat ingestion is not implemented yet (known RFC-0001 gap).** `copilot_seat_snapshots` exists in the schema but has 0 rows in every environment today. Rather than ship a query panel against an empty table (which would look identical to a broken connector), this panel is a plain marker: there is nothing to query yet. Replace with real panels (seat_state breakdown, last_activity_at freshness) once a collector actually writes to this table."
-      }
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT\n  user_login,\n  last_activity_at,\n  last_activity_editor,\n  (snapshot_day::date - last_activity_at::date) AS days_idle\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\n  AND last_activity_at IS NOT NULL\n  AND last_activity_at < snapshot_day - ('$idle_threshold_days days')::interval\nORDER BY last_activity_at ASC",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "table",
+      "title": "Seats by state",
+      "description": "seat_state breakdown on the latest snapshot day -- only ever 'active' or 'pending_cancellation' (see the connector note above).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 84
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT\n  seat_state,\n  COUNT(*) AS seats\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\nGROUP BY seat_state\nORDER BY seat_state",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "table",
+      "title": "Editor breakdown",
+      "description": "last_activity_editor on the latest snapshot day, which tooling is actually in use. 'never used' is its own bucket (last_activity_editor IS NULL because last_activity_at IS NULL), not folded into any real editor's count.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 84
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT\n  COALESCE(last_activity_editor, 'never used') AS editor,\n  COUNT(*) AS seats\nFROM copilot_seat_snapshots\nWHERE tenant_id = '$tenant_id'\n  AND snapshot_day = (\n    SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n  )\nGROUP BY COALESCE(last_activity_editor, 'never used')\nORDER BY seats DESC",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "Cost per active user",
+      "description": "Latest copilot_org_dailys.net_cost_micro_usd for $tenant_id, divided by the count of seats with any recorded usage on the latest seat snapshot day. Integer micro-USD in storage (ADR-0008); the /1e6 happens only in this read-only SELECT's projection, for display -- a presentation conversion, not a stored float. Seat snapshots and org daily reports are independent ingests and are not guaranteed to land on the same day. NULL (not 0) when there are no active seats or no cost row yet.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "__DS_POSTGRES__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 84
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "__DS_POSTGRES__"
+          },
+          "rawSql": "SELECT\n  CASE\n    WHEN (\n      SELECT COUNT(*) FROM copilot_seat_snapshots\n      WHERE tenant_id = '$tenant_id'\n        AND snapshot_day = (\n          SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n        )\n        AND last_activity_at IS NOT NULL\n    ) = 0 THEN NULL\n    ELSE (\n      (SELECT net_cost_micro_usd FROM copilot_org_dailys\n       WHERE tenant_id = '$tenant_id'\n       ORDER BY report_day DESC LIMIT 1)::float8 / 1e6\n    ) / (\n      SELECT COUNT(*) FROM copilot_seat_snapshots\n      WHERE tenant_id = '$tenant_id'\n        AND snapshot_day = (\n          SELECT MAX(snapshot_day) FROM copilot_seat_snapshots WHERE tenant_id = '$tenant_id'\n        )\n        AND last_activity_at IS NOT NULL\n    )\n  END AS cost_per_active_user_usd",
+          "format": "table",
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

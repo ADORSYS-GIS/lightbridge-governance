@@ -44,8 +44,29 @@ global:
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
 copilot:
-  # The deployment's single tenant (ADR-0001). Set in the deployed values.
-  tenantId: ""
+  # The deployment's single tenant (ADR-0001). Lands in every row and every
+  # WHERE clause across every table.
+  #
+  # ⚠️ This was `""` and the deployment ran that way, ingesting real Copilot
+  # data stamped `tenant_id = ''`. Nothing complained: `env::var` returns
+  # Ok("") for a set-but-empty variable and clap counts a required arg as
+  # satisfied by an empty value, so all the "required" markers said present.
+  # Both binaries now REFUSE an empty value at startup rather than write data
+  # addressed to nobody -- so leaving this empty is a loud CrashLoopBackOff,
+  # not silent bad data.
+  #
+  # Defaulted to the org rather than left empty so a deployment that forgets
+  # to override still runs coherently. Override in ai-helm-values if this
+  # deployment's tenant should be named something else.
+  #
+  # ⚠️ CHANGING IT LATER IS NOT FREE. `high_water_mark` is itself
+  # tenant-scoped, so a new tenant has no manifests, reads as a cold start,
+  # and re-backfills the full 28-day window under the new id. That is the
+  # good news for the `''` rows already written -- they do not need
+  # hand-migrating, the next run repopulates everything under the real tenant
+  # -- but it does mean the old rows linger as orphans no scoped query will
+  # ever return. Decide the value once.
+  tenantId: adorsys-gis
   org: adorsys-gis
   s3:
     # Raw report archive: the shared Hetzner Object Storage bucket, same
