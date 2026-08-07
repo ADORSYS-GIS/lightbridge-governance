@@ -42,11 +42,14 @@ use crate::{
 
 /// Default hold-back size in bytes.
 ///
-/// Comfortably above our longest credential pattern (a GitHub token is at most
-/// `ghp_` + 255 characters) so no single entity can straddle the boundary
-/// forever, while keeping the worst-case output lag to a fraction of a typical
-/// completion.
-pub const DEFAULT_WINDOW: usize = 1024;
+/// Sized to exceed our longest [`Action::Block`] entity so no such entity can
+/// straddle the window boundary and have its safe prefix released to the
+/// client before detection fires. A 4 KB window accommodates a standard PKCS#8
+/// RSA 4096 PEM (~3,300 bytes) with margin; the next practical size is
+/// 8,192 bytes. A larger window means more memory held per concurrent stream
+/// and higher worst-case output lag (stream hangs for the fill time = window /
+/// token-arrival-rate), so prefer not to raise this further without need.
+pub const DEFAULT_WINDOW: usize = 4096;
 
 /// What the caller should do after feeding a chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]

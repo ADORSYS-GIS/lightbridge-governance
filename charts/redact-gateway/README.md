@@ -1,9 +1,12 @@
 # redact-gateway (chart)
 
-Renders the [`redact-gateway`](../../app/redact-gateway) front proxy: a `Deployment`,
-`Service`, `ServiceMonitor`, `ExternalSecret` for the hash salt, an internal-CA
-`Certificate` (cert-manager) for the upstream TLS connection, and a `CiliumNetworkPolicy`
-that states exactly what this proxy is allowed to reach.
+Renders the [`redact-gateway`](../../app/redact-gateway) front proxy's `Deployment` and
+`Service` through
+[`bjw-s/app-template`](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
+v4 (see `values.yaml`'s `app-template` key), plus a `ServiceMonitor`, `ExternalSecret` for
+the hash salt, an internal-CA `Certificate` (cert-manager) for the upstream TLS connection,
+and a `CiliumNetworkPolicy` that states exactly what this proxy is allowed to reach, as
+local templates (`templates/`).
 
 ## Values-repo-first
 
@@ -38,6 +41,12 @@ reads exactly like a crash loop rather than a network-policy gap.
 
 Same rule as the sibling chart: an optional ref lets a pod that beats ESO capture an empty
 salt and hash with it forever (the incident this rule is named after in `values.yaml`).
+
+The `REDACT_HASH_SALT` `secretKeyRef` under `app-template.controllers.main` in
+`values.yaml` omits `optional` rather than setting `optional: false`: app-template v4's own
+`values.schema.json` rejects an `optional` key on `secretKeyRef` outright. Omitting it is
+functionally identical, since Kubernetes defaults `optional` to `false` (required) when it's
+absent — see the sibling chart's README for the full explanation.
 
 ## Rendering locally
 

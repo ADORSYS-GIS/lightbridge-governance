@@ -7,3 +7,8 @@
 /config/tls
 *.pem
 .DS_Store
+
+# `helm dependency update|build` materializes chart dependencies here as
+# .tgz. Chart.lock is the committed source of truth; these are regenerated
+# by the helm-oci-publish CI action (helm dependency build) and locally.
+charts/*/charts/

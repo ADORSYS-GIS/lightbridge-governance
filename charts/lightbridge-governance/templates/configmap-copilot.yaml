@@ -1,0 +1,27 @@
+# copilot-sync's per-deployment values (TENANT_ID, GH_ORG, the S3 archive
+# target) rendered into a ConfigMap and wired via envFrom, rather than typed
+# directly into app-template.controllers.copilot-sync.containers.main.env in
+# values.yaml: Helm values files are never templated, so a literal typed
+# into that block freezes at whatever was written there regardless of a
+# deployed override -- a deployed `copilot.tenantId` would never reach the
+# CronJob. This mirrors the technique templates/configmap-otlp.yaml already
+# uses for OTEL_EXPORTER_OTLP_ENDPOINT, for the same reason.
+#
+# Unlike the OTLP ConfigMap, this one is unconditional: TENANT_ID has no safe
+# "off" state (an empty value is the deliberate fail-closed default -- the
+# collector's clap arg is required and errors immediately at startup, see
+# ai-helm-values' own comment on copilot.tenantId) and the S3 target/org are
+# the platform's real default endpoint, not a feature toggle like otlp.host.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-copilot
+  labels:
+    app: {{ .Values.name }}
+data:
+  TENANT_ID: {{ .Values.copilot.tenantId | quote }}
+  GH_ORG: {{ .Values.copilot.org | quote }}
+  AWS_ENDPOINT_URL: {{ .Values.copilot.s3.endpoint | quote }}
+  AWS_REGION: {{ .Values.copilot.s3.region | quote }}
+  AWS_FORCE_PATH_STYLE: {{ .Values.copilot.s3.forcePathStyle | quote }}
+  S3_BUCKET: {{ .Values.copilot.s3.bucket | quote }}

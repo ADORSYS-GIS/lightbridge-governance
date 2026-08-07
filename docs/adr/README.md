@@ -16,6 +16,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0007](./0007-api-owns-connector-metrics-no-cache-service.md) | The API derives connector metrics from the manifest table; no cache service | Accepted | 2026-07-31 |
 | [0008](./0008-money-is-integer-micro-usd.md) | Money is integer micro-USD, everywhere | Accepted | 2026-07-31 |
 | [0009](./0009-cratestack-only-rest-transport-cbor-payloads.md) | cratestack is the only persistence layer; REST transport, CBOR payloads | Accepted | 2026-07-31 |
+| [0010](./0010-bidirectional-scanning-request-and-response-paths.md) | Both request and response are scanned before they cross the trust boundary; incremental streaming for response path | Proposed | 2026-08-04 |
 
 ## Writing one
 

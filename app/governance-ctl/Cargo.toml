@@ -31,3 +31,23 @@ cratestack-codec-json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+
+[dev-dependencies]
+# This crate is `[[bin]]`-only (no `[lib]`), so `tests/*.rs` integration
+# tests cannot link against it -- unit tests live in each module's own
+# `#[cfg(test)] mod tests` instead (see `src/archive.rs`'s existing
+# precedent). `src/test_support.rs` is declared `#[cfg(test)]` in main.rs, so
+# this mock server is compiled only into test binaries and is unreachable
+# from any production build (AGENTS.md: "mocks must be unreachable from a
+# production path"). axum is already a pinned workspace dependency
+# (cratestack-axum pulls it in), so this adds no new crate to the supply
+# chain -- same precedent as governance-copilot's tests/support/mock_github.rs.
+axum.workspace = true
+serde_json.workspace = true

@@ -2,11 +2,28 @@
 //!
 //! There is deliberately NO separate backfill Job: a one-shot k8s Job is immutable
 //! and re-running it means deleting the object out-of-band, which ArgoCD selfHeal
-//! fights. `sync` reads the high-water mark from the DB and backfills up to 28 days
-//! when it is behind -- which also gives late-report recovery for free (ADR-0006).
+//! fights. `sync` always re-fetches a trailing lookback window (RFC-0001: D-1,
+//! D-2, D-3) and separately fills any gap after the high-water mark, bounded so a
+//! cold start cannot walk back forever (`sync::backfill_window`) -- which also
+//! gives late-report recovery for free (ADR-0006).
+//!
+//! `Command::Sync` exits non-zero when the computed window was non-empty but
+//! EVERY day in it failed (`covered == 0`) -- that is a totally broken run (dead
+//! credential, GitHub unreachable), and the CronJob's `backoffLimit`/alerting
+//! must engage rather than silently exiting 0 (pre-go-live review, BLOCKER 1). A
+//! partial failure (some days ok, some not) still exits 0: it is logged loudly,
+//! counted, and the failed days are re-attempted by the next run's trailing
+//! window (BLOCKER 2) -- failing the whole job for a partial failure would only
+//! be noise.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+mod archive;
+mod metrics;
+mod sync;
+#[cfg(test)]
+mod test_support;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -26,7 +43,8 @@ struct Args {
 /// Subcommands. One image, several verbs.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Ingest the most recent days, backfilling to the high-water mark if behind.
+    /// Ingest the trailing lookback window, plus any gap after the
+    /// high-water mark if behind (see `sync::backfill_window`).
     Sync,
     /// Ingest one specific report day (YYYY-MM-DD). Idempotent.
     SyncDay {
@@ -42,6 +60,9 @@ enum Command {
     },
     /// Reconcile stored row counts against the manifests and report drift.
     Verify,
+    /// Report per-provider identity attribution (attributed/unattributed/
+    /// mismatched) and fail if any provider has unattributed executions.
+    VerifyAttribution,
     /// Sync the identity directory (Keycloak) into `identity_maps`.
     IdentitySync {
         /// Tenant whose identity maps are synced (ADR-0001).
@@ -81,9 +102,49 @@ async fn main() -> Result<()> {
                 tracing::info!(applied = ?applied, "migrations applied");
             }
         }
-        // TODO(RFC-0001): dispatch once the connector lands.
-        Command::Sync | Command::SyncDay { .. } | Command::Replay { .. } | Command::Status => {}
+        Command::Sync => {
+            let cfg = sync::Config::from_env().await?;
+            let client = governance_copilot::GithubClient::for_github()?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let result = sync::run_backfill(&client, &pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_run_metrics(
+                    &endpoint,
+                    "sync",
+                    &result.outcomes,
+                    result.covered as u64,
+                )
+                .await;
+            }
+            // BLOCKER 1: a non-empty window where every day failed must exit
+            // non-zero so the CronJob's backoffLimit/alerting engage instead
+            // of a silently-successful process. See the module doc comment
+            // above and `BackfillOutcome::exit_result`'s own doc comment.
+            result.exit_result()?;
+        }
+        Command::SyncDay { day } => {
+            let cfg = sync::Config::from_env().await?;
+            let client = governance_copilot::GithubClient::for_github()?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_run_metrics(&endpoint, "sync_day", &outcomes, 1).await;
+            }
+        }
+        Command::Replay { from, to } => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            sync::run_replay(&pool, &cfg, &from, &to).await?;
+        }
         Command::Verify => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let mismatch = sync::run_verify(&pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_verify_metrics(&endpoint, mismatch).await;
+            }
+        }
+        Command::VerifyAttribution => {
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
             let tenant = resolve_single_tenant(&pool).await?;
             let report = governance_core::identity::verify_attribution(&pool, &tenant).await?;
@@ -93,11 +154,11 @@ async fn main() -> Result<()> {
                     attributed = provider.attributed,
                     unattributed = provider.unattributed,
                     mismatched = provider.mismatched,
-                    "verify: attribution"
+                    "verify-attribution: attribution"
                 );
             }
             if report.has_unattributed() {
-                anyhow::bail!("verify: unattributed executions present; attribution is incomplete");
+                anyhow::bail!("verify-attribution: unattributed executions present; attribution is incomplete");
             }
         }
         Command::IdentitySync {
@@ -117,6 +178,14 @@ async fn main() -> Result<()> {
                 unchanged = report.unchanged,
                 "identity-sync: complete"
             );
+        }
+        Command::Status => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let status = sync::run_status(&pool, &cfg).await?;
+            if let Some(endpoint) = metrics::endpoint_from_env() {
+                metrics::push_status_metrics(&endpoint, status).await;
+            }
         }
     }
     Ok(())

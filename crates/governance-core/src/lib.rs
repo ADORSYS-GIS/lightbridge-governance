@@ -10,6 +10,7 @@
 //!
 //! Money is ALWAYS integer micro-USD (ADR-0008). There is no float in this crate.
 
+pub mod connector_metrics;
 pub mod credential;
 pub mod error;
 pub mod identity;

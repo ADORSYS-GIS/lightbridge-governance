@@ -56,10 +56,13 @@ recovery and first-run backfill are then the same code path.
 
 ### Storage
 
-- **S3 raw:** `s3://ssegning-k8s-state/lightbridge-governance/raw/tenant=<t>/org=<o>/day=<d>/<report>.ndjson`
-  plus a manifest object. Deterministic keys, overwrite-safe.
-- **Postgres:** `copilot_org_daily`, `copilot_user_daily`, `copilot_repo_daily`,
-  `copilot_user_teams`, `copilot_seat_snapshot`, upserted `ON CONFLICT DO UPDATE`.
+- **S3 raw:** `s3://ssegning-k8s-state/copilot-governance/raw/org=<o>/day=<d>/<report>.ndjson`
+  (the bucket and `copilot-governance/` prefix per the ai-helm plan). Deterministic keys,
+  overwrite-safe; the archive is for replay only, not a query layer.
+- **Postgres:** `copilot_org_dailys`, `copilot_user_dailys`, `copilot_repo_dailys`,
+  `copilot_user_teams`, `copilot_seat_snapshots`, upserted `ON CONFLICT DO UPDATE`. Coverage
+  is recorded in `ingest_manifests` (one row per day + report), which drives the
+  high-water-mark backfill and `governance-ctl verify`.
 
 ### Identity
 
@@ -77,26 +80,26 @@ ADR-0063 datasource). **Never match on display name.**
 
 ## Risks and unknowns
 
-**⚠️ The access model has three permissions and a policy toggle, not one permission.**
-The report endpoints return 400/403 unless the App holds Copilot metrics, Copilot seat
-management **and Members** (all read) -- and then still 403 until an org owner enables the
-organization's **"Copilot metrics API access policy"**, which is a setting, not a
-permission. A correctly installed App with every box ticked is indistinguishable from a
-misconfigured one until that is on.
+**✅ Resolved by spike-0007: two permissions and a policy toggle.** The report endpoints
+return 200 for an App holding Copilot metrics and Copilot seat management (both read) plus
+`Metadata: Read` -- **`Members: read` is NOT required**, despite this RFC's earlier draft
+and the vendor docs (the A/B comparison in spike-0007 removed `Members: read` and the
+endpoints kept returning 200). The org's **"Copilot metrics API access policy"** must still
+be enabled: it is a setting, not a permission, and until it is on, a correctly installed
+App is indistinguishable from a misconfigured one (both 403).
 
-**⚠️ App installation tokens are not documented as supported on these endpoints.** GitHub's
-docs describe the fine-grained permission and the PAT scope but do not state that
-installation tokens work. Community reports say they do at org scope with the three
-permissions above; enterprise scope definitively rejects them. **Spike this before writing
-the connector** -- a throwaway App and one curl. Fallback: a fine-grained PAT in
-`ssegning-aws`, which is structurally cheap because the credential layer resolves to a
-bearer token either way.
+**✅ Resolved by spike-0007: App installation tokens work on these endpoints.** The live run
+minted an installation token from a GitHub App and received 200 from
+`/orgs/{org}/copilot/metrics/reports/...` plus the signed-download host
+`copilot-reports.github.com` (verbatim -- that host is what the Cilium `toFQDNs` egress
+allowlist pins, see #12). A classic `read:org` PAT received 403 "requires admin, or
+relevant organization role access", so the App-token path is the one in production.
 
 ## Open questions
 
-1. Does the installation-token spike pass? (Blocks the choice of credential, nothing else.)
-2. Which host serves the signed download URLs? It determines the `toFQDNs` egress allowlist
-   and can only be answered by looking at a real response.
+1. ~~Does the installation-token spike pass?~~ **Answered by spike-0007: yes** -- see Risks above.
+2. ~~Which host serves the signed download URLs?~~ **Answered by spike-0007:
+   `copilot-reports.github.com`**, pinned in the Cilium egress allowlist.
 3. Do we ingest `organization-28-day/latest` and `users-28-day/latest` at all, given the
    1-day reports plus backfill already produce the same window?
 

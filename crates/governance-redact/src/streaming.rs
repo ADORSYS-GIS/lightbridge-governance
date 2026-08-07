@@ -1,36 +1,44 @@
 //! Redacting a Server-Sent Events completion stream.
 //!
-//! Streaming is the hard case, and on this platform it is also the *normal*
-//! one: opencode, Kilo-Code and LibreChat all stream by default, so a redactor
-//! that only handles buffered responses cannot go in front of real traffic.
+//! This module is the **buffered SSE scanning path**. It scans an *already
+//! complete* SSE stream — the whole upstream response is buffered in memory
+//! before any byte is forwarded. See the crate-level docs ([`crate`]) for the
+//! full two-path architecture (buffered request, incremental streaming response)
+//! and the safety vs. latency trade-off that decides which path is used where.
 //!
-//! # Buffered, not incremental
+//! # Why buffered SSE
 //!
-//! This module implements **buffered** redaction: consume the whole upstream
-//! stream, coalesce the assistant text, scan it once, then re-emit. That gives
-//! a property incremental redaction cannot — detection sees the complete text,
-//! so **no entity can hide in a token split**. A credential streamed as
-//! `ghp_` + `abc…` is one string by the time we look at it.
+//! The public entry point here ([`scan_sse`]) is the conservative default for the
+//! response path. It is the safe counterpart to the buffered request scan
+//! ([`crate::scan_request`]): because the entire stream is present before any byte is
+//! forwarded, no entity can hide in a token split. A credential streamed as
+//! `ghp_` + `ABC…` across chunks is one string by the time [`scan_sse`] looks
+//! at it.
 //!
-//! The cost is real and worth stating: time-to-first-token becomes
-//! time-to-*last*-token, because nothing is emitted until the upstream stream
-//! finishes. An incremental mode with a hold-back window trades that latency
-//! back for a weaker guarantee (entities longer than the window can still
-//! straddle it). Buffered is the safe default; incremental is a later, opt-in
-//! addition.
+//! The cost: time-to-first-token = time-to-last-token. A 20-second completion
+//! begins returning at second 20, not second 0. The incremental path
+//! ([`crate::sse::SseHoldBack`]) trades that latency back for bounded memory
+//! by scanning chunk-by-chunk with a hold-back window. [`scan_sse`] is the safe
+//! default; [`crate::sse::SseHoldBack`] is the production streaming target.
 //!
 //! # What is preserved
 //!
 //! Chunk **sequence** and every field on every chunk. The only values rewritten
-//! are `choices[i].delta.content`. Role announcements, `finish_reason`,
-//! `usage`, `system_fingerprint` and unknown provider extensions pass through
+//! are `choices[i].delta.content` and `choices[i].delta.tool_calls[j].function.arguments`
+//! — tool-call arguments are model-authored JSON strings that routinely echo
+//! user input straight back (see [`crate::payload::scan_message`]'s buffered
+//! rule, which this mirrors), so they are as much a leak surface as content
+//! and get the identical extraction and write-back treatment, per choice
+//! *and* per tool-call index. Role announcements, `finish_reason`, `usage`,
+//! `system_fingerprint` and unknown provider extensions pass through
 //! untouched, because a client parsing them must still find what it expects.
 //!
 //! Because the text is coalesced for detection and then written back, the
-//! redacted string lands on the **first** chunk that carried text for a choice
-//! and later fragments become empty strings. Clients therefore receive fewer
-//! non-empty content deltas than the provider sent — inherent to buffering, and
-//! invisible to any client that concatenates deltas (which is all of them).
+//! redacted string lands on the **first** chunk that carried text for a given
+//! choice/field and later fragments become empty strings. Clients therefore
+//! receive fewer non-empty deltas than the provider sent — inherent to
+//! buffering, and invisible to any client that concatenates deltas (which is
+//! all of them).
 
 use std::collections::HashMap;
 
@@ -40,6 +48,27 @@ use crate::{engine::Engine, error::Result, payload::ScanReport};
 
 /// The sentinel terminating an OpenAI SSE stream.
 pub(crate) const DONE: &str = "[DONE]";
+
+/// Which streamed field within one choice a piece of extracted text came
+/// from — `delta.content`, or one indexed tool call's
+/// `function.arguments`. Tool calls stream fragmented across chunks exactly
+/// like `content` does, so each tool-call index needs its own accumulator,
+/// the same way each choice index does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ContentField {
+    /// `choices[i].delta.content`
+    Content,
+    /// `choices[i].delta.tool_calls[j].function.arguments`, keyed by the
+    /// tool call's own `index` field (not `j`, the array position — a
+    /// provider is free to omit earlier indices on a later chunk).
+    ToolCallArguments(u64),
+}
+
+/// A choice index plus which field within it. The unit of accumulation for
+/// both the buffered path ([`scan_sse`]) and the incremental one
+/// ([`crate::sse::SseHoldBack`]) — content and every tool call's arguments
+/// are independent streams that must not be coalesced together.
+pub(crate) type ContentKey = (u64, ContentField);
 
 /// One parsed SSE line: either a JSON data payload we may rewrite, or a line
 /// we pass through verbatim.
@@ -53,8 +82,8 @@ enum Line {
 }
 
 /// One line classified the way [`scan_sse`] and [`crate::sse::SseHoldBack`]
-/// both need to: a parsed `data:` JSON payload, or raw text to pass through
-/// unexamined.
+/// both need to: a parsed `data:` JSON payload, raw text to pass through
+/// unexamined, or a `data:` payload that failed to parse as JSON.
 ///
 /// Shared so the two hold-back strategies agree on what counts as
 /// redactable content — a divergence here would mean the buffered and
@@ -62,17 +91,30 @@ enum Line {
 pub(crate) enum ClassifiedLine {
     Data(Value),
     Passthrough,
+    /// A `data:` line whose payload is not valid JSON. **Not** the same as
+    /// [`Self::Passthrough`]: "failed to parse" is not "safe to release
+    /// unexamined" — a missing or unparseable attribute is "unknown", and
+    /// unknown routes to the strictest branch (see the crate's fail-closed
+    /// house rule). The caller must scan the raw line as opaque text before
+    /// releasing it, exactly as it would scan `content`. A malformed frame
+    /// is not a coincidence a hostile or misbehaving upstream cannot
+    /// engineer on purpose to smuggle a credential past a parser that only
+    /// ever looks inside successfully-parsed JSON.
+    Opaque,
 }
 
 /// Classifies one raw SSE line (including its trailing newline, or none at
-/// end-of-stream). `[DONE]`, non-JSON data, and every non-`data:` line pass
-/// through untouched.
+/// end-of-stream). `[DONE]` and every non-`data:` line (blank lines,
+/// `event:`, `id:`, `retry:`, comments) pass through untouched. A `data:`
+/// line whose payload fails to parse as JSON is [`ClassifiedLine::Opaque`],
+/// never [`ClassifiedLine::Passthrough`] — see that variant's doc for why.
 pub(crate) fn classify_line(raw: &str) -> ClassifiedLine {
     let trimmed = raw.trim_end_matches(['\n', '\r']);
     let payload = trimmed.strip_prefix("data:").map(str::trim);
     match payload {
-        Some(p) if p != DONE && !p.is_empty() => serde_json::from_str::<Value>(p)
-            .map_or(ClassifiedLine::Passthrough, ClassifiedLine::Data),
+        Some(p) if p != DONE && !p.is_empty() => {
+            serde_json::from_str::<Value>(p).map_or(ClassifiedLine::Opaque, ClassifiedLine::Data)
+        }
         _ => ClassifiedLine::Passthrough,
     }
 }
@@ -100,6 +142,7 @@ pub struct StreamOutcome {
 pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
     let mut chunks: Vec<Value> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
+    let mut report = ScanReport::default();
 
     // Split on '\n' and keep every line, so the re-emitted body has the same
     // shape as the original. SSE frames are separated by blank lines, which
@@ -110,37 +153,48 @@ pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
                 chunks.push(parsed);
                 lines.push(Line::Data(chunks.len().saturating_sub(1)));
             }
-            // Not JSON we understand, or not a `data:` line at all. Pass it
-            // through rather than dropping it — a provider extension is not
-            // our business.
+            // Not a `data:` line at all (blank, `event:`, `id:`, `retry:`,
+            // `data: [DONE]`). Pass it through rather than dropping it — a
+            // provider extension is not our business.
             ClassifiedLine::Passthrough => lines.push(Line::Passthrough(raw.to_string())),
+            // A `data:` payload that failed to parse as JSON. Unlike
+            // `Passthrough`, this is scanned as opaque text before release —
+            // see `ClassifiedLine::Opaque`'s doc for why "did not parse" must
+            // not mean "did not look".
+            ClassifiedLine::Opaque => {
+                let rewritten = match report.merge_verdict(engine.scan(raw)?) {
+                    Some(new) => new,
+                    None => raw.to_string(),
+                };
+                lines.push(Line::Passthrough(rewritten));
+            }
         }
     }
 
-    // Coalesce the assistant text per choice index. Two streams interleaved
-    // over `n > 1` must not have their text concatenated together, or the
-    // redacted output would be written back to the wrong choice.
-    let mut coalesced: HashMap<u64, String> = HashMap::new();
+    // Coalesce the assistant text per choice/field. Two streams interleaved
+    // over `n > 1`, or a choice's `content` and its tool calls' arguments,
+    // must not have their text concatenated together, or the redacted
+    // output would be written back to the wrong slot.
+    let mut coalesced: HashMap<ContentKey, String> = HashMap::new();
     for chunk in &chunks {
-        for (index, content) in delta_contents(chunk) {
-            coalesced.entry(index).or_default().push_str(&content);
+        for (key, content) in delta_contents(chunk) {
+            coalesced.entry(key).or_default().push_str(&content);
         }
     }
 
-    let mut report = ScanReport::default();
-    let mut redacted: HashMap<u64, String> = HashMap::new();
+    let mut redacted: HashMap<ContentKey, String> = HashMap::new();
 
-    for (index, text) in &coalesced {
+    for (key, text) in &coalesced {
         if text.is_empty() {
             continue;
         }
         match report.merge_verdict(engine.scan(text)?) {
             Some(new) => {
-                redacted.insert(*index, new);
+                redacted.insert(*key, new);
             }
             None => {
                 // Clean, or blocked. Either way nothing to write back for this
-                // choice; a block is detected via the report below.
+                // slot; a block is detected via the report below.
             }
         }
     }
@@ -152,9 +206,9 @@ pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
         });
     }
 
-    // Write the redacted text back onto the first chunk that carried content
-    // for each choice, and blank the rest.
-    let mut written: HashMap<u64, bool> = HashMap::new();
+    // Write the redacted text back onto the first chunk that carried each
+    // choice/field, and blank the rest.
+    let mut written: HashMap<ContentKey, bool> = HashMap::new();
     for chunk in &mut chunks {
         rewrite_deltas(chunk, &redacted, &mut written);
     }
@@ -178,69 +232,120 @@ pub fn scan_sse(engine: &Engine, body: &str) -> Result<StreamOutcome> {
     Ok(StreamOutcome { body: out, report })
 }
 
-/// Extracts `(choice_index, content)` pairs from one chunk.
+/// Extracts `(ContentKey, text)` pairs from one chunk: each choice's
+/// `content`, plus each of its tool calls' `function.arguments`.
 ///
 /// `pub(crate)`: [`crate::sse::SseHoldBack`] needs the identical extraction
 /// rule the buffered path uses, so the two never disagree about what counts
 /// as redactable content in a chunk.
-pub(crate) fn delta_contents(chunk: &Value) -> Vec<(u64, String)> {
+pub(crate) fn delta_contents(chunk: &Value) -> Vec<(ContentKey, String)> {
     let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
         return Vec::new();
     };
-    choices
-        .iter()
-        .filter_map(|choice| {
-            let index = choice.get("index").and_then(Value::as_u64).unwrap_or(0);
-            let content = choice
-                .get("delta")
-                .and_then(|d| d.get("content"))
-                .and_then(Value::as_str)?;
-            Some((index, content.to_string()))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for choice in choices {
+        let index = choice.get("index").and_then(Value::as_u64).unwrap_or(0);
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
+
+        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+            out.push(((index, ContentField::Content), content.to_string()));
+        }
+
+        // Tool-call arguments are model-authored JSON strings that routinely
+        // echo user input straight back — see the module doc and
+        // `crate::payload::scan_message`'s identical buffered-path rule.
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in tool_calls {
+                let call_index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let Some(args) = call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                out.push((
+                    (index, ContentField::ToolCallArguments(call_index)),
+                    args.to_string(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Locates the mutable JSON slot one [`ContentField`] refers to within a
+/// single choice object (`choice`, not `chunk` — the caller has already
+/// found the matching choice by index).
+fn field_slot_mut(choice: &mut Value, field: ContentField) -> Option<&mut Value> {
+    match field {
+        ContentField::Content => choice.get_mut("delta")?.get_mut("content"),
+        ContentField::ToolCallArguments(call_index) => {
+            let calls = choice
+                .get_mut("delta")?
+                .get_mut("tool_calls")?
+                .as_array_mut()?;
+            let call = calls
+                .iter_mut()
+                .find(|c| c.get("index").and_then(Value::as_u64).unwrap_or(0) == call_index)?;
+            call.get_mut("function")?.get_mut("arguments")
+        }
+    }
 }
 
 /// Writes redacted text back onto a chunk's deltas.
 ///
-/// The first chunk carrying content for a choice receives the whole redacted
-/// string; subsequent ones are blanked, so concatenating deltas reproduces the
-/// redacted text exactly once.
+/// The first chunk carrying a given choice/field receives the whole redacted
+/// string; subsequent ones are blanked, so concatenating deltas reproduces
+/// the redacted text exactly once.
 fn rewrite_deltas(
     chunk: &mut Value,
-    redacted: &HashMap<u64, String>,
-    written: &mut HashMap<u64, bool>,
+    redacted: &HashMap<ContentKey, String>,
+    written: &mut HashMap<ContentKey, bool>,
 ) {
     let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) else {
         return;
     };
     for choice in choices.iter_mut() {
         let index = choice.get("index").and_then(Value::as_u64).unwrap_or(0);
-        let Some(replacement) = redacted.get(&index) else {
-            continue;
-        };
-        let Some(slot) = choice.get_mut("delta").and_then(|d| d.get_mut("content")) else {
-            continue;
-        };
-        if !slot.is_string() {
-            continue;
-        }
-        if written.get(&index).copied().unwrap_or(false) {
-            *slot = Value::String(String::new());
-        } else {
-            *slot = Value::String(replacement.clone());
-            written.insert(index, true);
+        // A chunk may carry both `content` and one or more tool calls, so
+        // every key belonging to this choice is a candidate, not just one.
+        let keys: Vec<ContentKey> = redacted
+            .keys()
+            .copied()
+            .filter(|(choice_index, _)| *choice_index == index)
+            .collect();
+        for key in keys {
+            let Some(replacement) = redacted.get(&key) else {
+                continue;
+            };
+            let Some(slot) = field_slot_mut(choice, key.1) else {
+                continue;
+            };
+            if !slot.is_string() {
+                continue;
+            }
+            if written.get(&key).copied().unwrap_or(false) {
+                *slot = Value::String(String::new());
+            } else {
+                *slot = Value::String(replacement.clone());
+                written.insert(key, true);
+            }
         }
     }
 }
 
-/// Sets the `delta.content` string for one choice within a chunk, if that
-/// slot exists and is a string. Returns whether it did anything.
+/// Sets the text at one [`ContentKey`] slot within a chunk, if that slot
+/// exists and is a string. Returns whether it did anything.
 ///
 /// `pub(crate)`: unlike [`rewrite_deltas`], which resolves every choice
 /// across a whole buffered stream in one pass, [`crate::sse::SseHoldBack`]
-/// resolves one choice's contribution to one frame at a time, as the
+/// resolves one choice/field's contribution to one frame at a time, as the
 /// incremental redactor decides each frame is safe to release.
-pub(crate) fn set_delta_content(chunk: &mut Value, index: u64, text: &str) -> bool {
+pub(crate) fn set_delta_content(chunk: &mut Value, key: ContentKey, text: &str) -> bool {
+    let (index, field) = key;
     let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) else {
         return false;
     };
@@ -249,7 +354,7 @@ pub(crate) fn set_delta_content(chunk: &mut Value, index: u64, text: &str) -> bo
         if choice_index != index {
             continue;
         }
-        let Some(slot) = choice.get_mut("delta").and_then(|d| d.get_mut("content")) else {
+        let Some(slot) = field_slot_mut(choice, field) else {
             return false;
         };
         if !slot.is_string() {
@@ -451,5 +556,83 @@ mod tests {
             1,
             "content duplicated on redistribution: {text}"
         );
+    }
+
+    // ── Tool-call arguments: the P0 this module used to miss entirely. ─────
+    // `delta_contents` extracted only `delta.content`; `delta.tool_calls[].
+    // function.arguments` was invisible to the scanner, so a credential
+    // riding in a tool call rode straight through as "no redactable
+    // content". These tests would fail against that code for exactly that
+    // reason: `report.is_blocked()` false and the secret present verbatim
+    // in `out.body`.
+
+    #[test]
+    fn tool_call_arguments_with_credential_block_the_stream() {
+        let e = engine();
+        let body = sse(&[
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}]}}]}"#,
+        ]);
+        let out = scan_sse(&e, &body).expect("scan");
+        assert!(
+            out.report.is_blocked(),
+            "credential in tool_call arguments must block: {:?}",
+            out.report
+        );
+        assert!(out.body.is_empty(), "blocked stream must emit nothing");
+    }
+
+    #[test]
+    fn tool_call_arguments_pii_is_redacted_not_leaked() {
+        let e = engine();
+        let body = sse(&[
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"to\":\"jane@example.com\"}"}}]}}]}"#,
+        ]);
+        let out = scan_sse(&e, &body).expect("scan");
+        assert_eq!(out.report.redactions, 1);
+        assert!(
+            !out.body.contains("jane@example.com"),
+            "tool_call argument leaked: {}",
+            out.body
+        );
+    }
+
+    #[test]
+    fn tool_call_arguments_and_content_are_independent_streams() {
+        // Redacting one must not touch the other -- they are different
+        // ContentField keys under the same choice index.
+        let e = engine();
+        let body = sse(&[
+            r#"{"choices":[{"index":0,"delta":{"content":"all fine here","tool_calls":[{"index":0,"function":{"arguments":"mail jane@example.com"}}]}}]}"#,
+        ]);
+        let out = scan_sse(&e, &body).expect("scan");
+        assert!(
+            out.body.contains("all fine here"),
+            "clean content wrongly altered: {}",
+            out.body
+        );
+        assert!(
+            !out.body.contains("jane@example.com"),
+            "tool_call argument leaked: {}",
+            out.body
+        );
+    }
+
+    // ── Malformed `data:` payloads: must be scanned, never released
+    //    unexamined. A parse failure is "unknown", and unknown routes to
+    //    the strictest branch. ─────────────────────────────────────────────
+
+    #[test]
+    fn malformed_data_line_with_secret_is_not_leaked() {
+        let e = engine();
+        // Missing the final closing brace: invalid JSON, but the credential
+        // inside is plainly there for a text scan to find.
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"}}]\n\ndata: [DONE]\n\n";
+        let out = scan_sse(&e, body).expect("scan");
+        assert!(
+            out.report.is_blocked(),
+            "credential in malformed data frame must block: {:?}",
+            out.report
+        );
+        assert!(out.body.is_empty(), "blocked stream must emit nothing");
     }
 }

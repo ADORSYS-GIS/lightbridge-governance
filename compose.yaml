@@ -10,15 +10,47 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # postgres:18+ manages a major-version-specific subdirectory itself and
-      # expects the volume mounted at the parent -- mounting straight at
-      # .../data (the pre-18 convention) makes the container exit 1 on start.
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  redact-gateway:
+    profiles: ["redact"]
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.redact-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      # Any real OpenAI-compatible provider — set in `.env`, not here.
+      # See `.env.example` for the providers this has been checked against.
+      PROVIDER_BASE_URL: ${PROVIDER_BASE_URL:?set PROVIDER_BASE_URL in .env, see .env.example}
+      REDACT_PROFILE: coding-assistant
+      REDACT_HASH_SALT: ${REDACT_HASH_SALT:-dev-salt-change-in-prod}
+      RUST_LOG: info
+    # No in-container healthcheck: the runtime image is distroless (no shell,
+    # no curl -- see .docker/Dockerfile.redact-gateway), so CMD-SHELL always
+    # fails with "exec: /bin/sh: no such file or directory" even when the
+    # process is healthy. Verify from the host instead: `just redact-test`.
+
+  redact-extproc:
+    profiles: ["redact"]
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.redact-extproc
+    ports:
+      - "9500:9500"
+      - "9501:9501"
+    environment:
+      LISTEN_ADDR: 0.0.0.0:9500
+      REDACT_PROFILE: coding-assistant
+      REDACT_HASH_SALT: ${REDACT_HASH_SALT:-dev-salt-change-in-prod}
+      RUST_LOG: info
+    # No in-container healthcheck -- same distroless constraint as
+    # redact-gateway above. Verify from the host: `just redact-test`.
 
 volumes:
   pgdata:

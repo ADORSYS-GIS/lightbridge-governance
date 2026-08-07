@@ -13,6 +13,18 @@
 //! trade-off is that a provider extension carrying user text in a field we do
 //! not know about is missed; that is the safer direction to be wrong in, and it
 //! is why [`ScanReport::scanned_fields`] is reported rather than assumed.
+//!
+//! # Role in the architecture
+//!
+//! This module is the *buffered* scanning path. The request body (and non-
+//! streaming response body) is always available in full before any byte is
+//! forwarded, so one synchronous walk is sufficient. The buffer is safe by
+//! nature: because the entire body is present before any action is taken, no
+//! entity can hide across a field boundary or a chunk boundary.
+//!
+//! See the crate-level docs ([`crate`]) for the full two-path architecture
+//! (buffered request, incremental streaming response) and why each path has
+//! the shape it does.
 
 use serde_json::Value;
 
