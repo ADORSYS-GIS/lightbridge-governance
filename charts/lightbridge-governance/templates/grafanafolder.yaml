@@ -1,0 +1,71 @@
+{{- if and .Values.grafanaDashboard.enabled .Values.grafanaDashboard.folder.enabled }}
+# A dedicated Grafana folder for the Copilot dashboards.
+#
+# Mirrors the per-domain folders already on the cluster (ai-gateway,
+# applications, collectors, lightbridge, model-serving, my-usage, platform) --
+# all of them in `observability`, all reconciling. See
+# values.yaml's grafanaDashboard.namespace for the evidence that Grafana lives
+# there, and why these CRs are created there rather than in the release
+# namespace.
+#
+# Field notes, read from the operator's v1beta1 API docs rather than recalled:
+#   - `spec.instanceSelector` is REQUIRED on GrafanaFolder, with the same
+#     same-namespace-only semantics GrafanaDashboard has.
+#   - `spec.title` is the display name; when omitted it falls back to
+#     `metadata.name`, which would put a hyphenated k8s slug in Grafana's
+#     folder list.
+#   - Only one of `spec.parentFolderRef` / `spec.parentFolderUID` may be set.
+#     The Copilot folder below uses `parentFolderRef` to nest under the
+#     `Governance` parent. To re-parent it elsewhere (e.g. under the existing
+#     `lightbridge` folder), point grafanaDashboard.folder.parent.name at that
+#     CR and set .create=false -- any folder in this namespace can be a parent.
+#
+# ⚠️ `spec.instanceSelector` is IMMUTABLE. Correcting a wrong selector means
+# DELETING and recreating this CR, not patching it -- `kubectl apply` of a
+# changed selector is rejected. Same for `spec.uid` (not set here) and for
+# disabling `allowCrossNamespaceImport`.
+{{- if .Values.grafanaDashboard.folder.parent.create }}
+# The `Governance` parent, so governance dashboards group under one roof as
+# this platform grows past the Copilot connector.
+#
+# Created here because no such folder exists on the cluster yet (the deployed
+# set is ai-gateway, applications, collectors, lightbridge, model-serving,
+# my-usage, platform). If another chart ever starts owning it, set
+# grafanaDashboard.folder.parent.create=false and keep only the reference --
+# two releases both creating this same CR name in this namespace will fight
+# over it under ArgoCD.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.grafanaDashboard.folder.parent.name }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.folder.parent.title | quote }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+---
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.name }}-{{ .Values.grafanaDashboard.folder.nameSuffix }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.folder.title | quote }}
+  # Nests this folder under `Governance`. A ref rather than a UID: the parent's
+  # UID only exists once the operator has reconciled it, so referencing by
+  # name is what lets both folders be applied in a single pass.
+  parentFolderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+{{- end }}
