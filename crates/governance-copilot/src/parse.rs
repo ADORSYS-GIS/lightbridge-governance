@@ -9,13 +9,14 @@
 //! micro-USD here, once, using integer arithmetic (including the rounding) so
 //! no float ever lands in a stored monetary value (ADR-0008).
 
+use chrono::{DateTime, Utc};
 use governance_core::MicroUsd;
 
 use crate::{
     error::{CopilotError, Result},
     model::{
-        OrgDaily, OrgReportRow, RepoDaily, RepoReportRow, UserDaily, UserReportRow, UserTeam,
-        UserTeamRow,
+        OrgDaily, OrgReportRow, RepoDaily, RepoReportRow, SeatSnapshot, SeatsPage, UserDaily,
+        UserReportRow, UserTeam, UserTeamRow,
     },
 };
 
@@ -150,6 +151,70 @@ pub fn parse_user_team(bytes: &[u8], report: &str, day: &str) -> Result<Vec<User
     Ok(out)
 }
 
+/// GitHub's seats endpoint has no explicit lifecycle field: a seat only
+/// appears in the listing while it is assigned, so every listed seat is, by
+/// definition, currently active. The one forward-looking signal it does
+/// carry is `pending_cancellation_date`: non-null means the seat is
+/// assigned today but will not renew at the next billing cycle. We surface
+/// that distinction as its own state rather than collapsing every listed
+/// seat into a single `"active"` value, because "assigned but scheduled to
+/// leave" is exactly the kind of signal RFC-0001's motivating question
+/// ("who has a seat and has never used it") wants visible without a second
+/// join against billing data this connector does not ingest.
+fn seat_state(pending_cancellation_date: Option<&str>) -> &'static str {
+    if pending_cancellation_date.is_some() {
+        "pending_cancellation"
+    } else {
+        "active"
+    }
+}
+
+/// Parse a raw RFC 3339 timestamp as GitHub sends it (e.g.
+/// `"2021-08-03T18:00:00-06:00"`). Absent or unparseable becomes `None` --
+/// unknown, never a fabricated zero time -- so a future format change
+/// degrades one field to "we don't know when", not a hard failure of the
+/// whole seat snapshot.
+fn parse_seat_timestamp(raw: Option<&str>) -> Option<DateTime<Utc>> {
+    raw.and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Parse an archived seat listing (see `crate::seats::FetchedSeats::
+/// to_archive_bytes`: a JSON array of the raw per-page bodies) into
+/// normalized seat-snapshot rows, stamped with `snapshot_day`. A row whose
+/// assignee has no resolvable id is skipped rather than fabricated,
+/// matching every other `parse_*` function's id handling here.
+pub fn parse_seats(bytes: &[u8], report: &str, snapshot_day: &str) -> Result<Vec<SeatSnapshot>> {
+    let pages: Vec<SeatsPage> =
+        serde_json::from_slice(bytes).map_err(|source| CopilotError::Parse {
+            report: report.to_owned(),
+            day: snapshot_day.to_owned(),
+            source,
+        })?;
+    let mut out = Vec::new();
+    for page in pages {
+        for seat in page.seats {
+            let Some(assignee) = seat.assignee else {
+                continue;
+            };
+            let provider_user_id = match assignee.id {
+                Some(id) if !id.is_empty() => id,
+                _ => continue,
+            };
+            out.push(SeatSnapshot {
+                provider_user_id,
+                user_login: assignee.login.unwrap_or_default(),
+                snapshot_day: snapshot_day.to_owned(),
+                seat_assigned_at: parse_seat_timestamp(seat.created_at.as_deref()),
+                last_activity_at: parse_seat_timestamp(seat.last_activity_at.as_deref()),
+                last_activity_editor: seat.last_activity_editor,
+                seat_state: seat_state(seat.pending_cancellation_date.as_deref()).to_owned(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +343,157 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].user_id, "1001");
         assert_eq!(rows[0].team_id, "9001");
+    }
+
+    #[test]
+    fn seat_state_is_active_without_a_pending_cancellation_date() {
+        assert_eq!(seat_state(None), "active");
+    }
+
+    #[test]
+    fn seat_state_is_pending_cancellation_when_the_date_is_present() {
+        assert_eq!(seat_state(Some("2026-09-01")), "pending_cancellation");
+    }
+
+    #[test]
+    fn parse_seat_timestamp_parses_a_valid_rfc3339_value() {
+        let parsed = parse_seat_timestamp(Some("2026-08-01T12:00:00Z")).unwrap();
+        assert_eq!(parsed.to_rfc3339(), "2026-08-01T12:00:00+00:00");
+    }
+
+    /// An absent or malformed timestamp must become `None` (unknown), never
+    /// a fabricated default -- this is what the whole test proves, not just
+    /// that a good value parses.
+    #[test]
+    fn parse_seat_timestamp_treats_absence_and_garbage_as_unknown() {
+        assert_eq!(parse_seat_timestamp(None), None);
+        assert_eq!(parse_seat_timestamp(Some("not-a-timestamp")), None);
+    }
+
+    fn seats_archive(pages: &[&str]) -> Vec<u8> {
+        let joined = pages.join(",");
+        format!("[{joined}]").into_bytes()
+    }
+
+    #[test]
+    fn parse_seats_maps_github_fields_onto_the_normalized_row() {
+        let page = concat!(
+            r#"{"total_seats":1,"seats":[{"#,
+            r#""created_at":"2026-01-01T00:00:00Z","#,
+            r#""last_activity_at":"2026-08-01T09:30:00Z","#,
+            r#""last_activity_editor":"vscode/1.90.0/copilot/1.200.0","#,
+            r#""pending_cancellation_date":null,"#,
+            r#""assignee":{"id":1001,"login":"octocat"}"#,
+            r#"}]}"#,
+        );
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.provider_user_id, "1001");
+        assert_eq!(row.user_login, "octocat");
+        assert_eq!(row.snapshot_day, "2026-08-07");
+        assert_eq!(row.seat_state, "active");
+        assert_eq!(
+            row.last_activity_editor.as_deref(),
+            Some("vscode/1.90.0/copilot/1.200.0")
+        );
+        assert!(row.seat_assigned_at.is_some());
+        assert!(row.last_activity_at.is_some());
+    }
+
+    /// A seat whose `last_activity_at` is entirely absent (never used) must
+    /// stay `None`, not become a fabricated "never" sentinel that would
+    /// read as a real timestamp downstream -- this is RFC-0001's exact
+    /// motivating question ("who has a seat and has never used it").
+    #[test]
+    fn parse_seats_treats_a_never_used_seat_as_null_not_a_default() {
+        let page = concat!(
+            r#"{"seats":[{"#,
+            r#""created_at":"2026-01-01T00:00:00Z","#,
+            r#""last_activity_at":null,"#,
+            r#""last_activity_editor":null,"#,
+            r#""pending_cancellation_date":null,"#,
+            r#""assignee":{"id":2002,"login":"neveruser"}"#,
+            r#"}]}"#,
+        );
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].last_activity_at, None);
+        assert_eq!(rows[0].last_activity_editor, None);
+    }
+
+    #[test]
+    fn parse_seats_marks_pending_cancellation_from_the_date_field() {
+        let page = concat!(
+            r#"{"seats":[{"#,
+            r#""created_at":"2026-01-01T00:00:00Z","#,
+            r#""pending_cancellation_date":"2026-09-01","#,
+            r#""assignee":{"id":3003,"login":"leaving"}"#,
+            r#"}]}"#,
+        );
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].seat_state, "pending_cancellation");
+    }
+
+    /// A row with no assignee at all is skipped, not fabricated -- mirrors
+    /// `parse_org_daily`'s "no org id" handling.
+    #[test]
+    fn parse_seats_skips_a_row_with_no_assignee() {
+        let page = r#"{"seats":[{"created_at":"2026-01-01T00:00:00Z"}]}"#;
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// An empty org's page (`seats: []`) must parse to zero rows, not an
+    /// error -- this is the "empty org" case the manifest's "empty" status
+    /// depends on.
+    #[test]
+    fn parse_seats_on_an_empty_org_yields_zero_rows() {
+        let page = r#"{"total_seats":0,"seats":[]}"#;
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// Multiple archived pages must all contribute rows -- proves
+    /// `parse_seats` walks every page in the archived JSON array, not just
+    /// the first.
+    #[test]
+    fn parse_seats_combines_rows_from_every_page() {
+        let page1 = r#"{"seats":[{"assignee":{"id":1,"login":"a"}}]}"#;
+        let page2 = r#"{"seats":[{"assignee":{"id":2,"login":"b"}}]}"#;
+        let rows = parse_seats(
+            &seats_archive(&[page1, page2]),
+            "billing-seats",
+            "2026-08-07",
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let ids: Vec<&str> = rows.iter().map(|r| r.provider_user_id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "2"]);
+    }
+
+    /// Live GitHub sends `assignee.id` as a bare JSON integer -- the exact
+    /// production failure `flexible_id` already fixed for the other four
+    /// reports (see the `repos-1-day` regression test above). Applied here
+    /// too, on the same assumption.
+    #[test]
+    fn parse_seats_accepts_an_integer_assignee_id() {
+        let page = r#"{"seats":[{"assignee":{"id":844522530,"login":"octocat"}}]}"#;
+        let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider_user_id, "844522530");
+    }
+
+    #[test]
+    fn parse_seats_on_a_malformed_archive_surfaces_a_parse_error() {
+        let err = parse_seats(b"not-json", "billing-seats", "2026-08-07").unwrap_err();
+        match err {
+            CopilotError::Parse { report, day, .. } => {
+                assert_eq!(report, "billing-seats");
+                assert_eq!(day, "2026-08-07");
+            }
+            _ => panic!("expected a Parse error"),
+        }
     }
 }

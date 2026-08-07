@@ -46,6 +46,20 @@ pub struct ConnectorFreshness {
 /// added for a completed-but-degraded run, it does not silently start
 /// counting as success just because a row exists.
 ///
+/// `report_type <> 'billing-seats'` is load-bearing, not tidiness. Seat
+/// snapshots are a *current-state* listing with no `day` parameter, so every
+/// run writes a manifest stamped with TODAY. Counting those here would make
+/// this gauge read fresh forever the moment seats succeeds -- even with all
+/// four daily reports failing for a week -- silently disabling the
+/// "no successful sync in 36h" alert this gauge exists to drive. Freshness
+/// here means "how current is the ingested report DATA", and only the
+/// day-based reports can answer that.
+///
+/// The literal is `governance_copilot::SEATS_REPORT_TYPE`, duplicated rather
+/// than imported because `governance-copilot` depends on this crate, not the
+/// other way round. `governance_copilot`'s own `high_water_mark` excludes the
+/// same value for the same reason -- keep the two in step.
+///
 /// # Errors
 ///
 /// Returns [`Error::Storage`] if the query fails. This function imposes no
@@ -60,6 +74,7 @@ pub async fn connector_freshness(
     let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT provider, MAX(report_day) FROM ingest_manifests \
          WHERE tenant_id = $1 AND status IN ('ok', 'empty') \
+           AND report_type <> 'billing-seats' \
          GROUP BY provider",
     )
     .bind(tenant_id)
@@ -124,6 +139,82 @@ mod tests {
         .await
         .map_err(cool_error_from_sqlx)
         .expect("insert manifest fixture");
+    }
+
+    /// Inserts a manifest with an explicit `report_type`, for the seat-snapshot
+    /// exclusion test below.
+    async fn insert_manifest_of_type(
+        pool: &PgPool,
+        tenant_id: &str,
+        provider: &str,
+        report_day: &str,
+        report_type: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO ingest_manifests \
+             (id, tenant_id, provider, scope_id, report_day, report_type, status, \
+              record_count, schema_version, started_at, completed_at) \
+             VALUES ($1, $2, $3, 'scope', CAST($4 AS date), $5, 'ok', 1, 1, now(), now())",
+        )
+        .bind(format!(
+            "manifest-{tenant_id}-{provider}-{report_day}-{report_type}"
+        ))
+        .bind(tenant_id)
+        .bind(provider)
+        .bind(report_day)
+        .bind(report_type)
+        .execute(pool)
+        .await
+        .map_err(cool_error_from_sqlx)
+        .expect("insert typed manifest fixture");
+    }
+
+    /// A seat snapshot must NOT count as report freshness.
+    ///
+    /// Seats are a current-state listing with no `day` parameter, so every run
+    /// stamps a manifest with today. If this query counted them, the gauge
+    /// would read fresh forever the moment seats succeeded -- even with every
+    /// daily report failing -- silently disabling the "no successful sync in
+    /// 36h" alert it exists to drive.
+    ///
+    /// The fixture is the exact shape that breaks it: daily reports stale by a
+    /// week, a seat snapshot from today.
+    #[tokio::test]
+    async fn a_seat_snapshot_does_not_mask_stale_daily_reports() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("tenant-seats-mask-{}", cuid::cuid2());
+        let stale_day = (chrono::Utc::now() - chrono::Duration::days(7))
+            .format("%Y-%m-%d")
+            .to_string();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+        insert_manifest_of_type(
+            &pool,
+            &tenant_id,
+            "github_copilot",
+            &stale_day,
+            "organization-1-day",
+        )
+        .await;
+        insert_manifest_of_type(&pool, &tenant_id, "github_copilot", &today, "billing-seats").await;
+
+        let rows = connector_freshness(&pool, &tenant_id)
+            .await
+            .expect("query succeeds");
+
+        let reported = rows
+            .iter()
+            .find(|r| r.provider == "github_copilot")
+            .expect("provider present");
+        assert_eq!(
+            reported.last_success_at.format("%Y-%m-%d").to_string(),
+            stale_day,
+            "freshness must reflect the stale daily report, not today's seat snapshot -- \
+             counting seats here makes the gauge permanently fresh and kills the alert"
+        );
     }
 
     /// A tenant with zero `ingest_manifests` rows -- the "never synced" case

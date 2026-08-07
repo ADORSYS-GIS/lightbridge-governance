@@ -87,6 +87,32 @@ Job the same:
   lookback window and gets re-attempted on the next scheduled run with no operator action. Only
   chase this by hand if `governance-ctl verify` still shows drift for that day after the next
   scheduled run has had a chance to retry it.
+- **Non-zero exit with `"the once-per-run Copilot seat snapshot failed"`**: the four day-based
+  reports may have succeeded -- this is a separate failure domain, checked independently (see
+  "Seat snapshot failed" below). Do not assume the credential/policy is fine just because the
+  reports landed, or vice versa.
+
+### Seat snapshot failed (`report_type = billing-seats` in the logs/manifest)
+
+Unlike the four day-based reports, `/copilot/billing/seats` has **no `day` parameter and no
+history** -- it always returns the org's CURRENT seat assignments. Consequences for on-call:
+
+- **There is no backfill for seats, ever.** If a run's seat snapshot fails, that day's seat
+  state is gone -- not deferred, not recoverable by re-running `sync` later (a later run
+  captures *that later day's* current seats, not the missed day's). The only way to recover a
+  specific failed day's rows is if the raw fetch itself actually succeeded and only parsing
+  broke afterward -- in that case the bytes are already archived and `governance-ctl replay`
+  recovers them from S3, exactly like the four reports.
+- **A seats-only failure fails the whole `sync` run**, even when every day-based report
+  succeeded (`BackfillOutcome::exit_result` in `app/governance-ctl/src/sync.rs` checks the two
+  independently). Do not read a non-zero exit as "the reports must be broken too" -- check
+  `governance-ctl status` and the per-report log lines before assuming both failed.
+- **`governance-ctl sync-day <day>`** does *not* touch seats at all -- it is the one-off
+  historical-day repair tool for the four reports only, and seats has no "day" to repair.
+  Re-running `governance-ctl sync` (the full backfill command) is what re-attempts today's
+  seat snapshot.
+- The permission/policy checks below apply identically to the seats endpoint -- it uses the
+  same App installation token as the four reports, no separate credential.
 
 ### 403 from the report endpoints
 
