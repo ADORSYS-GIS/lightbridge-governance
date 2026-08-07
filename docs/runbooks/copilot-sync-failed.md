@@ -31,6 +31,74 @@ or fail to page when it should.
   `governance_copilot_*` series is therefore not distinguishable from "no run has
   happened yet today" and must never be the sole basis for a page. Use it to see *what*
   a run did, not *whether* the connector is healthy.
+- **`governance_org_*`** (`app/lightbridge-governance/src/metrics.rs`, derived in
+  `crates/governance-core/src/org_kpis.rs`) is a small set of **org-level KPI gauges**
+  (active/engaged users, cost, seats) for alerting on business questions --
+  "monthly spend exceeded X", "active users dropped 30%", "licences going to waste" --
+  that a Grafana SQL panel (ADR-0003) cannot page on. Same shape as
+  `governance_connector_*`: derived from Postgres (`copilot_org_dailys`/
+  `copilot_seat_snapshots`) on every `/metrics` scrape, so it survives an API restart
+  the same way, and is absent (never a fabricated reading) until a refresh has actually
+  confirmed a value. **Alert-grade**, in contrast to `governance_copilot_*` above -- see
+  "Org-level KPI alerts" below.
+
+## Org-level KPI alerts (`governance_org_*`)
+
+A deliberate, bounded exception to ADR-0003's "Mimir keeps only
+`governance_connector_*`": these carry no unbounded dimension (at most
+`organization_id`, a handful of values per deployment -- ADR-0001 is single-tenant per
+deployment), so they can live in Mimir without reopening the cardinality problem
+ADR-0003 exists to close. See `crates/governance-core/src/org_kpis.rs`'s module doc
+comment for the full reasoning, and why this is derived by the API rather than pushed
+through the copilot-sync OTel collector (ADR-0011's family is dashboard-grade, not
+alert-grade, because a collector restart blanks it for up to 6h -- these gauges have no
+such gap).
+
+All money gauges are **integer micro-USD** (ADR-0008, `..._micro_usd` suffix) -- divide
+by `1e6` in PromQL for a human-readable USD number, never at the source.
+
+Every gauge is absent (not a fabricated `0`) until a refresh has actually observed a
+value for that organization, and a Postgres outage freezes the last known value rather
+than zeroing it -- an alert must not fire "active users dropped to zero" just because
+the database was briefly unreachable. `governance_org_kpi_has_data{family="usage"|"seats"}`
+tells you whether a tenant has ANY data at all (`0` once confirmed, absent before the
+first successful refresh) -- check it before reading a missing per-organization series
+as "zero", which is the same absent-vs-zero trap `governance_connector_has_synced` exists
+to avoid for connector freshness.
+
+Example alerts, copy-pasteable into an `AlertmanagerConfig`/`PrometheusRule`:
+
+```promql
+# Monthly spend exceeded $5,000 (5_000 * 1e6 micro-USD) for any organization.
+governance_org_cost_month_to_date_micro_usd > 5000000000
+
+# Active users dropped 30% versus the same time yesterday. No separate
+# "percentage dropped" metric exists or is needed -- this is a plain PromQL
+# comparison over the gauge itself.
+governance_org_active_users
+  < (governance_org_active_users offset 1d) * 0.7
+
+# Licence waste: seats assigned but never used at all, as of the latest seat
+# snapshot -- the single most valuable alert in this family. Tune the
+# absolute threshold to the deployment's seat count; a ratio alert also
+# works if seat counts vary a lot across organizations:
+#   governance_org_seats_never_used / governance_org_seats_assigned > 0.3
+governance_org_seats_never_used > 20
+
+# This tenant's usage data has gone missing entirely (not just stale for one
+# organization) -- distinct from "genuinely zero active users", which would
+# still render has_data=1 with the per-organization gauge present at 0.
+governance_org_kpi_has_data{family="usage"} == 0
+```
+
+`time()`-based staleness (e.g. "no usage data refreshed in 48h") is intentionally NOT
+listed here: unlike `governance_connector_last_success_timestamp_seconds`, these gauges
+are values, not timestamps, so PromQL's `absent()`/`up`-style staleness handling (a
+series that stops being scraped naturally disappears after Prometheus's own staleness
+window) already covers "the API stopped refreshing this" -- watch
+`governance_connector_metrics_scrape_errors_total{reason=~"org_.*"}` (extends the same
+counter ADR-0007 defined) via `increase(...[10m]) > 0` for that instead, exactly as
+already recommended for `governance_connector_*` above.
 
 ## 0. Distinguish "broken" from "did not run"
 

@@ -17,6 +17,7 @@ pub mod identity;
 pub mod ingest;
 pub mod migrate;
 pub mod money;
+pub mod org_kpis;
 pub mod registry;
 
 pub use error::{Error, Result};

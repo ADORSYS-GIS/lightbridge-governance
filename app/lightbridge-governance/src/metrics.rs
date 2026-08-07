@@ -1,6 +1,6 @@
 //! Prometheus metrics for the ServiceMonitor (ADR-0007).
 //!
-//! Two kinds of metric live here:
+//! Three kinds of metric live here:
 //! - `governance_connector_*`, derived from `ingest_manifests` (ADR-0007).
 //!   The query itself lives in `governance_core::connector_metrics` -- this
 //!   module owns turning it into series, bounding it with a timeout, and
@@ -8,6 +8,19 @@
 //! - `governance_ingest_*` for the `/internal/v1/ingest` telemetry path, so an
 //!   ingest outage (auth failures, malformed OTLP, storage errors, rate
 //!   limiting) is observable, not a silent 500 in a log that nobody reads.
+//! - `governance_org_*`, a small set of org-level KPI gauges (active/engaged
+//!   users, cost, seats) derived from `copilot_org_dailys`/
+//!   `copilot_seat_snapshots`, for alerting. The queries live in
+//!   `governance_core::org_kpis` -- see that module's doc comment for why
+//!   this is a deliberate, bounded exception to ADR-0003's "Mimir keeps only
+//!   `governance_connector_*`", why it is derived here rather than pushed
+//!   through the copilot-sync OTel collector (ADR-0011 is dashboard-grade,
+//!   not alert-grade, for exactly the reason that would undermine an alert),
+//!   and the absent-vs-zero contract these queries follow. This module's job
+//!   is the same three things as for `governance_connector_*` above: turn
+//!   the query result into series, bound it with a timeout, and decide what
+//!   a query failure looks like on `/metrics` -- see
+//!   [`Metrics::refresh_org_kpis`].
 //!
 //! ## `governance_connector_*`: refresh-on-scrape, not a background poller
 //!
@@ -92,14 +105,62 @@ pub struct Metrics {
     /// connector (which has no timestamp to be stale) distinguishable from a
     /// healthy one -- see the module doc comment.
     connector_has_synced: IntGaugeVec,
-    /// Failed `governance_connector_*` refresh attempts, by `reason`
-    /// (`timeout` or `query_error`). Always present, starting at `0` --
-    /// unlike the two gauges above, "no failures yet" IS a safe default for
-    /// a counter, so this one is set to `0` at registration rather than left
+    /// Failed `/metrics` refresh attempts against Postgres, by `reason`.
+    /// Covers both `governance_connector_*` (`timeout`/`query_error`,
+    /// ADR-0007) and `governance_org_*` (`org_usage_timeout`/
+    /// `org_usage_query_error`/`org_seats_timeout`/`org_seats_query_error`)
+    /// -- one shared counter rather than a second one, since both are "a
+    /// `/metrics` scrape's Postgres refresh failed" and an operator watching
+    /// for scrape-path trouble should not need to know which family to
+    /// check. Always present, starting at `0` for every reason -- unlike the
+    /// gauges themselves, "no failures yet" IS a safe default for a counter,
+    /// so every reason is set to `0` at registration rather than left
     /// absent. An alert can watch `increase(...[10m]) > 0` as a
-    /// belt-and-suspenders signal independent of the freshness gauges being
-    /// absent or stale.
+    /// belt-and-suspenders signal independent of the gauges being absent or
+    /// stale.
     pub connector_metrics_scrape_errors_total: IntCounterVec,
+    /// Active users on `{organization_id}`'s most recent AVAILABLE report
+    /// day (ADR-0001 tenant_id is in the query's WHERE clause, never a
+    /// label -- see `governance_core::org_kpis`). Absent until a refresh has
+    /// actually observed a row for that organization.
+    org_active_users: IntGaugeVec,
+    /// Engaged users, same day/absence contract as `org_active_users`.
+    org_engaged_users: IntGaugeVec,
+    /// Integer micro-USD (ADR-0008): net cost on `{organization_id}`'s most
+    /// recent available report day.
+    org_daily_cost_micro_usd: IntGaugeVec,
+    /// Integer micro-USD (ADR-0008): net cost summed from the first day of
+    /// that report day's calendar month through the report day itself.
+    org_cost_month_to_date_micro_usd: IntGaugeVec,
+    /// Seats assigned as of `{organization_id}`'s most recent seat snapshot.
+    org_seats_assigned: IntGaugeVec,
+    /// Seats assigned as of the most recent snapshot with
+    /// `last_activity_at IS NULL` -- the licence-waste signal. Same
+    /// day/absence contract as the gauges above.
+    org_seats_never_used: IntGaugeVec,
+    /// `1` once a refresh has confirmed at least one row exists for this
+    /// tenant in the `family` table (`usage` = `copilot_org_dailys`,
+    /// `seats` = `copilot_seat_snapshots`; any organization, any day), `0`
+    /// once a refresh has confirmed there are none, absent before that
+    /// family's first successful refresh.
+    ///
+    /// Labeled by `family`, not `organization_id`: the question this
+    /// answers -- "does this TENANT have any data at all" -- is meaningless
+    /// per-organization, since an organization that has never reported
+    /// cannot appear as an `organization_id` label value in the first place
+    /// (see the module doc comment / `org_kpis`'s absent-vs-zero contract).
+    /// `family` is a fixed two-value set, so this stays as bounded as a
+    /// genuinely unlabeled gauge would be.
+    ///
+    /// Deliberately an `IntGaugeVec`, not a plain scalar `IntGauge`: a
+    /// scalar gauge always renders (defaulting to `0`) the instant it is
+    /// registered, which would make "confirmed zero" and "never yet
+    /// refreshed" both read as `0` -- exactly the ambiguity this gauge
+    /// exists to remove. `IntGaugeVec` only materializes a series once
+    /// `with_label_values(...)` is actually called, matching
+    /// `governance_connector_has_synced`'s own absent-until-touched
+    /// mechanism.
+    org_kpi_has_data: IntGaugeVec,
 }
 
 impl Metrics {
@@ -164,10 +225,74 @@ impl Metrics {
         let connector_metrics_scrape_errors_total = IntCounterVec::new(
             opts!(
                 "governance_connector_metrics_scrape_errors_total",
-                "failed governance_connector_* refresh attempts against ingest_manifests, by \
-                 reason (ADR-0007)"
+                "failed /metrics Postgres refresh attempts, by reason -- covers both \
+                 governance_connector_* (ADR-0007) and governance_org_* (org-level KPI gauges)"
             ),
             &["reason"],
+        )
+        .expect("static metric definition");
+        let org_active_users = IntGaugeVec::new(
+            opts!(
+                "governance_org_active_users",
+                "active users on the organization's most recent AVAILABLE report day; absent \
+                 until a refresh has observed a row for that organization"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_engaged_users = IntGaugeVec::new(
+            opts!(
+                "governance_org_engaged_users",
+                "engaged users on the organization's most recent AVAILABLE report day; same \
+                 absence contract as governance_org_active_users"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_daily_cost_micro_usd = IntGaugeVec::new(
+            opts!(
+                "governance_org_daily_cost_micro_usd",
+                "net Copilot cost, integer micro-USD (ADR-0008), on the organization's most \
+                 recent AVAILABLE report day -- estimated, not reconciled invoiced spend"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_cost_month_to_date_micro_usd = IntGaugeVec::new(
+            opts!(
+                "governance_org_cost_month_to_date_micro_usd",
+                "net Copilot cost, integer micro-USD (ADR-0008), summed from the first day of \
+                 the most recent available report day's calendar month through that day"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_seats_assigned = IntGaugeVec::new(
+            opts!(
+                "governance_org_seats_assigned",
+                "seats assigned as of the organization's most recent seat snapshot"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_seats_never_used = IntGaugeVec::new(
+            opts!(
+                "governance_org_seats_never_used",
+                "seats assigned as of the most recent snapshot with last_activity_at IS NULL -- \
+                 the licence-waste signal"
+            ),
+            &["organization_id"],
+        )
+        .expect("static metric definition");
+        let org_kpi_has_data = IntGaugeVec::new(
+            opts!(
+                "governance_org_kpi_has_data",
+                "1 once a refresh has confirmed at least one row exists for this tenant in the \
+                 family table (family=usage -> copilot_org_dailys, family=seats -> \
+                 copilot_seat_snapshots), 0 once confirmed there are none, absent before that \
+                 family's first successful refresh"
+            ),
+            &["family"],
         )
         .expect("static metric definition");
 
@@ -184,13 +309,20 @@ impl Metrics {
                 .clone(),
             connector_has_synced: connector_has_synced.clone(),
             connector_metrics_scrape_errors_total: connector_metrics_scrape_errors_total.clone(),
+            org_active_users: org_active_users.clone(),
+            org_engaged_users: org_engaged_users.clone(),
+            org_daily_cost_micro_usd: org_daily_cost_micro_usd.clone(),
+            org_cost_month_to_date_micro_usd: org_cost_month_to_date_micro_usd.clone(),
+            org_seats_assigned: org_seats_assigned.clone(),
+            org_seats_never_used: org_seats_never_used.clone(),
+            org_kpi_has_data: org_kpi_has_data.clone(),
         };
 
         // Registry::register fails only on a name collision or an already
         // registered collector -- impossible here since each is registered
         // exactly once. Logged, not fatal: a missing metric is worse than a
         // 500 on startup.
-        let collectors: [Box<dyn prometheus::core::Collector>; 9] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 16] = [
             Box::new(ingest_requests_total),
             Box::new(ingest_executions_total),
             Box::new(ingest_model_calls_total),
@@ -200,6 +332,13 @@ impl Metrics {
             Box::new(connector_last_success_timestamp_seconds),
             Box::new(connector_has_synced),
             Box::new(connector_metrics_scrape_errors_total),
+            Box::new(org_active_users),
+            Box::new(org_engaged_users),
+            Box::new(org_daily_cost_micro_usd),
+            Box::new(org_cost_month_to_date_micro_usd),
+            Box::new(org_seats_assigned),
+            Box::new(org_seats_never_used),
+            Box::new(org_kpi_has_data),
         ];
         for collector in collectors {
             if let Err(error) = metrics.registry.register(collector) {
@@ -208,10 +347,17 @@ impl Metrics {
         }
 
         // "No failures yet" is a legitimate, non-misleading default for a
-        // counter (unlike the freshness gauges above) -- initialize both
-        // reasons to 0 so the series exists from process start rather than
+        // counter (unlike the freshness/KPI gauges) -- initialize every
+        // reason to 0 so the series exists from process start rather than
         // only appearing the first time something actually fails.
-        for reason in ["timeout", "query_error"] {
+        for reason in [
+            "timeout",
+            "query_error",
+            "org_usage_timeout",
+            "org_usage_query_error",
+            "org_seats_timeout",
+            "org_seats_query_error",
+        ] {
             metrics
                 .connector_metrics_scrape_errors_total
                 .with_label_values(&[reason]);
@@ -283,6 +429,122 @@ impl Metrics {
                         .set(0);
                 }
             }
+        }
+    }
+
+    /// Refreshes `governance_org_*` from `copilot_org_dailys` and
+    /// `copilot_seat_snapshots` (`governance_core::org_kpis`). Same
+    /// refresh-on-scrape shape and timeout discipline as
+    /// [`Self::refresh_connector_freshness`], run as two independent bounded
+    /// queries rather than one: usage and seats are different tables with
+    /// independent failure modes (e.g. a lock contended on one table but not
+    /// the other), and keeping them independent means a seat-snapshot query
+    /// failure does not also blank out usage gauges that queried
+    /// successfully, and vice versa -- each family's gauges freeze at their
+    /// last known value exactly as `refresh_connector_freshness` already
+    /// does, for the identical reason: a value observed from a completed
+    /// query is a fact about that query's moment in time, and does not
+    /// become false just because a later refresh could not confirm it again.
+    /// Deliberately NOT touching the gauges (rather than zeroing them) on
+    /// failure is what keeps a Postgres outage from reading as "active users
+    /// dropped to zero" -- see the module doc comment and
+    /// `docs/adr/0003-grafana-reads-postgres-directly.md`.
+    pub async fn refresh_org_kpis(&self, pool: &PgPool, tenant_id: &str, timeout: Duration) {
+        self.refresh_org_usage_kpis(pool, tenant_id, timeout).await;
+        self.refresh_org_seat_kpis(pool, tenant_id, timeout).await;
+    }
+
+    async fn refresh_org_usage_kpis(&self, pool: &PgPool, tenant_id: &str, timeout: Duration) {
+        let outcome = tokio::time::timeout(
+            timeout,
+            governance_core::org_kpis::org_usage_kpis(pool, tenant_id),
+        )
+        .await;
+
+        let rows = match outcome {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "governance_org_* usage refresh: query failed");
+                self.connector_metrics_scrape_errors_total
+                    .with_label_values(&["org_usage_query_error"])
+                    .inc();
+                return;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_ms = timeout.as_millis(),
+                    "governance_org_* usage refresh: timed out"
+                );
+                self.connector_metrics_scrape_errors_total
+                    .with_label_values(&["org_usage_timeout"])
+                    .inc();
+                return;
+            }
+        };
+
+        // A successful query is what lets `family="usage"` move away from
+        // "absent" -- an empty Vec is a CONFIRMED "no data", not an unknown,
+        // so `0` (not left absent) is correct here. See the module doc
+        // comment / `org_kpis`'s absent-vs-zero contract.
+        self.org_kpi_has_data
+            .with_label_values(&["usage"])
+            .set(i64::from(!rows.is_empty()));
+
+        for row in &rows {
+            self.org_active_users
+                .with_label_values(&[&row.organization_id])
+                .set(row.active_users);
+            self.org_engaged_users
+                .with_label_values(&[&row.organization_id])
+                .set(row.engaged_users);
+            self.org_daily_cost_micro_usd
+                .with_label_values(&[&row.organization_id])
+                .set(row.daily_cost_micro_usd);
+            self.org_cost_month_to_date_micro_usd
+                .with_label_values(&[&row.organization_id])
+                .set(row.cost_month_to_date_micro_usd);
+        }
+    }
+
+    async fn refresh_org_seat_kpis(&self, pool: &PgPool, tenant_id: &str, timeout: Duration) {
+        let outcome = tokio::time::timeout(
+            timeout,
+            governance_core::org_kpis::org_seat_kpis(pool, tenant_id),
+        )
+        .await;
+
+        let rows = match outcome {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "governance_org_* seats refresh: query failed");
+                self.connector_metrics_scrape_errors_total
+                    .with_label_values(&["org_seats_query_error"])
+                    .inc();
+                return;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_ms = timeout.as_millis(),
+                    "governance_org_* seats refresh: timed out"
+                );
+                self.connector_metrics_scrape_errors_total
+                    .with_label_values(&["org_seats_timeout"])
+                    .inc();
+                return;
+            }
+        };
+
+        self.org_kpi_has_data
+            .with_label_values(&["seats"])
+            .set(i64::from(!rows.is_empty()));
+
+        for row in &rows {
+            self.org_seats_assigned
+                .with_label_values(&[&row.organization_id])
+                .set(row.seats_assigned);
+            self.org_seats_never_used
+                .with_label_values(&[&row.organization_id])
+                .set(row.seats_never_used);
         }
     }
 
@@ -557,5 +819,301 @@ mod tests {
             "a report_day of today must compute to a small (< 24h) age via time() - metric, \
              got {age_seconds}s"
         );
+    }
+
+    #[test]
+    fn a_fresh_registry_exposes_no_org_kpi_reading_at_all() {
+        // Same contract as connector freshness: before any refresh has ever
+        // run, the org KPI gauges and has_data flags must be completely
+        // absent, not fabricated zeros.
+        let out = Metrics::new().render();
+        for series in [
+            "governance_org_active_users",
+            "governance_org_engaged_users",
+            "governance_org_daily_cost_micro_usd",
+            "governance_org_cost_month_to_date_micro_usd",
+            "governance_org_seats_assigned",
+            "governance_org_seats_never_used",
+            "governance_org_kpi_has_data",
+        ] {
+            assert!(
+                !out.contains(series),
+                "{series} must not render before any refresh has run -- got:\n{out}"
+            );
+        }
+        // The scrape-error counter's new org_* reasons, by contrast, are a
+        // legitimate 0 at process start -- present so increase() has a
+        // series to watch from the first scrape.
+        for reason in [
+            "org_usage_timeout",
+            "org_usage_query_error",
+            "org_seats_timeout",
+            "org_seats_query_error",
+        ] {
+            assert!(
+                out.contains(&format!(
+                    "governance_connector_metrics_scrape_errors_total{{reason=\"{reason}\"}} 0"
+                )),
+                "reason={reason} must be present at 0 from process start -- got:\n{out}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_db_outage_never_produces_a_healthy_looking_org_kpi_reading() {
+        let metrics = Metrics::new();
+        let pool = unreachable_pool();
+
+        let start = Instant::now();
+        metrics
+            .refresh_org_kpis(&pool, "tenant-org-kpi-outage", Duration::from_millis(200))
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "must fail within the configured timeout (usage + seats sequentially, so up to \
+             ~2x), not sqlx's 30s pool default -- took {elapsed:?}"
+        );
+
+        let out = metrics.render();
+        for series in [
+            "governance_org_active_users",
+            "governance_org_engaged_users",
+            "governance_org_daily_cost_micro_usd",
+            "governance_org_cost_month_to_date_micro_usd",
+            "governance_org_seats_assigned",
+            "governance_org_seats_never_used",
+            "governance_org_kpi_has_data",
+        ] {
+            assert!(
+                !out.contains(series),
+                "an outage must not fabricate {series} -- got:\n{out}"
+            );
+        }
+        assert!(
+            out.contains(
+                "governance_connector_metrics_scrape_errors_total{reason=\"org_usage_timeout\"} 1"
+            ),
+            "the usage-side outage must be visible via the error counter -- got:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "governance_connector_metrics_scrape_errors_total{reason=\"org_seats_timeout\"} 1"
+            ),
+            "the seats-side outage must be visible via the error counter -- got:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_org_kpi_refresh_leaves_a_previously_good_reading_in_place() {
+        // Mirrors `a_failed_refresh_leaves_a_previously_good_reading_in_place_rather_than_erasing_it`
+        // for the org KPI family: once a value is known good, a later failed
+        // refresh must not erase it back to "unknown" -- see
+        // `Metrics::refresh_org_kpis`'s doc comment on why freezing (not
+        // zeroing) is the safe choice here specifically to avoid an outage
+        // reading as "active users dropped to zero".
+        let metrics = Metrics::new();
+        metrics
+            .org_active_users
+            .with_label_values(&["org-known-good"])
+            .set(123);
+        metrics
+            .org_kpi_has_data
+            .with_label_values(&["usage"])
+            .set(1);
+        metrics
+            .org_seats_never_used
+            .with_label_values(&["org-known-good"])
+            .set(4);
+        metrics
+            .org_kpi_has_data
+            .with_label_values(&["seats"])
+            .set(1);
+
+        let pool = unreachable_pool();
+        metrics
+            .refresh_org_kpis(&pool, "tenant-org-kpi-outage-2", Duration::from_millis(200))
+            .await;
+
+        let out = metrics.render();
+        assert!(
+            out.contains("governance_org_active_users{organization_id=\"org-known-good\"} 123"),
+            "a failed refresh must not erase a previously observed active_users reading -- \
+             got:\n{out}"
+        );
+        assert!(
+            out.contains("governance_org_kpi_has_data{family=\"usage\"} 1"),
+            "a failed refresh must not erase a previously observed has_data reading -- \
+             got:\n{out}"
+        );
+        assert!(
+            out.contains("governance_org_seats_never_used{organization_id=\"org-known-good\"} 4"),
+            "a failed refresh must not erase a previously observed seats_never_used reading -- \
+             got:\n{out}"
+        );
+        assert!(out.contains("governance_org_kpi_has_data{family=\"seats\"} 1"));
+    }
+
+    /// End-to-end against a real database: a tenant with zero
+    /// `copilot_org_dailys`/`copilot_seat_snapshots` rows must render
+    /// `..._has_data 0` for both families and no per-organization gauge at
+    /// all -- proving "no data at all" is visibly distinct from "genuinely
+    /// zero" (which would render the gauges present, at `0`).
+    #[tokio::test]
+    async fn a_tenant_with_no_org_kpi_data_renders_has_data_zero_not_a_healthy_looking_gap() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let metrics = Metrics::new();
+        let tenant_id = format!("tenant-org-kpi-no-data-{}", cuid::cuid2());
+
+        metrics
+            .refresh_org_kpis(&pool, &tenant_id, Duration::from_secs(3))
+            .await;
+
+        let out = metrics.render();
+        assert!(
+            out.contains("governance_org_kpi_has_data{family=\"usage\"} 0"),
+            "a tenant with zero copilot_org_dailys rows must report has_data{{family=usage}}=0 \
+             -- got:\n{out}"
+        );
+        assert!(
+            out.contains("governance_org_kpi_has_data{family=\"seats\"} 0"),
+            "a tenant with zero copilot_seat_snapshots rows must report \
+             has_data{{family=seats}}=0 -- got:\n{out}"
+        );
+        assert!(
+            !out.contains("governance_org_active_users"),
+            "must not render a fabricated per-organization gauge for a tenant with no data -- \
+             got:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "governance_connector_metrics_scrape_errors_total{reason=\"org_usage_timeout\"} 0"
+            ),
+            "a successful refresh against a real, reachable DB must not count as an error"
+        );
+    }
+
+    /// End-to-end against a real database: exercises the full happy path --
+    /// active/engaged users, daily and month-to-date cost, seats assigned
+    /// and seats never used all render with the tenant's actual values, and
+    /// `has_data` flips to `1` for both families.
+    #[tokio::test]
+    async fn a_tenant_with_data_renders_the_full_org_kpi_family() {
+        let Some(pool) = connected_pool().await else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let metrics = Metrics::new();
+        let tenant_id = format!("tenant-org-kpi-full-{}", cuid::cuid2());
+        let org = "org-e2e";
+        // Two fixed (not "today") days in the same calendar month, so
+        // daily cost and month-to-date cost are deliberately DIFFERENT
+        // numbers -- this is what makes the two separate assertions below
+        // actually load-bearing (with only one day of data the two values
+        // would coincide, and a bug that swapped them would go undetected).
+        let earlier_day = "2026-04-05";
+        let latest_day = "2026-04-08";
+
+        cratestack::sqlx::query(
+            "INSERT INTO copilot_org_dailys \
+             (id, tenant_id, organization_id, report_day, active_users, engaged_users, \
+              total_interactions, code_generations, code_acceptances, loc_suggested, \
+              loc_added, loc_deleted, ai_credits, net_cost_micro_usd) \
+             VALUES ($1, $2, $3, CAST($4 AS date), 5, 2, 0, 0, 0, 0, 0, 0, 0, 1_000_000)",
+        )
+        .bind(format!("metrics-e2e-org-earlier:{tenant_id}"))
+        .bind(&tenant_id)
+        .bind(org)
+        .bind(earlier_day)
+        .execute(&pool)
+        .await
+        .expect("insert earlier org daily fixture");
+
+        cratestack::sqlx::query(
+            "INSERT INTO copilot_org_dailys \
+             (id, tenant_id, organization_id, report_day, active_users, engaged_users, \
+              total_interactions, code_generations, code_acceptances, loc_suggested, \
+              loc_added, loc_deleted, ai_credits, net_cost_micro_usd) \
+             VALUES ($1, $2, $3, CAST($4 AS date), 17, 9, 0, 0, 0, 0, 0, 0, 0, 4_500_000)",
+        )
+        .bind(format!("metrics-e2e-org:{tenant_id}"))
+        .bind(&tenant_id)
+        .bind(org)
+        .bind(latest_day)
+        .execute(&pool)
+        .await
+        .expect("insert org daily fixture");
+
+        cratestack::sqlx::query(
+            "INSERT INTO copilot_seat_snapshots \
+             (id, tenant_id, organization_id, snapshot_day, provider_user_id, user_login, \
+              seat_assigned_at, last_activity_at, last_activity_editor, seat_state) \
+             VALUES ($1, $2, $3, CAST($4 AS date), 'user-used', 'user-used', now(), now(), \
+                     NULL, 'active')",
+        )
+        .bind(format!("metrics-e2e-seat-used:{tenant_id}"))
+        .bind(&tenant_id)
+        .bind(org)
+        .bind(latest_day)
+        .execute(&pool)
+        .await
+        .expect("insert used seat fixture");
+
+        cratestack::sqlx::query(
+            "INSERT INTO copilot_seat_snapshots \
+             (id, tenant_id, organization_id, snapshot_day, provider_user_id, user_login, \
+              seat_assigned_at, last_activity_at, last_activity_editor, seat_state) \
+             VALUES ($1, $2, $3, CAST($4 AS date), 'user-never-used', 'user-never-used', now(), \
+                     NULL, NULL, 'active')",
+        )
+        .bind(format!("metrics-e2e-seat-unused:{tenant_id}"))
+        .bind(&tenant_id)
+        .bind(org)
+        .bind(latest_day)
+        .execute(&pool)
+        .await
+        .expect("insert never-used seat fixture");
+
+        metrics
+            .refresh_org_kpis(&pool, &tenant_id, Duration::from_secs(3))
+            .await;
+
+        let out = metrics.render();
+        assert!(
+            out.contains(&format!(
+                "governance_org_active_users{{organization_id=\"{org}\"}} 17"
+            )),
+            "must report the LATEST day's active_users (17), not the earlier day's (5) -- \
+             got:\n{out}"
+        );
+        assert!(out.contains(&format!(
+            "governance_org_engaged_users{{organization_id=\"{org}\"}} 9"
+        )));
+        assert!(
+            out.contains(&format!(
+                "governance_org_daily_cost_micro_usd{{organization_id=\"{org}\"}} 4500000"
+            )),
+            "daily cost must be only the latest day's own cost (4_500_000), not summed with \
+             the earlier day -- got:\n{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "governance_org_cost_month_to_date_micro_usd{{organization_id=\"{org}\"}} 5500000"
+            )),
+            "month-to-date must sum both days in the month (1_000_000 + 4_500_000 = \
+             5_500_000), not just the latest day's own cost -- got:\n{out}"
+        );
+        assert!(out.contains(&format!(
+            "governance_org_seats_assigned{{organization_id=\"{org}\"}} 2"
+        )));
+        assert!(out.contains(&format!(
+            "governance_org_seats_never_used{{organization_id=\"{org}\"}} 1"
+        )));
+        assert!(out.contains("governance_org_kpi_has_data{family=\"usage\"} 1"));
+        assert!(out.contains("governance_org_kpi_has_data{family=\"seats\"} 1"));
     }
 }
