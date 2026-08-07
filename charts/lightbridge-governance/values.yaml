@@ -226,7 +226,36 @@ grafanaDashboard:
     enabled: true
     # Suffix on the release name, so the CR is `<name>-copilot`.
     nameSuffix: copilot
-    title: "Copilot governance"
+    title: "Copilot"
+
+    # The Copilot folder is nested under a `Governance` parent, so all
+    # governance dashboards group together as this platform grows past the
+    # Copilot connector (Foundry, redaction, and the business/adoption panels
+    # ADR-0003 puts in SQL all belong under the same roof).
+    #
+    # Nesting uses `spec.parentFolderRef`, which references a GrafanaFolder CR
+    # BY NAME in the SAME namespace -- both are created in
+    # grafanaDashboard.namespace, so that holds. Only one of
+    # `parentFolderRef` / `parentFolderUID` may be set; this chart uses the ref
+    # so the parent is resolved by the operator rather than by pasting a UID
+    # that only exists after the parent has reconciled once.
+    parent:
+      # Whether THIS chart creates the parent folder.
+      #
+      # True today because no `governance` folder exists on the cluster yet --
+      # the deployed set is ai-gateway, applications, collectors, lightbridge,
+      # model-serving, my-usage, platform.
+      #
+      # ⚠️ Set this to false if another chart starts owning the same parent.
+      # Two releases both creating a GrafanaFolder with this `name` in this
+      # namespace is a genuine conflict -- whichever applies last wins, and on
+      # ArgoCD they will fight over it indefinitely. Referencing beats
+      # co-creating once more than one chart wants the folder.
+      create: true
+      # The parent CR's metadata.name. Short and domain-shaped, matching the
+      # existing folders' convention rather than the release name.
+      name: governance
+      title: "Governance"
 
   # Grafana Operator v5 requires every GrafanaDashboard to carry an
   # instanceSelector (a label selector) so it knows which deployed `Grafana`
@@ -238,17 +267,27 @@ grafanaDashboard:
   # there is nothing to grep in its status that says "no Grafana matched"
   # unless you know to check `status.conditions` on the CR itself.
   #
-  # Default below (`dashboards: "grafana"`) is the Grafana Operator's own
-  # quick-start / v4-to-v5-migration-guide convention, chosen because it's
-  # the documented default rather than an arbitrary guess -- it is NOT
-  # verified against the actual labels on the `Grafana` CR deployed by
-  # ai-helm (no cluster and no access to the private ai-helm/ai-helm-values
-  # repos in this session). Confirm with, before trusting this in a real
-  # environment:
-  #   kubectl get grafana -A -o jsonpath='{.items[*].metadata.labels}'
+  # ⚠️ `dashboards: "grafana-external"`, NOT the operator's documented
+  # quick-start default of `dashboards: "grafana"`. This chart shipped the
+  # quick-start value first and the dashboard silently never appeared.
+  #
+  # Read off a folder that is demonstrably reconciling on the deployed
+  # cluster, so this is copied rather than guessed:
+  #   $ kubectl get grafanafolder lightbridge -n observability \
+  #       -o jsonpath='{.spec.instanceSelector}'
+  #   {"matchLabels":{"dashboards":"grafana-external"}}
+  #
+  # Re-run that against any healthy folder if this ever stops matching -- it
+  # is the one selector known to work, and inventing a plausible-looking value
+  # instead is precisely how the first attempt failed.
+  #
+  # ⚠️ IMMUTABLE on both GrafanaDashboard and GrafanaFolder. Changing it means
+  # DELETING and recreating the CRs; `kubectl apply` of a changed selector is
+  # rejected. If the CRs are already deployed with the wrong selector, bumping
+  # this value alone will not fix them.
   instanceSelector:
     matchLabels:
-      dashboards: "grafana"
+      dashboards: "grafana-external"
 
   # Datasource UIDs the dashboard JSON references, substituted into
   # dashboards/copilot-connector.json at `helm template` time (Helm-side

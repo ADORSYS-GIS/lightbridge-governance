@@ -15,14 +15,41 @@
 #     `metadata.name`, which would put a hyphenated k8s slug in Grafana's
 #     folder list.
 #   - Only one of `spec.parentFolderRef` / `spec.parentFolderUID` may be set.
-#     Neither is used here -- this is a top-level folder. To nest it under the
-#     existing `lightbridge` folder instead, set `parentFolderRef: lightbridge`
-#     (that folder is in the same namespace, so a ref works).
+#     The Copilot folder below uses `parentFolderRef` to nest under the
+#     `Governance` parent. To re-parent it elsewhere (e.g. under the existing
+#     `lightbridge` folder), point grafanaDashboard.folder.parent.name at that
+#     CR and set .create=false -- any folder in this namespace can be a parent.
 #
 # ⚠️ `spec.instanceSelector` is IMMUTABLE. Correcting a wrong selector means
 # DELETING and recreating this CR, not patching it -- `kubectl apply` of a
 # changed selector is rejected. Same for `spec.uid` (not set here) and for
 # disabling `allowCrossNamespaceImport`.
+{{- if .Values.grafanaDashboard.folder.parent.create }}
+# The `Governance` parent, so governance dashboards group under one roof as
+# this platform grows past the Copilot connector.
+#
+# Created here because no such folder exists on the cluster yet (the deployed
+# set is ai-gateway, applications, collectors, lightbridge, model-serving,
+# my-usage, platform). If another chart ever starts owning it, set
+# grafanaDashboard.folder.parent.create=false and keep only the reference --
+# two releases both creating this same CR name in this namespace will fight
+# over it under ArgoCD.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.grafanaDashboard.folder.parent.name }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.folder.parent.title | quote }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+---
+{{- end }}
 apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaFolder
 metadata:
@@ -32,6 +59,10 @@ metadata:
     app: {{ .Values.name }}
 spec:
   title: {{ .Values.grafanaDashboard.folder.title | quote }}
+  # Nests this folder under `Governance`. A ref rather than a UID: the parent's
+  # UID only exists once the operator has reconciled it, so referencing by
+  # name is what lets both folders be applied in a single pass.
+  parentFolderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
   instanceSelector:
 {{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
   {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
