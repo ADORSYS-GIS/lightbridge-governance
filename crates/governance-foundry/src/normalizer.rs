@@ -62,6 +62,20 @@ pub enum NormalizerError {
         actual: String,
     },
 
+    /// `endTimeUnixNano - startTimeUnixNano` either overflowed `i64` or came
+    /// out negative. Both are producer-controlled and unbounded (proto3 JSON
+    /// int64-as-string carries no sign restriction), so this is malformed
+    /// input, not a duration to clamp to zero -- the strictest branch per the
+    /// house rule on unparseable data.
+    #[error(
+        "invalid span duration: end {end_time_unix_nano} is not after start \
+         {start_time_unix_nano} (or the subtraction overflowed)"
+    )]
+    InvalidDuration {
+        start_time_unix_nano: i64,
+        end_time_unix_nano: i64,
+    },
+
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
 }

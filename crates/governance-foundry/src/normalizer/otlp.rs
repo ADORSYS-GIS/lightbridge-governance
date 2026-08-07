@@ -28,6 +28,26 @@ fn attributes<'a>(obj: &'a Value, context: &str) -> Result<&'a [Value], Normaliz
     }
 }
 
+/// Returns a span's `events` array. Missing/null events behave as an empty
+/// array (a span that legitimately called no tools); a present but
+/// non-array `events` is malformed and rejects -- mirrors `attributes()`'s
+/// discipline above so a malformed `events` field cannot masquerade as "zero
+/// tool calls". This distinction matters more here than for `attributes()`:
+/// token counts use `Option<i64>` to make "unknown" distinguishable from
+/// "zero", but there is no equivalent signal for tool-call completeness, so a
+/// silently-dropped tool call would be invisible downstream forever.
+pub fn events<'a>(obj: &'a Value, context: &str) -> Result<&'a [Value], NormalizerError> {
+    match obj.get("events") {
+        None | Some(Value::Null) => Ok(&[]),
+        Some(Value::Array(events)) => Ok(events),
+        Some(other) => Err(NormalizerError::InvalidFieldType {
+            field: format!("{context}.events"),
+            expected: "array".to_owned(),
+            actual: other.to_string(),
+        }),
+    }
+}
+
 /// The `value` object for the attribute with the given key, if present.
 fn attribute_value<'a>(
     attrs: &'a [Value],
@@ -150,6 +170,31 @@ pub fn span_i64(span: &Value, key: &str) -> Result<i64, NormalizerError> {
     }
 }
 
+/// Computes a span's duration in milliseconds from its `startTimeUnixNano`
+/// and `endTimeUnixNano`, using checked subtraction. Both inputs are
+/// producer-controlled `i64`s with no bounds check upstream (`span_i64`
+/// accepts any parseable, including negative, int64), so a naive
+/// `end - start` can overflow -- which panics in a debug build but silently
+/// **wraps** under `[profile.prod]` (inherited from `release`, which has
+/// `overflow-checks` off), landing on either side of zero and producing a
+/// bogus duration that governance-core's `< 0` guard is not guaranteed to
+/// catch. An overflow or a negative result is therefore rejected here as
+/// malformed input rather than clamped to zero: an end before its start is
+/// not a duration.
+pub fn duration_ms(
+    start_time_unix_nano: i64,
+    end_time_unix_nano: i64,
+) -> Result<i64, NormalizerError> {
+    let elapsed_nanos = end_time_unix_nano
+        .checked_sub(start_time_unix_nano)
+        .filter(|nanos| *nanos >= 0)
+        .ok_or(NormalizerError::InvalidDuration {
+            start_time_unix_nano,
+            end_time_unix_nano,
+        })?;
+    Ok(elapsed_nanos / 1_000_000)
+}
+
 /// Extracts an optional top-level string span field (`traceId`, `spanId`).
 pub fn span_string(span: &Value, key: &str) -> Result<Option<String>, NormalizerError> {
     match span.get(key) {
@@ -255,5 +300,58 @@ mod tests {
             attr_string(&span, "model.name", "span").expect("parse"),
             None
         );
+    }
+
+    #[test]
+    fn events_absent_or_null_is_empty_not_an_error() {
+        assert!(events(&json!({}), "span").expect("parse").is_empty());
+        assert!(
+            events(&json!({"events": null}), "span")
+                .expect("parse")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn events_present_but_wrong_type_rejects() {
+        // A span with `"events": "not-an-array"` must not normalize as "zero
+        // tool calls" -- that is structurally indistinguishable from a span
+        // that legitimately called no tools.
+        let span = json!({"events": "not-an-array"});
+        assert!(matches!(
+            events(&span, "span"),
+            Err(NormalizerError::InvalidFieldType { .. })
+        ));
+    }
+
+    #[test]
+    fn duration_ms_computes_millis_from_nanos() {
+        assert_eq!(
+            duration_ms(1_700_000_000_000_000_000, 1_700_000_005_000_000_000).expect("compute"),
+            5000
+        );
+    }
+
+    #[test]
+    fn duration_ms_rejects_overflowing_subtraction() {
+        // Both timestamps come from `span_i64`, which accepts any parseable
+        // i64 with no bounds check, including negatives (proto3 JSON
+        // int64-as-string carries no sign restriction).
+        let result = duration_ms(i64::MIN, i64::MAX);
+        assert!(matches!(
+            result,
+            Err(NormalizerError::InvalidDuration { .. })
+        ));
+    }
+
+    #[test]
+    fn duration_ms_rejects_negative_result() {
+        // An end before its start is malformed input, not a duration to
+        // clamp to zero.
+        let result = duration_ms(1_700_000_005_000_000_000, 1_700_000_000_000_000_000);
+        assert!(matches!(
+            result,
+            Err(NormalizerError::InvalidDuration { .. })
+        ));
     }
 }
