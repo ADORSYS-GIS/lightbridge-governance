@@ -1717,6 +1717,8 @@ dependencies = [
 name = "governance-copilot"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "axum",
  "chrono",
  "cratestack-pg",
  "governance-core",
@@ -1756,6 +1758,7 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-s3",
+ "axum",
  "chrono",
  "clap",
  "cratestack-axum",
@@ -1771,6 +1774,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest 0.13.4",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2377,6 +2381,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "cratestack-axum",
  "cratestack-codec-cbor",

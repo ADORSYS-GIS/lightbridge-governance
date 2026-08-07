@@ -242,6 +242,35 @@ app-template:
             # exposed here as ordinary, always-optional values.
             RESOLVE_CACHE_TTL_SECS: "60"
             RESOLVE_CACHE_MAX_CAPACITY: "10000"
+            # Bounds the /metrics freshness query, same reasoning as
+            # RESOLVE_TIMEOUT_MS. Safe default in the binary (3000ms).
+            CONNECTOR_METRICS_TIMEOUT_MS: "3000"
+          # TENANT_ID arrives via ConfigMap, not as a literal above.
+          #
+          # ⚠️ It is REQUIRED by the binary -- `--tenant-id` carries no
+          # default, because an empty tenant has no safe meaning in the WHERE
+          # clause of the `ingest_manifests` freshness query /metrics derives
+          # from (ADR-0007). Drop this envFrom and the pod CrashLoopBackOffs
+          # on every start during clap parsing, which is exactly how
+          # INTERNAL_INGEST_TOKEN was broken before it was wired.
+          #
+          # It cannot be a `{{ .Values.copilot.tenantId }}` literal in this
+          # block: app-template does run `tpl` on env values, but in the
+          # SUBCHART's context, where `.Values` is this `app-template:` key
+          # and `.Values.copilot` does not exist (it fails with "nil pointer
+          # evaluating interface {}.tenantId"). `global.databaseUrl` above
+          # works only because Helm propagates `global` into subcharts. A
+          # real template can read the parent's values, hence the ConfigMap
+          # -- the same technique templates/configmap-copilot.yaml uses.
+          #
+          # Sourced from `copilot.tenantId` rather than a second top-level
+          # key: the API and the copilot-sync CronJob are one single-tenant
+          # deployment (ADR-0001), and two knobs for one tenant is a drift
+          # bug waiting to happen -- set one, forget the other, and /metrics
+          # reports on a tenant that has no rows.
+          envFrom:
+            - configMapRef:
+                name: lightbridge-governance-api
           # `/livez` and `/readyz` are unauthenticated and check only that the
           # process is up -- they do not touch the database (ADR-0006's
           # resolve endpoint is the one place a DB check belongs, and even

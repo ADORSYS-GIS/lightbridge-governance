@@ -2,8 +2,19 @@
 //!
 //! There is deliberately NO separate backfill Job: a one-shot k8s Job is immutable
 //! and re-running it means deleting the object out-of-band, which ArgoCD selfHeal
-//! fights. `sync` reads the high-water mark from the DB and backfills up to 28 days
-//! when it is behind -- which also gives late-report recovery for free (ADR-0006).
+//! fights. `sync` always re-fetches a trailing lookback window (RFC-0001: D-1,
+//! D-2, D-3) and separately fills any gap after the high-water mark, bounded so a
+//! cold start cannot walk back forever (`sync::backfill_window`) -- which also
+//! gives late-report recovery for free (ADR-0006).
+//!
+//! `Command::Sync` exits non-zero when the computed window was non-empty but
+//! EVERY day in it failed (`covered == 0`) -- that is a totally broken run (dead
+//! credential, GitHub unreachable), and the CronJob's `backoffLimit`/alerting
+//! must engage rather than silently exiting 0 (pre-go-live review, BLOCKER 1). A
+//! partial failure (some days ok, some not) still exits 0: it is logged loudly,
+//! counted, and the failed days are re-attempted by the next run's trailing
+//! window (BLOCKER 2) -- failing the whole job for a partial failure would only
+//! be noise.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,6 +22,8 @@ use clap::{Parser, Subcommand};
 mod archive;
 mod metrics;
 mod sync;
+#[cfg(test)]
+mod test_support;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -30,7 +43,8 @@ struct Args {
 /// Subcommands. One image, several verbs.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Ingest the most recent days, backfilling to the high-water mark if behind.
+    /// Ingest the trailing lookback window, plus any gap after the
+    /// high-water mark if behind (see `sync::backfill_window`).
     Sync,
     /// Ingest one specific report day (YYYY-MM-DD). Idempotent.
     SyncDay {
@@ -76,10 +90,21 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let (outcomes, covered) = sync::run_backfill(&client, &pool, &cfg).await?;
+            let result = sync::run_backfill(&client, &pool, &cfg).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
-                metrics::push_run_metrics(&endpoint, "sync", &outcomes, covered as u64).await;
+                metrics::push_run_metrics(
+                    &endpoint,
+                    "sync",
+                    &result.outcomes,
+                    result.covered as u64,
+                )
+                .await;
             }
+            // BLOCKER 1: a non-empty window where every day failed must exit
+            // non-zero so the CronJob's backoffLimit/alerting engage instead
+            // of a silently-successful process. See the module doc comment
+            // above and `BackfillOutcome::exit_result`'s own doc comment.
+            result.exit_result()?;
         }
         Command::SyncDay { day } => {
             let cfg = sync::Config::from_env().await?;
@@ -106,9 +131,9 @@ async fn main() -> Result<()> {
         Command::Status => {
             let cfg = sync::Config::from_env().await?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let (age, unmapped) = sync::run_status(&pool, &cfg).await?;
+            let status = sync::run_status(&pool, &cfg).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
-                metrics::push_status_metrics(&endpoint, age, unmapped).await;
+                metrics::push_status_metrics(&endpoint, status).await;
             }
         }
     }

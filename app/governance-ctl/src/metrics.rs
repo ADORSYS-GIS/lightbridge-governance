@@ -16,11 +16,22 @@ use opentelemetry::{KeyValue, metrics::MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::warn;
 
-/// Endpoint env var (standard OTel naming); absent = push skipped.
+use crate::sync::SyncStatus;
+
+/// Endpoint env var (standard OTel naming); absent = push skipped, loudly --
+/// an operator who forgot to set this otherwise gets a CronJob that looks
+/// healthy (exit 0, no error) while pushing no metrics at all.
 pub fn endpoint_from_env() -> Option<String> {
-    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .ok()
-        .filter(|e| !e.is_empty())
+        .filter(|e| !e.is_empty());
+    if endpoint.is_none() {
+        warn!(
+            "OTEL_EXPORTER_OTLP_ENDPOINT not set or empty; skipping metrics push -- \
+             dashboards/alerts fed by this run will not update"
+        );
+    }
+    endpoint
 }
 
 /// Push the run-level counters (reports by status, rows by report, days).
@@ -71,20 +82,69 @@ pub async fn push_run_metrics(
     }
 }
 
-/// Push the status gauges (last-success age, unmapped users).
-pub async fn push_status_metrics(endpoint: &str, age_days: i64, unmapped: i64) {
+/// What `push_status_metrics` records for each gauge, derived once from a
+/// `SyncStatus`. Pulled out as a pure conversion (no OTLP, no async) so the
+/// "never synced must not look like age zero" mapping (BLOCKER 3) is
+/// directly unit-testable, not only observable through a live metric push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatusRecording {
+    ever_synced: u64,
+    /// `None` means the age gauge's `.record(...)` is skipped entirely --
+    /// an omitted data point, not a fake `0`. Emitting `0` here is exactly
+    /// what let a never-synced deployment read as "just succeeded" to an
+    /// age-based alert (BLOCKER 3).
+    age_seconds: Option<u64>,
+    unmapped_users: u64,
+}
+
+impl From<SyncStatus> for StatusRecording {
+    fn from(status: SyncStatus) -> Self {
+        match status {
+            SyncStatus::NeverSynced => Self {
+                ever_synced: 0,
+                age_seconds: None,
+                unmapped_users: 0,
+            },
+            SyncStatus::Synced {
+                age_days,
+                unmapped_users,
+            } => Self {
+                ever_synced: 1,
+                age_seconds: Some(age_days.max(0) as u64 * 86_400),
+                unmapped_users: unmapped_users.max(0) as u64,
+            },
+        }
+    }
+}
+
+/// Push the status gauges (whether a sync has ever succeeded, last-success
+/// age, unmapped users). See `StatusRecording` for the never-synced/synced
+/// mapping this applies.
+pub async fn push_status_metrics(endpoint: &str, status: SyncStatus) {
+    let recording = StatusRecording::from(status);
     let res = push(endpoint, |meter| {
-        let age = meter
-            .u64_gauge("governance.copilot.last_success_age_seconds")
-            .with_description("seconds since the most recent manifest day")
+        let ever_synced = meter
+            .u64_gauge("governance.copilot.ever_synced")
+            .with_description("1 if any manifest row exists for this tenant, 0 if never synced")
             .build();
-        age.record(age_days.max(0) as u64 * 86_400, &[]);
+        ever_synced.record(recording.ever_synced, &[]);
+
+        if let Some(age_seconds) = recording.age_seconds {
+            let age = meter
+                .u64_gauge("governance.copilot.last_success_age_seconds")
+                .with_description(
+                    "seconds since the most recent manifest day; omitted (no data point) \
+                     when never synced -- see governance.copilot.ever_synced instead",
+                )
+                .build();
+            age.record(age_seconds, &[]);
+        }
 
         let unmapped_gauge = meter
             .u64_gauge("governance.copilot.unmapped_users")
             .with_description("users with usage but no team row, latest day")
             .build();
-        unmapped_gauge.record(unmapped.max(0) as u64, &[]);
+        unmapped_gauge.record(recording.unmapped_users, &[]);
     })
     .await;
     if let Err(e) = res {
@@ -124,4 +184,55 @@ async fn push(endpoint: &str, record: impl FnOnce(&opentelemetry::metrics::Meter
         .force_flush()
         .map_err(|e| anyhow::anyhow!("otlp flush: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BLOCKER 3, the core assertion: a never-synced deployment must not
+    /// compute the same age as one that just succeeded. Before this fix,
+    /// `run_status` returned the sentinel `(-1, -1)` and `push_status_
+    /// metrics` did `age_days.max(0) as u64 * 86_400`, which folds `-1`
+    /// into `0` -- identical to `SyncStatus::Synced { age_days: 0, .. }`.
+    #[test]
+    fn never_synced_does_not_compute_the_same_recording_as_synced_zero_days_ago() {
+        let never = StatusRecording::from(SyncStatus::NeverSynced);
+        let just_succeeded = StatusRecording::from(SyncStatus::Synced {
+            age_days: 0,
+            unmapped_users: 0,
+        });
+        assert_ne!(never, just_succeeded);
+    }
+
+    /// The age gauge must be omitted (no data point), not a fake zero --
+    /// that is the entire fix, stated as directly as possible.
+    #[test]
+    fn never_synced_omits_the_age_gauge_entirely() {
+        let recording = StatusRecording::from(SyncStatus::NeverSynced);
+        assert_eq!(recording.age_seconds, None);
+        assert_eq!(recording.ever_synced, 0);
+    }
+
+    #[test]
+    fn synced_records_ever_synced_and_the_age_in_seconds() {
+        let recording = StatusRecording::from(SyncStatus::Synced {
+            age_days: 2,
+            unmapped_users: 5,
+        });
+        assert_eq!(recording.ever_synced, 1);
+        assert_eq!(recording.age_seconds, Some(2 * 86_400));
+        assert_eq!(recording.unmapped_users, 5);
+    }
+
+    /// A negative age (clock skew, or a report_day briefly in the future)
+    /// must clamp to zero, not underflow the `u64` cast.
+    #[test]
+    fn synced_clamps_a_negative_age_to_zero() {
+        let recording = StatusRecording::from(SyncStatus::Synced {
+            age_days: -1,
+            unmapped_users: 0,
+        });
+        assert_eq!(recording.age_seconds, Some(0));
+    }
 }
