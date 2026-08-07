@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use governance_copilot::{
     AppAuth, CopilotError, GithubClient, RawSecret, high_water_mark, manifest_schema_version,
-    replay_report, sync_day, unmapped_user_count, verify_manifests,
+    replay_report, sync_day, sync_seats, unmapped_user_count, verify_manifests,
 };
 use tracing::{info, warn};
 
@@ -139,6 +139,47 @@ async fn ingest_day(
     Ok(outcomes)
 }
 
+/// Snapshot the org's current Copilot seats, archiving the raw pages
+/// through the configured sink before parsing (RFC-0001). Called exactly
+/// ONCE per `sync` run by `run_backfill_at` below -- never per backfilled
+/// day, never from `run_sync_day` -- see `governance_copilot::sync_seats`'s
+/// doc comment for why looping this would fabricate a seat history that was
+/// never actually observed.
+async fn ingest_seats(
+    client: &GithubClient,
+    pool: &cratestack::sqlx::PgPool,
+    cfg: &Config,
+    snapshot_day: &str,
+) -> Result<governance_copilot::ReportOutcome> {
+    let auth = AppAuth::new(cfg.app_id.clone(), cfg.private_key.clone(), client);
+    let archive = cfg.archive.clone();
+    let archive_fn = async |key: &str, bytes: &[u8]| {
+        archive
+            .write(key, bytes)
+            .await
+            .map_err(|e| CopilotError::Archive(format!("{e:#}")))
+    };
+
+    let outcome = sync_seats(
+        client,
+        pool,
+        &auth,
+        &cfg.tenant_id,
+        &cfg.org,
+        snapshot_day,
+        archive_fn,
+    )
+    .await?;
+    info!(
+        report = outcome.report,
+        day = outcome.day,
+        status = outcome.status,
+        count = outcome.record_count,
+        "ingested seat snapshot"
+    );
+    Ok(outcome)
+}
+
 /// The `[start, end]` (inclusive) window of report days a `sync` run should
 /// (re-)ingest. Three RFC-0001 requirements, one expression:
 ///
@@ -183,11 +224,16 @@ pub fn backfill_window(
 /// The outcome of one `sync` (backfill) run.
 #[derive(Debug, Clone)]
 pub struct BackfillOutcome {
-    /// Per-report outcomes for every day that ingested without error.
+    /// Per-report outcomes for every day that ingested without error, plus
+    /// the seat snapshot's own outcome when it succeeded (report type
+    /// `SEATS_REPORT_TYPE`) -- so it shows up in the same
+    /// `governance.copilot.reports`/`rows` push metrics as the day-based
+    /// reports, without a second metric family.
     pub outcomes: Vec<governance_copilot::ReportOutcome>,
     /// Days in the window that ingested without error. An "empty" (204)
     /// report still counts as covered -- only a transport/auth/parse/storage
-    /// error for the day counts as failed.
+    /// error for the day counts as failed. Never incremented for the seat
+    /// snapshot -- see `seats` below.
     pub covered: usize,
     /// Days in the window that errored: the day plus the error's rendered
     /// message (not the `anyhow::Error` itself -- `main` only needs to log
@@ -197,28 +243,56 @@ pub struct BackfillOutcome {
     /// "nothing to do" (window empty; fine) from "everything in a non-empty
     /// window failed" (must exit non-zero -- see `main`'s `Command::Sync`).
     pub window_days: usize,
+    /// Outcome of the once-per-run seat snapshot (RFC-0001's headline use
+    /// case: "who has a seat and has never used it"). `Ok(n)` = `n` seat
+    /// rows upserted (`0` is a real "org has no seats" answer, not a
+    /// failure). Tracked independently of `covered`/`failed`/`window_days`
+    /// on purpose: seats and the day-based reports are different failure
+    /// domains on a different axis entirely (once-per-run vs.
+    /// once-per-day), so one failing must neither mask nor be masked by the
+    /// other -- see `exit_result` below, which fails the run on either.
+    pub seats: Result<usize, String>,
 }
 
 impl BackfillOutcome {
-    /// Whether a `Command::Sync` run should exit non-zero (BLOCKER 1): the
-    /// window was non-empty and every day in it failed -- a totally broken
-    /// run (dead credential, GitHub unreachable) that the CronJob's
-    /// `backoffLimit`/alerting must see, not a process that quietly exits 0.
+    /// Whether a `Command::Sync` run should exit non-zero: either the
+    /// window was non-empty and every day in it failed (BLOCKER 1 from the
+    /// pre-go-live review -- a totally broken run, dead credential, GitHub
+    /// unreachable), or the once-per-run seat snapshot itself failed. Both
+    /// are checked independently and either alone is sufficient to fail the
+    /// run -- a healthy seat snapshot must not paper over every report
+    /// failing, and healthy reports must not paper over a broken seat
+    /// snapshot (RFC-0001's headline use case going silently unfilled is
+    /// exactly the kind of failure `exit_result` exists to surface, not
+    /// mask).
     ///
-    /// Returns `Ok(())` for the two exit-0 cases: nothing to do (empty
-    /// window), or a partial failure -- logged loudly by `run_backfill_at`
-    /// already, and re-attempted by the next run's trailing window
-    /// (BLOCKER 2), so failing the whole job here would only be noise.
+    /// Returns `Ok(())` only when both are healthy: nothing to do in an
+    /// empty window (or a partial day failure, logged loudly by
+    /// `run_backfill_at` already and re-attempted by the next run's
+    /// trailing window -- BLOCKER 2) AND the seat snapshot succeeded.
     pub fn exit_result(&self) -> Result<()> {
-        if self.window_days > 0 && self.covered == 0 {
-            anyhow::bail!(
+        let reports_failed = self.window_days > 0 && self.covered == 0;
+        let seats_failed = self.seats.is_err();
+        match (reports_failed, seats_failed) {
+            (true, true) => anyhow::bail!(
+                "backfill covered 0 of {} day(s) in the window AND the seat snapshot failed \
+                 (first report failure: {:?}; seats failure: {:?})",
+                self.window_days,
+                self.failed.first(),
+                self.seats.as_ref().err()
+            ),
+            (true, false) => anyhow::bail!(
                 "backfill covered 0 of {} day(s) in the window; every day failed \
                  (first failure: {:?})",
                 self.window_days,
                 self.failed.first()
-            );
+            ),
+            (false, true) => anyhow::bail!(
+                "the once-per-run Copilot seat snapshot failed: {:?}",
+                self.seats.as_ref().err()
+            ),
+            (false, false) => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -272,11 +346,35 @@ pub async fn run_backfill_at(
             }
         }
     }
+
+    // Seats: exactly once per run, stamped with `today` -- deliberately
+    // OUTSIDE the per-day loop above. GitHub's `/copilot/billing/seats` has
+    // no `day` parameter at all, so calling this once per backfilled day
+    // would write the SAME current snapshot under several different
+    // `snapshot_day`s, fabricating a seat history that was never actually
+    // observed on those days (see `governance_copilot::sync_seats`'s doc
+    // comment). There is no backfill for seats, ever: a run that fails to
+    // snapshot today's seats has lost that day's seat data permanently, not
+    // deferred it to a later run.
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let seats = match ingest_seats(client, pool, cfg, &today_str).await {
+        Ok(outcome) => {
+            let n = outcome.record_count;
+            all.push(outcome);
+            Ok(n)
+        }
+        Err(e) => {
+            warn!(error = %e, "seat snapshot failed");
+            Err(format!("{e:#}"))
+        }
+    };
+
     Ok(BackfillOutcome {
         outcomes: all,
         covered,
         failed,
         window_days,
+        seats,
     })
 }
 
@@ -320,10 +418,19 @@ pub async fn run_replay(
             info!(day = ds, "no archived reports for day; nothing to replay");
         }
         for key in keys {
+            // The four day-based reports archive as `{report}.ndjson`; the
+            // seat snapshot archives as `{SEATS_REPORT_TYPE}.json` (see
+            // `governance_copilot::seats_archive_key`'s doc comment for
+            // why it is a single JSON document, not NDJSON) -- strip
+            // whichever suffix the key actually carries so both replay
+            // through the identical `replay_report` call below.
             let report = key
                 .rsplit('/')
                 .next()
-                .and_then(|f| f.strip_suffix(".ndjson"))
+                .and_then(|f| {
+                    f.strip_suffix(".ndjson")
+                        .or_else(|| f.strip_suffix(".json"))
+                })
                 .unwrap_or(&key)
                 .to_owned();
             let bytes = cfg.archive.read(&key).await?;
@@ -422,7 +529,7 @@ mod tests {
     use super::*;
     use crate::{
         archive::Archive,
-        test_support::{MockGithub, RouteBehavior, TEST_APP_PRIVATE_KEY_PEM},
+        test_support::{MockGithub, RouteBehavior, SeatsBehavior, TEST_APP_PRIVATE_KEY_PEM},
     };
 
     fn date(s: &str) -> chrono::NaiveDate {
@@ -524,7 +631,10 @@ mod tests {
     /// `run_backfill_at` end to end against a mock GitHub that always
     /// succeeds: the day is covered, the window matches `backfill_window`,
     /// and (via `run_status`) the high-water mark actually advanced in
-    /// Postgres.
+    /// Postgres. Also covers the seat snapshot: it must succeed alongside
+    /// the day report and must NOT be counted in `covered`/`window_days`
+    /// (those track day-based reports only -- see `BackfillOutcome`'s doc
+    /// comment).
     #[tokio::test]
     async fn run_backfill_at_covers_a_successful_day_and_advances_the_high_water_mark() {
         let Some(pool) = db_pool().await else {
@@ -532,9 +642,13 @@ mod tests {
         };
         let tenant_id = format!("it-ctl-backfill-ok-{}", std::process::id());
         let org = "it-org-ok";
-        let mock = MockGithub::start(RouteBehavior::AlwaysSucceeds, org)
-            .await
-            .unwrap();
+        let mock = MockGithub::start_with_seats(
+            RouteBehavior::AlwaysSucceeds,
+            SeatsBehavior::Succeeds { seats: 3 },
+            org,
+        )
+        .await
+        .unwrap();
         let client = GithubClient::with_api_base(reqwest::Client::new(), mock.base_url.clone());
         let cfg = test_config(
             tenant_id.clone(),
@@ -549,9 +663,19 @@ mod tests {
             result.window_days, 1,
             "lookback=1, max_backfill=1 => just today"
         );
-        assert_eq!(result.covered, 1);
+        assert_eq!(result.covered, 1, "covered must count day-reports only");
         assert!(result.failed.is_empty());
+        assert_eq!(
+            result.seats,
+            Ok(3),
+            "the seat snapshot must succeed independently and report its row count"
+        );
         assert!(result.exit_result().is_ok());
+        assert_eq!(
+            mock.seats_call_count().unwrap(),
+            1,
+            "seats must be fetched exactly once per run, not once per report or per day"
+        );
 
         let status = run_status(&pool, &cfg).await.unwrap();
         assert_eq!(
@@ -602,6 +726,161 @@ mod tests {
             SyncStatus::NeverSynced,
             "a fully failed day must not write a manifest row that would advance the \
              high-water mark"
+        );
+    }
+
+    /// The seat snapshot must be fetched exactly once per run even when the
+    /// backfill window spans several days -- proves it lives outside the
+    /// per-day loop, not that it merely "happens to" run once in the
+    /// single-day test above. Broken against a version of `run_backfill_at`
+    /// that called `ingest_seats` inside the per-day loop: this failed with
+    /// `seats_call_count() == 3`, not `1`.
+    #[tokio::test]
+    async fn seats_are_fetched_once_per_run_even_across_a_multi_day_backfill_window() {
+        let Some(pool) = db_pool().await else {
+            return;
+        };
+        let tenant_id = format!("it-ctl-seats-once-{}", std::process::id());
+        let org = "it-org-seats-once";
+        let mock = MockGithub::start_with_seats(
+            RouteBehavior::AlwaysSucceeds,
+            SeatsBehavior::Succeeds { seats: 2 },
+            org,
+        )
+        .await
+        .unwrap();
+        let client = GithubClient::with_api_base(reqwest::Client::new(), mock.base_url.clone());
+        let mut cfg = test_config(
+            tenant_id.clone(),
+            org.to_owned(),
+            tmp_archive_dir("seats-once"),
+        );
+        // A 3-day window (unlike every other test here, which collapses to
+        // one day) so a per-day seats bug would show up as call count 3.
+        cfg.lookback_days = 3;
+        cfg.max_backfill_days = 3;
+        let today = chrono::Utc::now().date_naive();
+
+        let result = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
+
+        assert_eq!(result.window_days, 4, "today plus 3 days back");
+        assert_eq!(result.covered, 4);
+        assert_eq!(result.seats, Ok(2));
+        assert_eq!(
+            mock.seats_call_count().unwrap(),
+            1,
+            "seats must be fetched exactly once regardless of how many days the window covers"
+        );
+    }
+
+    /// Re-running the same day is the idempotency property RFC-0001 cares
+    /// about: reprocessing must not change row counts, for seats exactly as
+    /// much as for the four day-based reports.
+    #[tokio::test]
+    async fn seat_snapshot_reprocessing_does_not_change_row_counts() {
+        let Some(pool) = db_pool().await else {
+            return;
+        };
+        let tenant_id = format!("it-ctl-seats-idem-{}", std::process::id());
+        let org = "it-org-seats-idem";
+        let mock = MockGithub::start_with_seats(
+            RouteBehavior::AlwaysSucceeds,
+            SeatsBehavior::Succeeds { seats: 5 },
+            org,
+        )
+        .await
+        .unwrap();
+        let client = GithubClient::with_api_base(reqwest::Client::new(), mock.base_url.clone());
+        let cfg = test_config(
+            tenant_id.clone(),
+            org.to_owned(),
+            tmp_archive_dir("seats-idem"),
+        );
+        let today = chrono::Utc::now().date_naive();
+
+        let first = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
+        let second = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
+
+        assert_eq!(first.seats, Ok(5));
+        assert_eq!(
+            second.seats,
+            Ok(5),
+            "reprocessing must upsert, not duplicate"
+        );
+
+        let (n,): (i64,) = cratestack::sqlx::query_as(
+            "SELECT count(*) FROM copilot_seat_snapshots WHERE tenant_id = $1",
+        )
+        .bind(&tenant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 5, "re-running the same day must not duplicate seat rows");
+    }
+
+    /// An org with zero Copilot seats must produce `Ok(0)`, not a failure --
+    /// "no seats" is a real, successfully-queried answer (GitHub returns
+    /// `200` with `seats: []`), not missing data.
+    #[tokio::test]
+    async fn seat_snapshot_on_an_empty_org_succeeds_with_zero_rows() {
+        let Some(pool) = db_pool().await else {
+            return;
+        };
+        let tenant_id = format!("it-ctl-seats-empty-{}", std::process::id());
+        let org = "it-org-seats-empty";
+        let mock = MockGithub::start_with_seats(
+            RouteBehavior::AlwaysSucceeds,
+            SeatsBehavior::Succeeds { seats: 0 },
+            org,
+        )
+        .await
+        .unwrap();
+        let client = GithubClient::with_api_base(reqwest::Client::new(), mock.base_url.clone());
+        let cfg = test_config(
+            tenant_id.clone(),
+            org.to_owned(),
+            tmp_archive_dir("seats-empty"),
+        );
+        let today = chrono::Utc::now().date_naive();
+
+        let result = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
+        assert_eq!(result.seats, Ok(0));
+        assert!(result.exit_result().is_ok(), "zero seats is not a failure");
+    }
+
+    /// A seats-only failure (every day-report succeeds) must still fail the
+    /// run -- RFC-0001's headline use case going silently unfilled is
+    /// exactly what `exit_result` must not mask just because the unrelated
+    /// day-based reports were healthy.
+    #[tokio::test]
+    async fn a_seats_only_failure_fails_the_run_even_when_every_day_report_succeeded() {
+        let Some(pool) = db_pool().await else {
+            return;
+        };
+        let tenant_id = format!("it-ctl-seats-fail-{}", std::process::id());
+        let org = "it-org-seats-fail";
+        let mock = MockGithub::start_with_seats(
+            RouteBehavior::AlwaysSucceeds,
+            SeatsBehavior::AlwaysFails(500),
+            org,
+        )
+        .await
+        .unwrap();
+        let client = GithubClient::with_api_base(reqwest::Client::new(), mock.base_url.clone());
+        let cfg = test_config(
+            tenant_id.clone(),
+            org.to_owned(),
+            tmp_archive_dir("seats-fail"),
+        );
+        let today = chrono::Utc::now().date_naive();
+
+        let result = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
+
+        assert_eq!(result.covered, 1, "the day-based reports still succeeded");
+        assert!(result.seats.is_err());
+        assert!(
+            result.exit_result().is_err(),
+            "a seats-only failure must still fail the run, not be masked by healthy day-reports"
         );
     }
 
@@ -685,6 +964,10 @@ mod tests {
         );
     }
 
+    /// `seats` defaults to `Ok(0)` -- a healthy, empty seat snapshot --
+    /// so every existing "day-report" `exit_result` scenario below stays
+    /// about exactly what it was testing before `seats` existed. The two
+    /// seats-specific tests override it explicitly.
     fn outcome(covered: usize, window_days: usize, failed: &[&str]) -> BackfillOutcome {
         BackfillOutcome {
             outcomes: Vec::new(),
@@ -694,6 +977,7 @@ mod tests {
                 .map(|d| (d.to_string(), "boom".to_owned()))
                 .collect(),
             window_days,
+            seats: Ok(0),
         }
     }
 
@@ -733,5 +1017,42 @@ mod tests {
     fn exit_result_is_ok_when_every_day_succeeded() {
         let result = outcome(4, 4, &[]);
         assert!(result.exit_result().is_ok());
+    }
+
+    /// A seats failure alone (every day-report otherwise healthy) must
+    /// still fail the run: `covered`/`window_days` say "the day-based
+    /// reports were fine", but `seats` failing must not be masked by that.
+    /// Broken against a version of `exit_result` that only checked
+    /// `covered == 0`: this failed with `exit_result().is_ok() == true`,
+    /// silently swallowing the seats failure.
+    #[test]
+    fn exit_result_errors_on_a_seats_only_failure_even_with_a_fully_healthy_window() {
+        let mut result = outcome(4, 4, &[]);
+        result.seats = Err("boom".to_owned());
+        assert!(
+            result.exit_result().is_err(),
+            "a seats failure must fail the run even when every day-report succeeded"
+        );
+    }
+
+    /// The reverse of the case above: a totally failed day-report window
+    /// AND a failed seats snapshot must still produce exactly one `Err`
+    /// (not panic combining the two), so the double-failure path is
+    /// exercised too, not just each failure mode in isolation.
+    #[test]
+    fn exit_result_errors_when_both_reports_and_seats_fail() {
+        let mut result = outcome(0, 4, &["2026-08-07"]);
+        result.seats = Err("boom".to_owned());
+        assert!(result.exit_result().is_err());
+    }
+
+    /// A healthy seats snapshot must not, by itself, paper over the
+    /// existing "every day failed" failure mode -- proves the two checks in
+    /// `exit_result` are independent, not "seats overrides reports".
+    #[test]
+    fn exit_result_still_errors_on_a_failed_window_even_with_healthy_seats() {
+        let result = outcome(0, 4, &["2026-08-07"]);
+        assert_eq!(result.seats, Ok(0));
+        assert!(result.exit_result().is_err());
     }
 }

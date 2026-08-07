@@ -5,10 +5,11 @@
 //! collide, and asserts the central RFC-0001 invariant: reprocessing the same
 //! natural key upserts in place and never grows row counts (idempotency).
 
+use chrono::{TimeZone, Utc};
 use governance_copilot::{
-    OrgDaily, RepoDaily, UserDaily, UserTeam, high_water_mark, replay_report, unmapped_user_count,
-    upsert_manifest, upsert_org_daily, upsert_repo_daily, upsert_user_daily, upsert_user_team,
-    verify_manifests,
+    OrgDaily, RepoDaily, SeatSnapshot, UserDaily, UserTeam, high_water_mark, parse_seats,
+    replay_report, unmapped_user_count, upsert_manifest, upsert_org_daily, upsert_repo_daily,
+    upsert_seat_snapshot, upsert_user_daily, upsert_user_team, verify_manifests,
 };
 use governance_core::MicroUsd;
 
@@ -306,4 +307,178 @@ async fn verify_detects_drift_between_manifest_and_rows() {
         .await
         .unwrap();
     assert_eq!(unmapped, 1);
+}
+
+/// The RFC-0001 idempotency property applied to seats: reprocessing the
+/// same snapshot day must upsert in place, never duplicate.
+#[tokio::test]
+async fn seat_snapshot_reprocessing_never_duplicates_rows() {
+    let Some(pool) = pool().await else { return };
+    let t = format!("it-seats-{}", std::process::id());
+    let org = "it-org-seats";
+
+    let rows = vec![SeatSnapshot {
+        provider_user_id: "9001".to_owned(),
+        user_login: "octocat".to_owned(),
+        snapshot_day: "2026-08-07".to_owned(),
+        seat_assigned_at: None,
+        last_activity_at: None,
+        last_activity_editor: None,
+        seat_state: "active".to_owned(),
+    }];
+
+    let inserted = upsert_seat_snapshot(&pool, &t, org, &rows).await.unwrap();
+    assert_eq!(inserted, 1);
+    assert_eq!(count(&pool, "copilot_seat_snapshots", &t).await, 1);
+
+    // Reprocess the same (org, snapshot_day, provider_user_id) with a
+    // changed field; it must upsert, not insert a second row.
+    let rows2 = vec![SeatSnapshot {
+        seat_state: "pending_cancellation".to_owned(),
+        ..rows[0].clone()
+    }];
+    let _ = upsert_seat_snapshot(&pool, &t, org, &rows2).await.unwrap();
+    assert_eq!(count(&pool, "copilot_seat_snapshots", &t).await, 1);
+}
+
+/// A seat with no recorded activity (never used -- RFC-0001's exact
+/// motivating question) must be stored as SQL `NULL`, not a fabricated
+/// value that would read as "known" downstream.
+#[tokio::test]
+async fn seat_snapshot_with_no_activity_stores_null_not_a_default() {
+    let Some(pool) = pool().await else { return };
+    let t = format!("it-seats-null-{}", std::process::id());
+    let org = "it-org-seats-null";
+
+    let rows = vec![SeatSnapshot {
+        provider_user_id: "9002".to_owned(),
+        user_login: "neveruser".to_owned(),
+        snapshot_day: "2026-08-07".to_owned(),
+        seat_assigned_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+        last_activity_at: None,
+        last_activity_editor: None,
+        seat_state: "active".to_owned(),
+    }];
+    upsert_seat_snapshot(&pool, &t, org, &rows).await.unwrap();
+
+    let (last_activity_at, last_activity_editor): (Option<chrono::DateTime<Utc>>, Option<String>) =
+        cratestack::sqlx::query_as(
+            "SELECT last_activity_at, last_activity_editor FROM copilot_seat_snapshots \
+             WHERE tenant_id = $1 AND provider_user_id = '9002'",
+        )
+        .bind(&t)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        last_activity_at, None,
+        "a never-used seat must store NULL, not a fabricated timestamp"
+    );
+    assert_eq!(last_activity_editor, None);
+}
+
+/// The seat snapshot's manifest row must NOT advance the high-water mark
+/// the four day-based reports use for `backfill_window`'s gap-filling.
+/// GitHub's `/copilot/billing/seats` always reflects "today", so if this
+/// were included, a seat snapshot succeeding every run would make the
+/// day-based reports look perpetually current even while every one of them
+/// has been failing for a week -- see `store::high_water_mark`'s doc
+/// comment. This test writes ONLY a seats manifest row (no day-report
+/// manifest at all) and asserts the high-water mark still reads as `None`.
+#[tokio::test]
+async fn a_seats_only_manifest_does_not_become_the_daily_reports_high_water_mark() {
+    let Some(pool) = pool().await else { return };
+    let t = format!("it-seats-hwm-{}", std::process::id());
+    let org = "it-org-seats-hwm";
+
+    upsert_manifest(
+        &pool,
+        &t,
+        "github_copilot",
+        org,
+        governance_copilot::SEATS_REPORT_TYPE,
+        "2026-08-07",
+        "ok",
+        3,
+    )
+    .await
+    .unwrap();
+
+    let hwm = high_water_mark(&pool, &t, "github_copilot").await.unwrap();
+    assert_eq!(
+        hwm, None,
+        "a seats-only manifest must not be read as the day-reports' high-water mark"
+    );
+}
+
+/// `verify_manifests` must reconcile a seat-snapshot manifest row against
+/// `copilot_seat_snapshots` (not error on an "unknown report type") --
+/// clean on a matching snapshot, and it must name the day the moment a seat
+/// row goes missing, exactly like the four day-based reports above.
+#[tokio::test]
+async fn verify_manifests_reconciles_a_seat_snapshot() {
+    let Some(pool) = pool().await else { return };
+    let t = format!("it-seats-verify-{}", std::process::id());
+    let org = "it-org-seats-verify";
+    let day = "2026-08-07";
+
+    let page = concat!(
+        r#"{"seats":["#,
+        r#"{"assignee":{"id":1,"login":"a"}},"#,
+        r#"{"assignee":{"id":2,"login":"b"}}"#,
+        r#"]}"#
+    );
+    let rows = parse_seats(
+        format!("[{page}]").as_bytes(),
+        governance_copilot::SEATS_REPORT_TYPE,
+        day,
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let n = upsert_seat_snapshot(&pool, &t, org, &rows).await.unwrap();
+    upsert_manifest(
+        &pool,
+        &t,
+        "github_copilot",
+        org,
+        governance_copilot::SEATS_REPORT_TYPE,
+        day,
+        "ok",
+        n,
+    )
+    .await
+    .unwrap();
+
+    let drift = verify_manifests(&pool, &t, "github_copilot", org)
+        .await
+        .unwrap();
+    assert!(
+        drift.is_empty(),
+        "a clean seat snapshot must verify clean, not error on an unrecognized report type: \
+         {drift:?}"
+    );
+
+    cratestack::sqlx::query(
+        "DELETE FROM copilot_seat_snapshots \
+         WHERE tenant_id = $1 AND organization_id = $2 AND snapshot_day = CAST($3 AS date) \
+           AND provider_user_id = '2'",
+    )
+    .bind(&t)
+    .bind(org)
+    .bind(day)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let drift = verify_manifests(&pool, &t, "github_copilot", org)
+        .await
+        .unwrap();
+    assert_eq!(
+        drift.len(),
+        1,
+        "deleted seat row must surface as drift: {drift:?}"
+    );
+    assert_eq!(drift[0].report, governance_copilot::SEATS_REPORT_TYPE);
+    assert_eq!(drift[0].expected, 2);
+    assert_eq!(drift[0].actual, 1);
 }

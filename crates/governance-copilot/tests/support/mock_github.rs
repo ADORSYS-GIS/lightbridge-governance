@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -74,6 +74,46 @@ impl RouteBehavior {
     }
 }
 
+/// How the `/orgs/{org}/copilot/billing/seats` route behaves. A separate
+/// enum from `RouteBehavior` (rather than reusing it) because seats
+/// pagination has shapes `RouteBehavior`'s "fail N times then succeed"
+/// model does not: a fixed number of real pages, a server that never stops
+/// claiming a next page, and a first page whose `Link` header does not
+/// parse at all.
+#[derive(Clone)]
+pub enum SeatsBehavior {
+    /// `total` seats spread across pages of `page_size`, following normal
+    /// `Link: rel="next"` pagination until exhausted.
+    Paginated { total: u32, page_size: u32 },
+    /// Every page's `Link` header advertises another "next" page forever,
+    /// regardless of how many seats have already been returned -- proves
+    /// the client's page cap (not the data) is what stops the fetch.
+    LoopsForever { page_size: u32 },
+    /// The first page returns a `Link` header that does not parse as a
+    /// `rel="next"` entry at all (not even `<...>`-bracketed) -- proves a
+    /// genuinely garbage header stops pagination immediately.
+    MalformedLinkHeader,
+    /// The first page returns a syntactically well-formed, bracketed `Link`
+    /// header whose only relation is `rel="last"` (never `rel="next"`),
+    /// with `total_seats` claiming more data exists than one page holds --
+    /// proves the `rel="next"` check itself gates continuation. A client
+    /// whose relation check were broken (treating any bracketed URL as
+    /// "next") would incorrectly fetch a second page here; only a client
+    /// that actually enforces the relation stops at page 1.
+    LinkHeaderWithNoNextRelation { page_size: u32 },
+    /// Every call fails with `status`.
+    AlwaysFails(u16),
+}
+
+impl Default for SeatsBehavior {
+    fn default() -> Self {
+        Self::Paginated {
+            total: 1,
+            page_size: 100,
+        }
+    }
+}
+
 struct Inner {
     base_url: String,
     report: RouteBehavior,
@@ -87,6 +127,8 @@ struct Inner {
     installed_org: String,
     access_token: RouteBehavior,
     access_token_calls: u32,
+    seats: SeatsBehavior,
+    seats_calls: u32,
 }
 
 #[derive(Clone)]
@@ -104,6 +146,7 @@ pub struct MockGithubConfig {
     pub installations: RouteBehavior,
     pub installed_org: String,
     pub access_token: RouteBehavior,
+    pub seats: SeatsBehavior,
 }
 
 impl Default for MockGithubConfig {
@@ -115,6 +158,7 @@ impl Default for MockGithubConfig {
             installations: RouteBehavior::always_succeeds(),
             installed_org: "test-org".to_owned(),
             access_token: RouteBehavior::always_succeeds(),
+            seats: SeatsBehavior::default(),
         }
     }
 }
@@ -141,6 +185,8 @@ impl MockGithub {
             installed_org: config.installed_org,
             access_token: config.access_token,
             access_token_calls: 0,
+            seats: config.seats,
+            seats_calls: 0,
         }));
 
         let router = Router::new()
@@ -149,6 +195,7 @@ impl MockGithub {
                 get(report_route),
             )
             .route("/download/{report}", get(download_route))
+            .route("/orgs/{org}/copilot/billing/seats", get(seats_route))
             .route("/app/installations", get(installations_route))
             .route(
                 "/app/installations/{id}/access_tokens",
@@ -181,6 +228,10 @@ impl MockGithub {
 
     pub fn access_token_call_count(&self) -> Result<u32> {
         Ok(lock(&self.state)?.access_token_calls)
+    }
+
+    pub fn seats_call_count(&self) -> Result<u32> {
+        Ok(lock(&self.state)?.seats_calls)
     }
 }
 
@@ -274,4 +325,108 @@ async fn access_token_route(State(state): State<Arc<Mutex<Inner>>>) -> impl Into
         )
             .into_response()
     })
+}
+
+#[derive(serde::Deserialize)]
+struct SeatsQuery {
+    #[serde(default)]
+    page: Option<u32>,
+}
+
+/// Fabricated seat rows `start..start+count`, 1-indexed ids/logins so a
+/// test can assert on exactly which seats came back.
+fn seat_objects(start: u32, count: u32) -> Vec<serde_json::Value> {
+    (start..start + count)
+        .map(|i| {
+            json!({
+                "created_at": "2026-01-01T00:00:00Z",
+                "last_activity_at": "2026-08-01T00:00:00Z",
+                "last_activity_editor": "vscode/1.0.0",
+                "pending_cancellation_date": null,
+                "assignee": {"id": i + 1, "login": format!("user{}", i + 1)},
+            })
+        })
+        .collect()
+}
+
+async fn seats_route(
+    State(state): State<Arc<Mutex<Inner>>>,
+    Path(org): Path<String>,
+    Query(query): Query<SeatsQuery>,
+) -> impl IntoResponse {
+    let Ok(mut guard) = lock(&state) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned").into_response();
+    };
+    guard.seats_calls += 1;
+    let page = query.page.unwrap_or(1);
+    let base_url = guard.base_url.clone();
+    let behavior = guard.seats.clone();
+    drop(guard);
+
+    match behavior {
+        SeatsBehavior::AlwaysFails(status) => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (
+                status,
+                Json(json!({"message": "mock github configured failure"})),
+            )
+                .into_response()
+        }
+        SeatsBehavior::MalformedLinkHeader => {
+            let mut headers = HeaderMap::new();
+            if let Ok(v) = "not-a-valid-link-header".parse() {
+                headers.insert(axum::http::header::LINK, v);
+            }
+            let seats = seat_objects(0, 1);
+            (headers, Json(json!({"total_seats": 1, "seats": seats}))).into_response()
+        }
+        SeatsBehavior::LinkHeaderWithNoNextRelation { page_size } => {
+            let seats = seat_objects(0, page_size);
+            let mut headers = HeaderMap::new();
+            // Well-formed and bracketed, but `rel="last"` -- never "next".
+            let last =
+                format!("{base_url}/orgs/{org}/copilot/billing/seats?per_page={page_size}&page=1");
+            if let Ok(v) = format!("<{last}>; rel=\"last\"").parse() {
+                headers.insert(axum::http::header::LINK, v);
+            }
+            // Claims far more seats exist than this one page holds, so a
+            // client that (bug) kept going would have somewhere to go.
+            let total = page_size.saturating_mul(10);
+            (headers, Json(json!({"total_seats": total, "seats": seats}))).into_response()
+        }
+        SeatsBehavior::LoopsForever { page_size } => {
+            let start = page.saturating_sub(1) * page_size;
+            let seats = seat_objects(start, page_size);
+            let mut headers = HeaderMap::new();
+            let next = format!(
+                "{base_url}/orgs/{org}/copilot/billing/seats?per_page={page_size}&page={}",
+                page + 1
+            );
+            if let Ok(v) = format!("<{next}>; rel=\"next\"").parse() {
+                headers.insert(axum::http::header::LINK, v);
+            }
+            (
+                headers,
+                Json(json!({"total_seats": u32::MAX, "seats": seats})),
+            )
+                .into_response()
+        }
+        SeatsBehavior::Paginated { total, page_size } => {
+            let start = page.saturating_sub(1) * page_size;
+            let remaining = total.saturating_sub(start);
+            let count = remaining.min(page_size);
+            let seats = seat_objects(start, count);
+            let mut headers = HeaderMap::new();
+            if start + count < total {
+                let next = format!(
+                    "{base_url}/orgs/{org}/copilot/billing/seats?per_page={page_size}&page={}",
+                    page + 1
+                );
+                if let Ok(v) = format!("<{next}>; rel=\"next\"").parse() {
+                    headers.insert(axum::http::header::LINK, v);
+                }
+            }
+            (headers, Json(json!({"total_seats": total, "seats": seats}))).into_response()
+        }
+    }
 }

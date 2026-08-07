@@ -69,24 +69,53 @@ pub enum RouteBehavior {
     AlwaysFails(u16),
 }
 
+/// How the seats route behaves. Separate from `RouteBehavior` (rather than
+/// reusing it) because `sync.rs`'s seats tests need a seat *count*, not just
+/// success/failure -- `governance-copilot`'s own `tests/support/mock_github.
+/// rs` already covers seats pagination/`Link`-header edge cases in detail,
+/// so this stays deliberately minimal: single-page, N seats, or a failure.
+#[derive(Clone, Copy)]
+pub enum SeatsBehavior {
+    /// One page with `n` seats (ids `1..=n`).
+    Succeeds {
+        seats: u32,
+    },
+    AlwaysFails(u16),
+}
+
 struct Inner {
     base_url: String,
     report: RouteBehavior,
+    seats: SeatsBehavior,
+    seats_calls: u32,
     installed_org: String,
 }
 
-/// A handle to the running mock server. `base_url` is the only field a test
-/// needs; the router holds its own `Arc<Mutex<Inner>>` clone, so this handle
-/// does not need to hold one back for the server to keep working.
+/// A handle to the running mock server. `base_url` is the only field most
+/// tests need; the router holds its own `Arc<Mutex<Inner>>` clone, so this
+/// handle does not need one back for the server to keep working. `state` is
+/// kept only so `seats_call_count` can read it back.
 #[derive(Clone)]
 pub struct MockGithub {
     pub base_url: String,
+    state: Arc<Mutex<Inner>>,
 }
 
 impl MockGithub {
-    /// Start a mock server whose report endpoint behaves as `report`, for
-    /// an App installed on `installed_org`.
+    /// Start a mock server whose report endpoint behaves as `report`, seats
+    /// endpoint returns a single fixed seat, for an App installed on
+    /// `installed_org`. Convenience wrapper over `start_with_seats` for the
+    /// (majority of) tests that do not care about seat behavior.
     pub async fn start(report: RouteBehavior, installed_org: &str) -> Result<Self> {
+        Self::start_with_seats(report, SeatsBehavior::Succeeds { seats: 1 }, installed_org).await
+    }
+
+    /// As `start`, with the seats route's behavior also configurable.
+    pub async fn start_with_seats(
+        report: RouteBehavior,
+        seats: SeatsBehavior,
+        installed_org: &str,
+    ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .context("binding mock github listener")?;
@@ -98,6 +127,8 @@ impl MockGithub {
         let state = Arc::new(Mutex::new(Inner {
             base_url: base_url.clone(),
             report,
+            seats,
+            seats_calls: 0,
             installed_org: installed_org.to_owned(),
         }));
 
@@ -107,12 +138,13 @@ impl MockGithub {
                 get(report_route),
             )
             .route("/download/{report}", get(download_route))
+            .route("/orgs/{org}/copilot/billing/seats", get(seats_route))
             .route("/app/installations", get(installations_route))
             .route(
                 "/app/installations/{id}/access_tokens",
                 post(access_token_route),
             )
-            .with_state(state);
+            .with_state(state.clone());
 
         tokio::spawn(async move {
             // Detached background task: nothing awaits its result, so a
@@ -121,7 +153,14 @@ impl MockGithub {
             let _ = axum::serve(listener, router).await;
         });
 
-        Ok(Self { base_url })
+        Ok(Self { base_url, state })
+    }
+
+    /// How many times the seats route has been hit -- the assertion that
+    /// proves seats was fetched exactly once per `sync` run, never once per
+    /// backfilled day.
+    pub fn seats_call_count(&self) -> Result<u32> {
+        Ok(lock(&self.state)?.seats_calls)
     }
 }
 
@@ -161,6 +200,36 @@ async fn report_route(
 /// behavior, not parsed-row content (that is `parse.rs`'s own tests).
 async fn download_route() -> impl IntoResponse {
     Vec::<u8>::new()
+}
+
+/// A single fixed page (this mock never paginates -- that behavior is
+/// covered in detail by `governance-copilot`'s own
+/// `tests/support/mock_github.rs`).
+async fn seats_route(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse {
+    let Ok(mut guard) = lock(&state) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned").into_response();
+    };
+    guard.seats_calls += 1;
+    match guard.seats {
+        SeatsBehavior::AlwaysFails(status) => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (status, Json(json!({"message": "mock configured failure"}))).into_response()
+        }
+        SeatsBehavior::Succeeds { seats } => {
+            let rows: Vec<_> = (1..=seats)
+                .map(|i| {
+                    json!({
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "last_activity_at": "2026-08-01T00:00:00Z",
+                        "last_activity_editor": "vscode/1.0.0",
+                        "pending_cancellation_date": null,
+                        "assignee": {"id": i, "login": format!("user{i}")},
+                    })
+                })
+                .collect();
+            Json(json!({"total_seats": seats, "seats": rows})).into_response()
+        }
+    }
 }
 
 async fn installations_route(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse {
