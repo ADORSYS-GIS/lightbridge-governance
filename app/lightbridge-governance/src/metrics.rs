@@ -22,6 +22,8 @@ pub struct Metrics {
     pub ingest_tool_calls_total: IntCounter,
     /// Identity mismatch detection failures (best-effort query failures).
     pub ingest_identity_mismatch_failures_total: IntCounter,
+    /// Executions whose payload email contradicted the token-derived identity.
+    pub ingest_identity_mismatches_total: IntCounter,
 }
 
 impl Metrics {
@@ -60,6 +62,11 @@ impl Metrics {
             "identity mismatch detection failures (best-effort query failures)",
         )
         .expect("static metric definition");
+        let ingest_identity_mismatches_total = IntCounter::new(
+            "governance_ingest_identity_mismatches_total",
+            "executions whose payload email contradicted the token-derived identity",
+        )
+        .expect("static metric definition");
 
         let metrics = Self {
             registry: Registry::new(),
@@ -69,18 +76,20 @@ impl Metrics {
             ingest_tool_calls_total: ingest_tool_calls_total.clone(),
             ingest_identity_mismatch_failures_total: ingest_identity_mismatch_failures_total
                 .clone(),
+            ingest_identity_mismatches_total: ingest_identity_mismatches_total.clone(),
         };
 
         // Registry::register fails only on a name collision or an already
         // registered collector -- impossible here since each is registered
         // exactly once. Logged, not fatal: a missing metric is worse than a
         // 500 on startup.
-        let collectors: [Box<dyn prometheus::core::Collector>; 5] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 6] = [
             Box::new(ingest_requests_total),
             Box::new(ingest_executions_total),
             Box::new(ingest_model_calls_total),
             Box::new(ingest_tool_calls_total),
             Box::new(ingest_identity_mismatch_failures_total),
+            Box::new(ingest_identity_mismatches_total),
         ];
         for collector in collectors {
             if let Err(error) = metrics.registry.register(collector) {
@@ -122,11 +131,13 @@ mod tests {
             .inc();
         metrics.ingest_executions_total.inc();
         metrics.ingest_identity_mismatch_failures_total.inc();
+        metrics.ingest_identity_mismatches_total.inc();
 
         let out = metrics.render();
         assert!(out.contains("governance_ingest_requests_total{outcome=\"success\"} 1"));
         assert!(out.contains("governance_ingest_executions_total 1"));
         assert!(out.contains("governance_ingest_identity_mismatch_failures_total 1"));
+        assert!(out.contains("governance_ingest_identity_mismatches_total 1"));
     }
 
     #[test]

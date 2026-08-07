@@ -1683,6 +1683,8 @@ dependencies = [
  "governance-core",
  "governance-foundry",
  "mimalloc",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

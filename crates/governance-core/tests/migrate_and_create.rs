@@ -1222,3 +1222,392 @@ async fn end_to_end_identity_binding_with_mismatch_detection() {
         "execution must be attributed to token-derived identity, not payload email"
     );
 }
+
+#[tokio::test]
+async fn sync_identity_directory_is_idempotent() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let entries = vec![
+        governance_core::identity::DirectoryEntry {
+            provider_user_id: "alice@example.com".to_owned(),
+            internal_user_id: "alice-keycloak-id".to_owned(),
+        },
+        governance_core::identity::DirectoryEntry {
+            provider_user_id: "bob@example.com".to_owned(),
+            internal_user_id: "bob-keycloak-id".to_owned(),
+        },
+    ];
+
+    let first = governance_core::identity::sync_identity_directory(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        &entries,
+    )
+    .await
+    .expect("first sync must succeed");
+    assert_eq!(first.inserted, 2);
+    assert_eq!(first.repointed, 0);
+    assert_eq!(first.unchanged, 0);
+
+    // Reprocessing the same directory must change no row counts (idempotency).
+    let second = governance_core::identity::sync_identity_directory(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        &entries,
+    )
+    .await
+    .expect("second sync must succeed");
+    assert_eq!(second.inserted, 0);
+    assert_eq!(second.repointed, 0);
+    assert_eq!(second.unchanged, 2);
+
+    let count: (i64,) = cratestack::sqlx::query_as(
+        "SELECT COUNT(*) FROM identity_maps WHERE tenant_id = $1 AND provider = 'github_copilot'",
+    )
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        count.0, 2,
+        "reprocessing must not grow the identity_maps table"
+    );
+}
+
+#[tokio::test]
+async fn sync_identity_directory_repoints_a_changed_mapping() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let alice = |internal: &str| governance_core::identity::DirectoryEntry {
+        provider_user_id: "alice@example.com".to_owned(),
+        internal_user_id: internal.to_owned(),
+    };
+
+    governance_core::identity::sync_identity_directory(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        &[alice("alice-keycloak-id")],
+    )
+    .await
+    .expect("first sync");
+
+    // Alice's Keycloak sub changed; the directory now points elsewhere.
+    let repoint = governance_core::identity::sync_identity_directory(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        &[alice("alice-keycloak-id-v2")],
+    )
+    .await
+    .expect("repoint sync");
+    assert_eq!(repoint.repointed, 1);
+
+    // Exactly one active mapping, pointing at the new sub.
+    let active: (Option<String>,) = cratestack::sqlx::query_as(
+        "SELECT internal_user_id FROM identity_maps \
+         WHERE tenant_id = $1 AND provider = 'github_copilot' \
+         AND provider_user_id = 'alice@example.com' AND valid_to IS NULL",
+    )
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("active mapping");
+    assert_eq!(active.0, Some("alice-keycloak-id-v2".to_owned()));
+
+    // The old mapping is closed, not deleted -- history is preserved.
+    let closed: (i64,) = cratestack::sqlx::query_as(
+        "SELECT COUNT(*) FROM identity_maps \
+         WHERE tenant_id = $1 AND provider = 'github_copilot' \
+         AND provider_user_id = 'alice@example.com' AND valid_to IS NOT NULL",
+    )
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("closed count");
+    assert_eq!(
+        closed.0, 1,
+        "the superseded mapping must be closed, not dropped"
+    );
+
+    // Mismatch detection now resolves alice's email to the new sub.
+    let (_, mismatches, _) = governance_core::identity::check_email_mismatches(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        Some("alice-keycloak-id-v2"),
+        &[Some("alice@example.com")],
+    )
+    .await;
+    assert!(
+        !mismatches[0],
+        "after repoint, alice's email must match the new token identity"
+    );
+}
+
+#[tokio::test]
+async fn verify_attribution_counts_resolved_unattributed_and_mismatched() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // alice@example.com maps to alice-keycloak-id (active now).
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, 'github_copilot', 'alice@example.com', 'alice-keycloak-id', 'verified_email')",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .execute(&pool)
+    .await
+    .expect("identity map insert");
+
+    // Three executions for the same provider:
+    //  - resolved: attributed to alice, payload email matches the mapping.
+    //  - unattributed: no internal user.
+    //  - mismatched: attributed to bob, but payload email maps to alice.
+    let insert_execution = |trace: String, email: Option<String>, internal: Option<String>| {
+        cratestack::sqlx::query(
+            "INSERT INTO executions \
+             (id, tenant_id, integration_id, provider, trace_id, span_id, user_email, \
+              internal_user_id, started_at, duration_ms, raw_schema_version) \
+             VALUES ($1, $2, 'integration-x', 'github_copilot', $3, $3, $4, $5, now(), 100, 1)",
+        )
+        .bind(format!("exec-{}", cuid::cuid2()))
+        .bind(&tenant_id)
+        .bind(trace)
+        .bind(email)
+        .bind(internal)
+    };
+    insert_execution(
+        format!("trace-resolved-{}", cuid::cuid2()),
+        Some("alice@example.com".to_owned()),
+        Some("alice-keycloak-id".to_owned()),
+    )
+    .execute(&pool)
+    .await
+    .expect("resolved execution");
+    insert_execution(format!("trace-unattributed-{}", cuid::cuid2()), None, None)
+        .execute(&pool)
+        .await
+        .expect("unattributed execution");
+    insert_execution(
+        format!("trace-mismatched-{}", cuid::cuid2()),
+        Some("alice@example.com".to_owned()),
+        Some("bob-keycloak-id".to_owned()),
+    )
+    .execute(&pool)
+    .await
+    .expect("mismatched execution");
+
+    let report = governance_core::identity::verify_attribution(&pool, &tenant_id)
+        .await
+        .expect("verify");
+    assert_eq!(report.providers.len(), 1);
+    let provider = &report.providers[0];
+    assert_eq!(provider.provider, "github_copilot");
+    // The mismatched execution is still attributed to *a* user (bob), so it
+    // counts as attributed too -- attributed and mismatched are not exclusive.
+    assert_eq!(provider.attributed, 2);
+    assert_eq!(provider.unattributed, 1);
+    assert_eq!(provider.mismatched, 1);
+    assert!(report.has_unattributed());
+}
+
+#[tokio::test]
+async fn verify_attribution_reports_clean_when_everything_is_attributed() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let trace = format!("trace-ok-{}", cuid::cuid2());
+    cratestack::sqlx::query(
+        "INSERT INTO executions \
+         (id, tenant_id, integration_id, provider, trace_id, span_id, user_email, \
+          internal_user_id, started_at, duration_ms, raw_schema_version) \
+         VALUES ($1, $2, 'integration', 'github_copilot', $3, $3, \
+         'alice@example.com', 'alice-keycloak-id', now(), 100, 1)",
+    )
+    .bind(format!("exec-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .bind(trace)
+    .execute(&pool)
+    .await
+    .expect("execution insert");
+
+    let report = governance_core::identity::verify_attribution(&pool, &tenant_id)
+        .await
+        .expect("verify");
+    assert_eq!(report.providers.len(), 1);
+    let provider = &report.providers[0];
+    assert_eq!(provider.attributed, 1);
+    assert_eq!(provider.unattributed, 0);
+    assert_eq!(provider.mismatched, 0);
+    assert!(!report.has_unattributed());
+}
+
+#[tokio::test]
+async fn verify_and_live_mismatch_use_the_same_latest_mapping_rule() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    // Two *simultaneously active* mappings for the same email. The latest by
+    // valid_from (B, bob-keycloak-id) wins; the older one (A, alice-keycloak-id)
+    // must not trigger a mismatch for an execution attributed to bob.
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps \
+         (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source, valid_from) \
+         VALUES ($1, $2, 'github_copilot', 'bob@example.com', 'alice-keycloak-id', 'verified_email', now() - interval '2 hours')",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .execute(&pool)
+    .await
+    .expect("older mapping insert");
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps \
+         (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source, valid_from) \
+         VALUES ($1, $2, 'github_copilot', 'bob@example.com', 'bob-keycloak-id', 'verified_email', now() - interval '1 hour')",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .execute(&pool)
+    .await
+    .expect("newer mapping insert");
+
+    // Execution attributed to bob (the latest mapping), email claims bob.
+    let insert_execution = |trace: String, email: Option<String>, internal: Option<String>| {
+        cratestack::sqlx::query(
+            "INSERT INTO executions \
+             (id, tenant_id, integration_id, provider, trace_id, span_id, user_email, \
+              internal_user_id, started_at, duration_ms, raw_schema_version) \
+             VALUES ($1, $2, 'integration-x', 'github_copilot', $3, $3, $4, $5, now(), 100, 1)",
+        )
+        .bind(format!("exec-{}", cuid::cuid2()))
+        .bind(&tenant_id)
+        .bind(trace)
+        .bind(email)
+        .bind(internal)
+    };
+    insert_execution(
+        format!("trace-bob-{}", cuid::cuid2()),
+        Some("bob@example.com".to_owned()),
+        Some("bob-keycloak-id".to_owned()),
+    )
+    .execute(&pool)
+    .await
+    .expect("bob execution");
+    // Execution attributed to carol (not in any mapping), email claims bob.
+    insert_execution(
+        format!("trace-carol-{}", cuid::cuid2()),
+        Some("bob@example.com".to_owned()),
+        Some("carol-keycloak-id".to_owned()),
+    )
+    .execute(&pool)
+    .await
+    .expect("carol execution");
+
+    // Live check: latest active mapping wins. Bob's email maps to bob, so no
+    // mismatch for the bob execution; the carol execution is a mismatch.
+    let (_, live_mismatches, query_failed) = governance_core::identity::check_email_mismatches(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        Some("bob-keycloak-id"),
+        &[Some("bob@example.com")],
+    )
+    .await;
+    assert!(!query_failed, "mismatch lookup must not fail");
+    assert_eq!(live_mismatches, vec![false], "latest mapping wins live");
+
+    let report = governance_core::identity::verify_attribution(&pool, &tenant_id)
+        .await
+        .expect("verify");
+    assert_eq!(report.providers.len(), 1);
+    let provider = &report.providers[0];
+    assert_eq!(provider.attributed, 2);
+    assert_eq!(provider.unattributed, 0);
+    // Only carol's execution mismatches -- bob's maps to bob under the same
+    // latest-wins rule, so the overlapping older mapping does NOT count.
+    assert_eq!(provider.mismatched, 1);
+}
+
+#[tokio::test]
+async fn ingest_counts_identity_mismatches_in_the_result() {
+    let Some((pool, _ddl_isolation_guard)) = connect_and_migrate().await else {
+        return;
+    };
+    let tenant_id = format!("tenant-{}", cuid::cuid2());
+    insert_tenant(&pool, &tenant_id).await;
+
+    let db = Cratestack::builder(pool.clone()).build();
+    let ctx = authenticated_ctx();
+    let application = create_application(&db, &ctx, &tenant_id).await;
+    let environment = create_environment(&db, &ctx, &application).await;
+
+    let issued = governance_core::credential::issue(
+        &db,
+        &ctx,
+        IssueIntegrationCredentialInput {
+            applicationId: application.id.clone(),
+            provider: "github_copilot".to_owned(),
+            environmentId: environment.id,
+            contentCapture: None,
+            internalUserId: Some("alice-keycloak-id".to_owned()),
+        },
+    )
+    .await
+    .expect("issuance must succeed");
+
+    // bob@example.com maps to bob-keycloak-id, so a payload claiming bob's
+    // email under alice's token is a mismatch.
+    cratestack::sqlx::query(
+        "INSERT INTO identity_maps (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, 'github_copilot', 'bob@example.com', 'bob-keycloak-id', 'verified_email')",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(&tenant_id)
+    .execute(&pool)
+    .await
+    .expect("identity map insert");
+
+    let execution = ExecutionInput {
+        trace_id: format!("trace-mismatch-count-{}", cuid::cuid2()),
+        span_id: format!("span-mismatch-count-{}", cuid::cuid2()),
+        user_email: Some("bob@example.com".to_owned()),
+        started_at: chrono::Utc::now(),
+        duration_ms: 1000,
+        model_calls: vec![],
+        tool_calls: vec![],
+    };
+
+    let result = governance_core::ingest::ingest_telemetry(
+        &pool,
+        &tenant_id,
+        &issued.integration.id,
+        "github_copilot",
+        &[execution],
+    )
+    .await
+    .expect("ingest must succeed");
+
+    assert_eq!(result.identity_mismatches, 1);
+    assert!(!result.identity_mismatch_detection_failed);
+}
