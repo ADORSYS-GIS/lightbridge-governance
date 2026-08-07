@@ -329,6 +329,7 @@ fn continue_headers(dir: Direction) -> ProcessingResponse {
 
 /// Scans the whole (buffered) request body and decides what to tell Envoy.
 fn handle_request_body(engine: &Engine, metrics: &Metrics, raw: &[u8]) -> ProcessingResponse {
+    let original_length = raw.len();
     let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(raw) else {
         return refuse_or_block(
             Direction::Request,
@@ -360,9 +361,12 @@ fn handle_request_body(engine: &Engine, metrics: &Metrics, raw: &[u8]) -> Proces
                     "request body had no recognised text fields; forwarding uninspected"
                 );
             }
-            body_response(
+            // Pass original_length so body_response can update Content-Length
+            // if the body was redacted (length changed).
+            body_response_with_original_length(
                 Direction::Request,
                 serde_json::to_vec(&json).unwrap_or_else(|_| raw.to_vec()),
+                Some(original_length),
             )
         }
         Err(e) => refuse_or_block(
@@ -606,9 +610,10 @@ fn handle_buffered_response_chunk(
                     ),
                 );
             }
-            body_response(
+            body_response_with_original_length(
                 Direction::Response,
                 serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone()),
+                Some(buf.len()),
             )
         }
         Err(e) => refuse_or_block(
@@ -694,8 +699,43 @@ fn immediate_response(
 }
 
 fn body_response(dir: Direction, bytes: Vec<u8>) -> ProcessingResponse {
+    body_response_with_original_length(dir, bytes, None)
+}
+
+/// Builds a body response with optional Content-Length header mutation.
+///
+/// When `original_length` is `Some(old_len)` and `bytes.len()` (the new length)
+/// differs from `old_len`, this includes a HeaderMutation that **removes** the
+/// Content-Length header. Envoy v1.32 strips Content-Length to an empty value
+/// when a body mutation changes the length, and an empty Content-Length causes
+/// HTTP/2 upstreams to RST_STREAM with PROTOCOL_ERROR and HTTP/1.1 upstreams to
+/// misframe the body. Removing the header entirely lets Envoy frame the
+/// mutated body correctly: chunked transfer encoding over HTTP/1.1, DATA frames
+/// over HTTP/2 — neither of which needs Content-Length.
+///
+/// Setting Content-Length to the new value (via `OverwriteIfExistsOrAdd`) was
+/// the first attempt, but Envoy v1.32's ext_proc filter empties it *after*
+/// applying the header mutation, so the overwrite never reaches the wire. The
+/// `allow_content_length_header` config field that would prevent this was
+/// added in Envoy v1.33+ and does not exist in v1.32.
+fn body_response_with_original_length(
+    dir: Direction,
+    bytes: Vec<u8>,
+    original_length: Option<usize>,
+) -> ProcessingResponse {
+    let header_mutation = original_length.and_then(|old_len| {
+        if bytes.len() == old_len {
+            return None;
+        }
+        Some(HeaderMutation {
+            set_headers: Vec::new(),
+            remove_headers: vec!["content-length".into()],
+        })
+    });
+
     let common = CommonResponse {
         status: ResponseStatus::Continue as i32,
+        header_mutation,
         body_mutation: Some(BodyMutation {
             mutation: Some(body_mutation::Mutation::Body(bytes)),
         }),
@@ -1057,6 +1097,73 @@ mod tests {
         assert!(
             matches!(state.mode, ResponseBodyMode::Sse),
             "an SSE Content-Type on the bodyless path must still resolve Sse mode, not silently default to Buffered"
+        );
+    }
+
+    /// When a body mutation changes the body length, the Content-Length header
+    /// must be REMOVED, not overwritten. Envoy v1.32 strips Content-Length to
+    /// an empty value after applying a header mutation that sets it, and an
+    /// empty Content-Length causes HTTP/2 upstreams to RST_STREAM with
+    /// PROTOCOL_ERROR (reproduced live 2026-08-07: a request body redacted
+    /// 92 -> 86 bytes reached the upstream with Content-Length: "" and was
+    /// reset). Removing the header entirely lets Envoy frame the mutated body
+    /// via chunked encoding (HTTP/1.1) or DATA frames (HTTP/2), neither of
+    /// which requires Content-Length. The `allow_content_length_header` field
+    /// that would preserve a set Content-Length was added in Envoy v1.33+ and
+    /// does not exist in v1.32.
+    #[test]
+    fn content_length_removed_not_overwritten_when_length_changes() {
+        // A mutation that shrinks the body 90 -> 84 bytes (as redaction does).
+        let mut bytes = vec![b'x'; 84];
+        bytes.extend_from_slice(b"tail");
+        let resp = body_response_with_original_length(Direction::Request, bytes, Some(90));
+
+        let Some(Resp::RequestBody(BodyResponse {
+            response:
+                Some(CommonResponse {
+                    header_mutation:
+                        Some(HeaderMutation {
+                            remove_headers,
+                            set_headers,
+                            ..
+                        }),
+                    ..
+                }),
+        })) = &resp.response
+        else {
+            panic!("expected a RequestBody response with a header mutation, got {resp:?}");
+        };
+
+        assert!(
+            remove_headers
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case("content-length")),
+            "Content-Length must be in remove_headers when the body length changed: {remove_headers:?}"
+        );
+        assert!(
+            set_headers.is_empty(),
+            "no headers should be set when the body length changed (removal only): {set_headers:?}"
+        );
+    }
+
+    /// When the body length does NOT change, no Content-Length mutation is
+    /// needed — the original header is still correct.
+    #[test]
+    fn no_content_length_mutation_when_length_unchanged() {
+        let bytes = vec![b'x'; 90];
+        let resp = body_response_with_original_length(Direction::Request, bytes, Some(90));
+
+        let Some(Resp::RequestBody(BodyResponse {
+            response: Some(CommonResponse {
+                header_mutation, ..
+            }),
+        })) = &resp.response
+        else {
+            panic!("expected a RequestBody response, got {resp:?}");
+        };
+        assert!(
+            header_mutation.is_none(),
+            "no header mutation expected when body length is unchanged"
         );
     }
 }

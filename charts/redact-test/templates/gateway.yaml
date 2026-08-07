@@ -68,12 +68,26 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            - name: admin
+              containerPort: 9901
+              protocol: TCP
           args:
             - /usr/local/bin/envoy
             - --component-log-level
-            - "ext_proc:debug,grpc:debug"
+            - "ext_proc:info,grpc:info"
             - --config-yaml
             - |
+              # Admin API — bound to 0.0.0.0 so kubelet httpGet probes
+              # (which target the pod IP, not loopback) can reach /ready.
+              # ⚠️ Test chart only: in production, bind to 127.0.0.1 and use
+              # an exec probe, or add a NetworkPolicy denying ingress to 9901.
+              # The admin API exposes /heapdump (process memory) and
+              # /quitquitquit, which are dangerous on a credential-handling pod.
+              admin:
+                address:
+                  socket_address:
+                    address: 0.0.0.0
+                    port_value: 9901
               static_resources:
                 listeners:
                   - name: main
@@ -88,6 +102,13 @@ spec:
                               "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                               codec_type: AUTO
                               stat_prefix: gateway
+                              access_log:
+                                - name: envoy.access_loggers.stdout
+                                  typed_config:
+                                    "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                                    log_format:
+                                      text_format_source:
+                                        inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" resp=%RESPONSE_CODE% flags=%RESPONSE_FLAGS% recv=%BYTES_RECEIVED% sent=%BYTES_SENT% host=%UPSTREAM_HOST% reqCL=%REQ(CONTENT-LENGTH)% respCL=%RESP(CONTENT-LENGTH)%\n"
                               route_config:
                                 name: local_route
                                 virtual_hosts:
@@ -104,10 +125,13 @@ spec:
                                   typed_config:
                                     "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
                                     grpc_service:
-                                      envoy_grpc:
-                                        cluster_name: redact-extproc
+                                      google_grpc:
+                                        target_uri: 127.0.0.1:9500
+                                        stat_prefix: redact
                                     processing_mode:
+                                      request_header_mode: SEND
                                       request_body_mode: BUFFERED
+                                      response_header_mode: SEND
                                       response_body_mode: STREAMED
                                     failure_mode_allow: false
                                 - name: envoy.filters.http.router
@@ -115,8 +139,9 @@ spec:
                                     "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                 clusters:
                   # redact-extproc sidecar gRPC endpoint (loopback)
+                  # HTTP/2 is enabled automatically for gRPC clusters in newer Envoy
                   - name: redact-extproc
-                    type: STRICT_DNS
+                    type: STATIC
                     lb_policy: ROUND_ROBIN
                     connect_timeout: 5s
                     load_assignment:
@@ -133,6 +158,14 @@ spec:
                     type: STRICT_DNS
                     lb_policy: ROUND_ROBIN
                     connect_timeout: 30s
+                    # HTTP/2 (h2c) upstream: a request body whose length
+                    # changes after redaction is framed by HTTP/2 DATA frames
+                    # rather than HTTP/1.1 Content-Length. With the
+                    # Content-Length header removed (see service.rs), the
+                    # upstream receives the body via DATA frames without any
+                    # Content-Length mismatch.
+                    http2_protocol_options:
+                      max_concurrent_streams: 100
                     load_assignment:
                       cluster_name: upstream
                       endpoints:
@@ -145,13 +178,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8080
+              port: admin
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /ready
-              port: 8080
+              port: admin
             initialDelaySeconds: 10
             periodSeconds: 20
 
