@@ -133,6 +133,10 @@ apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaDashboard
 metadata:
   name: {{ .Values.name }}-copilot-connector
+  # Created alongside Grafana, not in the release namespace -- see
+  # values.yaml's grafanaDashboard.namespace for why, and for the cluster
+  # evidence that every existing Grafana resource is co-located there.
+  namespace: {{ .Values.grafanaDashboard.namespace }}
   labels:
     app: {{ .Values.name }}
 spec:
@@ -140,8 +144,40 @@ spec:
   # this MUST match the labels on the deployed `Grafana` CR (ai-helm, not
   # visible to this chart) or the operator never selects this dashboard --
   # a silent non-render, not an error.
+  #
+  # ⚠️ IMMUTABLE. Correcting a wrong selector means deleting and recreating
+  # this CR; `kubectl apply` of a changed selector is rejected.
   instanceSelector:
 {{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.folder.enabled }}
+  # Places the dashboard in the dedicated Copilot folder
+  # (templates/grafanafolder.yaml). `folderRef` references a GrafanaFolder CR
+  # BY NAME and requires it to be in the SAME namespace as this dashboard --
+  # both are created in grafanaDashboard.namespace, so that holds. `folderRef`
+  # and `folderUID` are mutually exclusive, and either makes the operator
+  # ignore the older plain-title `folder` field.
+  folderRef: {{ .Values.name }}-{{ .Values.grafanaDashboard.folder.nameSuffix }}
+  {{- end }}
+  # ⚠️ Load-bearing whenever Grafana runs in a DIFFERENT namespace than this
+  # chart -- which is the normal topology here: Grafana lives in
+  # `observability` (ADR-0003/ADR-0004) while this chart deploys into the
+  # application namespace.
+  #
+  # `allowCrossNamespaceImport` defaults to FALSE, and while false the
+  # operator only ever considers `Grafana` CRs in the SAME namespace as this
+  # dashboard. With no Grafana in this namespace the operator finds zero
+  # candidates and reports, verbatim:
+  #
+  #   status.NoMatchingInstances: true
+  #   message: "None of the available Grafana instances matched the selector,
+  #             skipping reconciliation"
+  #
+  # That message names the *selector*, so it reads like a label mismatch --
+  # but it is emitted just the same when the labels are perfect and the only
+  # matching Grafana is one namespace away. Observed in this deployment on
+  # 2026-08-07 before this field existed. Fixing the labels alone will not
+  # clear it.
+  allowCrossNamespaceImport: {{ .Values.grafanaDashboard.allowCrossNamespaceImport }}
   # A literal YAML block scalar (`|`), not a double-quoted string: JSON is
   # full of characters (`"`, `\`) that would otherwise need re-escaping to
   # survive being embedded in a quoted YAML string, and a block scalar takes
