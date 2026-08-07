@@ -46,8 +46,30 @@ impl Config {
     /// (a PEM path), never from an env value, and wrapped in `RawSecret` so it
     /// cannot be logged (never-log-a-secret rule).
     pub async fn from_env() -> Result<Self> {
+        // `env::var` returns Ok("") for a variable that is SET BUT EMPTY, so
+        // the `.context(...)` below only catches a genuinely absent variable.
+        // The chart renders `TENANT_ID: ""` by default, which sailed straight
+        // through this check -- the deployed collector ingested a week of real
+        // Copilot data stamped `tenant_id = ''` before anyone noticed.
+        //
+        // An empty tenant is not a lenient default, it is a wrong identity:
+        // every table carries tenant_id and every query filters on it
+        // (ADR-0001), so rows written under '' are invisible to any correctly
+        // scoped query and have to be re-ingested under the real tenant later.
+        // Refuse it here rather than write data that looks fine and is
+        // addressed to nobody.
         let tenant_id = std::env::var("TENANT_ID")
             .context("TENANT_ID is required (single-tenant deployment, ADR-0001)")?;
+        let tenant_id = tenant_id.trim().to_owned();
+        anyhow::ensure!(
+            !tenant_id.is_empty(),
+            "TENANT_ID is set but empty. It is this deployment's tenant identity \
+             (ADR-0001) and lands in every row and every WHERE clause, so an empty \
+             value silently writes data no scoped query can find. Set \
+             `copilot.tenantId` in the deployed values (ai-helm-values) to a stable \
+             identifier for this deployment -- changing it later re-backfills from \
+             scratch, since the high-water mark is itself tenant-scoped."
+        );
         let org = std::env::var("GH_ORG").unwrap_or_else(|_| "adorsys-gis".to_owned());
         let app_id = std::env::var("GH_APP_ID").context("GH_APP_ID is required")?;
         let key_path = std::env::var("GH_APP_PRIVATE_KEY_FILE")

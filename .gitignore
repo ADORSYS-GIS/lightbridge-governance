@@ -12,3 +12,8 @@
 # .tgz. Chart.lock is the committed source of truth; these are regenerated
 # by the helm-oci-publish CI action (helm dependency build) and locally.
 charts/*/charts/
+
+# Byte-cache from scripts/generate_dashboards.py. The generator is a
+# dev-time-only tool -- its OUTPUT (the dashboard JSON) is committed and is
+# what the chart ships, so nothing at deploy or CI time runs Python at all.
+__pycache__/

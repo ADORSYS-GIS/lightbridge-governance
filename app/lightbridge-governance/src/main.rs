@@ -84,7 +84,14 @@ struct Args {
     /// deployment that only ever has the one. No default: an empty tenant_id
     /// has no safe meaning here, matching `governance-ctl`'s own `TENANT_ID`
     /// (`app/governance-ctl/src/sync.rs`).
-    #[arg(long, env = "TENANT_ID")]
+    ///
+    /// `value_parser` rather than a bare `String`: clap treats a required arg
+    /// as satisfied by an EMPTY value, and the chart renders `TENANT_ID: ""`
+    /// by default, so `required` alone never caught the case that actually
+    /// happened in production -- a deployment running with no tenant identity
+    /// at all, scoping `governance_connector_*` to a tenant that owns no rows
+    /// and therefore reporting has_synced=0 forever.
+    #[arg(long, env = "TENANT_ID", value_parser = parse_tenant_id)]
     tenant_id: String,
 
     /// Upper bound on the `governance_connector_*` freshness query `/metrics`
@@ -96,6 +103,30 @@ struct Args {
     /// `acquire_timeout` default.
     #[arg(long, env = "CONNECTOR_METRICS_TIMEOUT_MS", default_value_t = 3_000)]
     connector_metrics_timeout_ms: u64,
+}
+
+/// Rejects an empty or whitespace-only tenant id at argument-parse time, so a
+/// misconfigured deployment fails immediately and loudly instead of running
+/// with no tenant identity.
+///
+/// This is a real failure that reached production, not a hypothetical: the
+/// chart's structural default is `TENANT_ID: ""`, clap counts a required arg
+/// as satisfied by an empty value, and `std::env::var` returns `Ok("")` for a
+/// set-but-empty variable -- so all three layers said "present" and the
+/// deployment ran with `tenant_id = ''`.
+fn parse_tenant_id(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "TENANT_ID is set but empty. It is this deployment's tenant identity \
+             (ADR-0001) and scopes the governance_connector_* freshness query \
+             /metrics derives from ingest_manifests (ADR-0007), so an empty value \
+             reports has_synced=0 forever regardless of how healthy the connector \
+             is. Set `copilot.tenantId` in the deployed values (ai-helm-values)."
+                .to_owned(),
+        );
+    }
+    Ok(trimmed.to_owned())
 }
 
 #[tokio::main]
