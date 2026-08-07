@@ -19,12 +19,40 @@ use std::collections::HashMap;
 use governance_core::MicroUsd;
 use serde::Deserialize;
 
+/// GitHub's Copilot report NDJSON is inconsistent about whether an id field
+/// (`repo_id`, `user_id`, `organization_id`, `team_id`) is a JSON string or a
+/// JSON number. Observed live 2026-08-07: `repos-1-day` sends `repo_id` as a
+/// bare integer (e.g. `844522530`), not the string every other report's id
+/// fields have been seen as -- and every id field in this module was typed
+/// `Option<String>` on that same (wrong) assumption, so any of them can hit
+/// the identical "invalid type: integer, expected a string" the moment a
+/// report with non-empty rows exercises it (only `repos-1-day` had any that
+/// day; the others were legitimately empty, not fixed by luck). Applied to
+/// every id field below rather than patched once for `repo_id` alone.
+fn flexible_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum IdValue {
+        String(String),
+        Number(i64),
+    }
+    Ok(
+        Option::<IdValue>::deserialize(deserializer)?.map(|v| match v {
+            IdValue::String(s) => s,
+            IdValue::Number(n) => n.to_string(),
+        }),
+    )
+}
+
 /// One row of the `organization-1-day` report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OrgReportRow {
     #[serde(rename = "day")]
     pub day: String,
-    #[serde(rename = "organization_id", default)]
+    #[serde(rename = "organization_id", default, deserialize_with = "flexible_id")]
     pub organization_id: Option<String>,
     #[serde(rename = "total_active_users", default)]
     pub total_active_users: Option<u64>,
@@ -41,7 +69,7 @@ pub struct OrgReportRow {
 /// One row of the `users-1-day` report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserReportRow {
-    #[serde(rename = "user_id", default)]
+    #[serde(rename = "user_id", default, deserialize_with = "flexible_id")]
     pub user_id: Option<String>,
     #[serde(rename = "user_login", default)]
     pub user_login: Option<String>,
@@ -58,7 +86,12 @@ pub struct UserReportRow {
 /// One row of the `repos-1-day` report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepoReportRow {
-    #[serde(rename = "repo_id", alias = "repository_id", default)]
+    #[serde(
+        rename = "repo_id",
+        alias = "repository_id",
+        default,
+        deserialize_with = "flexible_id"
+    )]
     pub repo_id: Option<String>,
     #[serde(rename = "repo_name", alias = "name", default)]
     pub repo_name: Option<String>,
@@ -75,11 +108,11 @@ pub struct RepoReportRow {
 /// One row of the `user-teams-1-day` report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserTeamRow {
-    #[serde(rename = "user_id", default)]
+    #[serde(rename = "user_id", default, deserialize_with = "flexible_id")]
     pub user_id: Option<String>,
     #[serde(rename = "user_login", default)]
     pub user_login: Option<String>,
-    #[serde(rename = "team_id", default)]
+    #[serde(rename = "team_id", default, deserialize_with = "flexible_id")]
     pub team_id: Option<String>,
     #[serde(rename = "slug", default)]
     pub slug: Option<String>,
