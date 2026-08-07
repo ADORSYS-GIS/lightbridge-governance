@@ -140,6 +140,66 @@ serviceMonitor:
   enabled: true
   interval: 30s
 
+# Ships dashboards/copilot-connector.json to Grafana as a GrafanaDashboard CR
+# (templates/grafanadashboard.yaml), per ADR-0003's precedent (ai-helm
+# ADR-0063's read-only-Postgres-datasource pattern for Grafana Operator
+# resources) -- not a sidecar-labelled ConfigMap. See that template's header
+# comment for the apiVersion/kind verification and the datasource-UID
+# substitution mechanism in full; this block only carries the values.
+grafanaDashboard:
+  enabled: true
+
+  # Grafana Operator v5 requires every GrafanaDashboard to carry an
+  # instanceSelector (a label selector) so it knows which deployed `Grafana`
+  # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a
+  # private repo THIS CHART CANNOT SEE OR VERIFY -- get this wrong and the
+  # GrafanaDashboard CR renders and applies cleanly, but the operator simply
+  # never selects it, so the dashboard never appears in Grafana. No error
+  # anywhere: `kubectl get grafanadashboard` shows the CR as applied, and
+  # there is nothing to grep in its status that says "no Grafana matched"
+  # unless you know to check `status.conditions` on the CR itself.
+  #
+  # Default below (`dashboards: "grafana"`) is the Grafana Operator's own
+  # quick-start / v4-to-v5-migration-guide convention, chosen because it's
+  # the documented default rather than an arbitrary guess -- it is NOT
+  # verified against the actual labels on the `Grafana` CR deployed by
+  # ai-helm (no cluster and no access to the private ai-helm/ai-helm-values
+  # repos in this session). Confirm with, before trusting this in a real
+  # environment:
+  #   kubectl get grafana -A -o jsonpath='{.items[*].metadata.labels}'
+  instanceSelector:
+    matchLabels:
+      dashboards: "grafana"
+
+  # Datasource UIDs the dashboard JSON references, substituted into
+  # dashboards/copilot-connector.json at `helm template` time (Helm-side
+  # string replace over literal placeholder tokens -- see
+  # templates/grafanadashboard.yaml for why this was chosen over the
+  # operator's own spec.datasources mapping field, and for what happens if a
+  # value here is wrong). Contract with the dashboard-JSON generator: the
+  # tokens are exactly `__DS_POSTGRES__` and `__DS_PROMETHEUS__`, used as the
+  # literal `uid` value of any Postgres/Prometheus datasource reference in
+  # that file.
+  datasources:
+    # ADR-0003, stated explicitly: "Expose the governance database to
+    # Grafana as a read-only Postgres GrafanaDatasource (uid: governance)".
+    # High confidence -- this is a pinned decision, not a guess.
+    postgresUid: governance
+    # NOT specified anywhere in this repo. Prometheus/Mimir datasource UIDs
+    # are assigned by whatever provisioned the GrafanaDatasource CR for
+    # Mimir in ai-helm (or by Grafana's own default-datasource
+    # provisioning), and this chart has no way to discover or verify it.
+    # "mimir" is a reasonable guess given this platform's metrics backend
+    # (ADR-0003/ADR-0007/ADR-0011 all name Mimir), NOT a confirmed value --
+    # CONFIRM AGAINST THE DEPLOYED GRAFANA before trusting any panel that
+    # reads governance_copilot_*/governance_connector_* series. A wrong UID
+    # here does not fail to render or fail loudly: it ships a dashboard
+    # whose time-series panels silently show "Datasource not found" or an
+    # empty graph -- indistinguishable at a glance from "no data yet",
+    # exactly the ambiguity ADR-0011 already warns about for
+    # governance_copilot_*'s own 30h expiration cliff.
+    prometheusUid: mimir
+
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
 # copilot-reports.github.com signed-download host (spike-0007), the S3
 # archive and (when copilotOtel.enabled) the in-cluster OTLP collector.
