@@ -75,10 +75,27 @@ impl<'c> AppAuth<'c> {
             })
             .await?;
         let status = resp.status().as_u16();
+        // `CopilotError::transport`, never the `Transport` variant directly:
+        // reqwest's `Error` Display embeds the request URL, which on the
+        // download path is the short-lived SIGNED URL (AGENTS.md: never log a
+        // signed URL). The constructor strips it via `without_url()`.
         let text = resp.text().await.map_err(CopilotError::transport)?;
-        let json = serde_json::from_str(&text)
-            .map_err(|e| CopilotError::github(kind_for(url), status, e.to_string()))?;
-        Ok((status, json))
+        // A 200 whose body is not JSON is a genuinely unexpected shape. A
+        // 4xx/5xx with a non-JSON body (e.g. GitHub's plain-text "Request
+        // forbidden... User-Agent" page) is reported by status only -- never
+        // echo a response body into an error (AGENTS.md: never log a request/
+        // response body; `CopilotError::github` is built to take no body).
+        match serde_json::from_str(&text) {
+            Ok(json) => Ok((status, json)),
+            Err(e) if status == 200 => {
+                Err(CopilotError::github(kind_for(url), status, e.to_string()))
+            }
+            Err(_) => Err(CopilotError::github(
+                kind_for(url),
+                status,
+                "unparseable (non-JSON) error body".to_owned(),
+            )),
+        }
     }
 
     /// Resolve the numeric installation id for `org` (case-insensitive, as

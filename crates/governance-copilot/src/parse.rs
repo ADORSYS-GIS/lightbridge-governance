@@ -222,4 +222,61 @@ mod tests {
             _ => panic!("expected a Parse error"),
         }
     }
+
+    /// Reproduces the production failure directly (2026-08-07): live GitHub
+    /// `repos-1-day` NDJSON sends `repo_id` as a bare JSON integer, not the
+    /// string every fixture here (and the vendor docs) assumed. Every day's
+    /// repo report failed to parse with "invalid type: integer, expected a
+    /// string" until this was fixed.
+    #[test]
+    fn parse_repo_daily_accepts_an_integer_repo_id() {
+        let ndjson = concat!(
+            "{\"day\":\"2026-08-01\",\"repo_id\":844522530,\"repo_name\":\"lightbridge-governance\",",
+            "\"coding_agent_activity\":3,\"code_review_activity\":1,\"pull_request_activity\":2}\n",
+        );
+        let rows = parse_repo_daily(ndjson.as_bytes(), "repos-1-day", "2026-08-01").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].repository_id, "844522530");
+        assert_eq!(rows[0].coding_agent_activity, 3);
+    }
+
+    /// The other three report types type their id fields the identical way
+    /// (`Option<String>`) on the same wrong assumption -- only `repos-1-day`
+    /// had non-empty rows the day this was caught, so these three were
+    /// latent, not actually exercised yet. Locking in the fix for all of
+    /// them, not just the one that happened to fail first.
+    #[test]
+    fn parse_org_daily_accepts_an_integer_organization_id() {
+        let ndjson = concat!(
+            "{\"day\":\"2026-08-01\",\"organization_id\":139577169,",
+            "\"total_active_users\":10,\"total_engaged_users\":4,",
+            "\"total_completions\":120,\"total_chat_engagements\":30}\n",
+        );
+        let rows = parse_org_daily(ndjson.as_bytes(), "organization-1-day", "2026-08-01").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].organization_id, "139577169");
+    }
+
+    #[test]
+    fn parse_user_daily_accepts_an_integer_user_id() {
+        let ndjson = concat!(
+            "{\"day\":\"2026-08-01\",\"user_id\":1001,\"user_login\":\"octocat\",",
+            "\"total_engagements\":42,\"total_completions\":20,\"ai_credits\":2.5}\n",
+        );
+        let rows = parse_user_daily(ndjson.as_bytes(), "users-1-day", "2026-08-01").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider_user_id, "1001");
+    }
+
+    #[test]
+    fn parse_user_team_accepts_integer_user_and_team_ids() {
+        let ndjson = concat!(
+            "{\"day\":\"2026-08-01\",\"user_id\":1001,\"user_login\":\"octocat\",",
+            "\"team_id\":9001,\"slug\":\"eng-platform\"}\n",
+        );
+        let rows = parse_user_team(ndjson.as_bytes(), "user-teams-1-day", "2026-08-01").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].user_id, "1001");
+        assert_eq!(rows[0].team_id, "9001");
+    }
 }
