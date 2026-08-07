@@ -103,6 +103,14 @@ struct Args {
     /// `acquire_timeout` default.
     #[arg(long, env = "CONNECTOR_METRICS_TIMEOUT_MS", default_value_t = 3_000)]
     connector_metrics_timeout_ms: u64,
+
+    /// Upper bound (per query -- usage and seats are queried independently,
+    /// see `Metrics::refresh_org_kpis`) on the `governance_org_*` KPI
+    /// queries `/metrics` runs against `copilot_org_dailys`/
+    /// `copilot_seat_snapshots` on every scrape. Same reasoning as
+    /// `connector_metrics_timeout_ms`.
+    #[arg(long, env = "ORG_KPI_TIMEOUT_MS", default_value_t = 3_000)]
+    org_kpi_timeout_ms: u64,
 }
 
 /// Rejects an empty or whitespace-only tenant id at argument-parse time, so a
@@ -156,6 +164,7 @@ async fn main() -> Result<()> {
     let tenant_id: Arc<str> = Arc::from(args.tenant_id.as_str());
     let connector_metrics_timeout =
         std::time::Duration::from_millis(args.connector_metrics_timeout_ms);
+    let org_kpi_timeout = std::time::Duration::from_millis(args.org_kpi_timeout_ms);
     let ingest_state = ingest::IngestState {
         pool,
         internal_token: Arc::from(args.internal_ingest_token.as_str()),
@@ -204,6 +213,12 @@ async fn main() -> Result<()> {
                                 &tenant_id,
                                 connector_metrics_timeout,
                             )
+                            .await;
+                        // Org-level KPI gauges (ADR-0003's bounded exception)
+                        // -- same refresh-on-scrape shape, independent
+                        // timeout budget.
+                        metrics
+                            .refresh_org_kpis(&pool, &tenant_id, org_kpi_timeout)
                             .await;
                         metrics.render()
                     }
