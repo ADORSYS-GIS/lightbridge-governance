@@ -88,6 +88,39 @@ identical — Kubernetes defaults `optional` to `false` (required) when it's abs
 you're adding a fourth `secretKeyRef`, leave the field out; don't add `optional: false` and
 break `helm lint`.
 
+## `copilotOtel`: a dedicated OpenTelemetryCollector, and what's unverified about it
+
+`copilotOtel.enabled` (default `true`) renders an `opentelemetry.io/v1beta1` `OpenTelemetryCollector`
+CR (`templates/otelcollector.yaml`) that turns copilot-sync's one-shot OTLP push into something
+Alloy can scrape — ADR-0007 is explicit that "a CronJob pod that exits cannot be scraped", so this
+collector receives the push on `:4317` and re-exposes it via a prometheus exporter that a
+`ServiceMonitor` (`templates/servicemonitor-copilot-otel.yaml`) points Alloy at. It requires the
+OpenTelemetry Operator on the cluster; this chart cannot verify that at render time.
+
+Two things here are **not** verified against a live cluster (neither this session nor the one that
+wrote this chart has one):
+
+- **The generated Service's name and labels.** The `ServiceMonitor`'s selector was built by reading
+  the OpenTelemetry Operator's own source (`internal/naming`, `internal/manifests/collector/service.go`,
+  `internal/manifests/manifestutils/labels.go`) rather than guessed — see the long comment at the top
+  of `templates/servicemonitor-copilot-otel.yaml` for the exact functions read and the reasoning.
+  Confidence is high (this is source, not a blog post, and the naming scheme has been stable in the
+  operator for a long time) but not confirmed against whichever operator version is actually
+  installed here.
+- **`readOnlyRootFilesystem: true` / `runAsNonRoot: true` on the collector pod**
+  (`templates/otelcollector.yaml`) assume the `otlp receiver -> resource processor -> prometheus
+  exporter` pipeline needs no writable path and that the upstream `otel/opentelemetry-collector`
+  image bakes in a non-root user. Confirm against a real pod before relying on it.
+
+Toggle it off and the collector, its `ServiceMonitor` and its `CiliumNetworkPolicy`
+(`templates/ciliumnetworkpolicy-copilot-otel.yaml`) all disappear together, and
+`templates/configmap-otlp.yaml` falls back to the manual `copilot.otlp.host` override (empty by
+default) instead of continuing to point at a Service that no longer exists:
+
+```bash
+helm template charts/lightbridge-governance --set copilotOtel.enabled=false
+```
+
 ## `/metrics`, `/livez`, `/readyz` are real but `/metrics` is empty
 
 The API server's `/metrics` endpoint exists (added alongside this chart, since a

@@ -1,0 +1,84 @@
+{{- if .Values.copilotOtel.enabled }}
+{{- /*
+Selects the Service the OpenTelemetry Operator generates for the CR in
+templates/otelcollector.yaml -- a Service THIS CHART DOES NOT DEFINE. The
+operator owns its name and labels entirely, so this selector has to match
+whatever the operator actually produces, not something we chose.
+
+Determined by reading the operator's own source
+(github.com/open-telemetry/opentelemetry-operator @ main, fetched 2026-08),
+not inferred or guessed:
+
+  - internal/naming/main.go:
+      func Service(otelcol string) string {
+          return DNSName(Truncate("%s-collector", 63, otelcol))
+      }
+    -> the Service is named "<CR name>-collector".
+
+  - internal/manifests/collector/service.go, func Service(params):
+      name := naming.Service(params.OtelCol.Name)
+      labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name,
+          params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, []string{})
+      ...
+      Selector: manifestutils.SelectorLabels(params.OtelCol.ObjectMeta, ComponentOpenTelemetryCollector)
+    -> the Service's OWN metadata.labels (what a ServiceMonitor's
+       spec.selector matches against -- selectors target the Service object,
+       not the pods behind it) always include SelectorLabels(...), since
+       manifestutils.Labels() unions the instance's own labels with
+       SelectorLabels() and never removes a key.
+
+  - internal/manifests/manifestutils/labels.go:
+      func SelectorLabels(instance metav1.ObjectMeta, component string) map[string]string {
+          return map[string]string{
+              "app.kubernetes.io/managed-by": "opentelemetry-operator",
+              "app.kubernetes.io/instance":   naming.Truncate("%s.%s", 63, instance.Namespace, instance.Name),
+              "app.kubernetes.io/part-of":    "opentelemetry",
+              "app.kubernetes.io/component":  component,
+          }
+      }
+    -> "app.kubernetes.io/instance" is literally "<namespace>.<CR name>".
+
+  - ComponentOpenTelemetryCollector = "opentelemetry-collector" (a constant
+    in internal/manifests/collector/collector.go).
+
+  - The base Service also gets a port named "prometheus", auto-inferred from
+    the `exporters.prometheus.endpoint` in the CR's `config`
+    (otelconfig.GetReceiverAndExporterPorts) -- matched below by NAME, not
+    by number, so it's correct whether the operator uses the inferred port
+    or the explicit `ports:` entry in otelcollector.yaml (they de-duplicate
+    to one single port either way; see that file's comment on `ports`).
+
+CONFIDENCE: high that this is what a current mainline operator build does --
+read directly from source, not from a blog post or from memory, and this
+exact naming/label scheme (Service = "<name>-collector",
+SelectorLabels as above) has been stable in the operator for a long time.
+NOT verified against whichever operator version is actually installed on
+THIS cluster -- neither of us has a live cluster in this session. If the
+collector's Service doesn't show up as a target once deployed, the first
+command to run is:
+  kubectl -n <namespace> get svc -l app.kubernetes.io/component=opentelemetry-collector --show-labels
+and diff what comes back against the matchLabels below.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "lightbridge-governance.otelCollectorName" . }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/managed-by: opentelemetry-operator
+      app.kubernetes.io/component: opentelemetry-collector
+      # "<namespace>.<CR name>" per manifestutils.SelectorLabels above --
+      # computed here the exact same way the operator computes it for the CR
+      # in templates/otelcollector.yaml, so this always matches regardless
+      # of which namespace this chart actually gets deployed into (Helm
+      # stamps `.Release.Namespace` onto every resource in the release that
+      # doesn't set its own `metadata.namespace`, this CR included).
+      app.kubernetes.io/instance: {{ printf "%s.%s" .Release.Namespace (include "lightbridge-governance.otelCollectorName" .) }}
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

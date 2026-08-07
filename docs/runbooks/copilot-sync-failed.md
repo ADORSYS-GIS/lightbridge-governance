@@ -3,6 +3,35 @@
 **Symptom:** the `no successful sync in 36h` or `report older than 72h` alert fires, or the
 Copilot dashboards have stopped advancing while showing no error.
 
+## Which metric to actually page on
+
+Two unrelated `governance_copilot*`-prefixed families exist in this system. Only one of
+them is alert-grade -- wiring a page to the other one *will* eventually page on nothing,
+or fail to page when it should.
+
+- **`governance_connector_last_success_timestamp_seconds{provider="github_copilot"}`**
+  (`app/lightbridge-governance/src/metrics.rs`) is the one to alert on. It is derived,
+  on every `/metrics` scrape, directly from `ingest_manifests` in Postgres (ADR-0007) --
+  the same table the CronJob writes as its idempotent, authoritative record of what
+  actually landed. It survives API restarts (recomputed from stored state, not
+  remembered by a process), is unaffected by the OTel collector's own restarts, label
+  drift, or a `CiliumNetworkPolicy` misconfiguration between `copilot-sync` and that
+  collector, and is absent (never a fabricated `0`) until a refresh has actually
+  observed something. `time() - governance_connector_last_success_timestamp_seconds`
+  is the real freshness signal; this is what `no successful sync in 36h` /
+  `report older than 72h` must be built on.
+- **`governance_copilot_*`** (`app/governance-ctl/src/metrics.rs`, pushed over OTLP to a
+  dedicated collector -- see ADR-0011) is best-effort **per-run detail** for dashboards:
+  reports fetched by outcome, rows upserted by report type,
+  `governance_copilot_last_run_timestamp_seconds`, unmapped users, manifest drift. It is
+  useful for "what did the last run actually do", but its entire state lives in the
+  collector's in-memory Prometheus cache (`replicas: 1`, no PodDisruptionBudget) -- a
+  collector restart (node drain, image bump, OOM, reschedule) blanks every series until
+  the next `copilot-sync` run, up to 6h later on the CronJob's schedule. A missing
+  `governance_copilot_*` series is therefore not distinguishable from "no run has
+  happened yet today" and must never be the sole basis for a page. Use it to see *what*
+  a run did, not *whether* the connector is healthy.
+
 ## 0. Distinguish "broken" from "did not run"
 
 This is the whole job. The dashboards look identical either way.

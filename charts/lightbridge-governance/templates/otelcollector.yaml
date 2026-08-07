@@ -1,0 +1,149 @@
+{{- if .Values.copilotOtel.enabled }}
+{{- /*
+Push -> pull bridge for copilot-sync's operational OTLP metrics -- see
+copilotOtel's header comment in values.yaml for the full ADR-0007 reasoning.
+In one line:
+
+  copilot-sync --OTLP/gRPC:4317--> (this collector) --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+
+This is `opentelemetry.io/v1beta1`. In v1beta1 `spec.config` is a nested YAML
+OBJECT, not a string -- that changed from v1alpha1, and getting it wrong
+(quoting the whole thing as a string) is the classic mistake with this CRD.
+It is written as plain nested YAML below for exactly that reason.
+
+The OpenTelemetry Operator creates a Service named "<this CR's name>-collector"
+for it, carrying both the OTLP receiver port (4317, for copilot-sync's push)
+and the prometheus exporter port declared under `ports:` below (for Alloy's
+scrape) -- see templates/servicemonitor-copilot-otel.yaml for exactly how
+that Service's name and labels were determined and the confidence level.
+*/}}
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: {{ include "lightbridge-governance.otelCollectorName" . }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  replicas: {{ .Values.copilotOtel.replicas }}
+  image: {{ .Values.copilotOtel.image | quote }}
+  ports:
+    # Declared explicitly rather than left entirely to the operator's own
+    # config-based port inference (it would infer the same port from the
+    # `exporters.prometheus.endpoint` below regardless), so the Service's
+    # "prometheus" port name/number is guaranteed stable across operator
+    # versions. Same name AND number as the inferred one, so the operator
+    # de-duplicates them into a single port rather than emitting two.
+    - name: prometheus
+      port: {{ .Values.copilotOtel.prometheusPort }}
+      protocol: TCP
+  # Hardening matching the rest of this chart (values.yaml's
+  # app-template.defaultPodOptions.securityContext /
+  # app-template.controllers.*.containers.main.securityContext), applied via
+  # the two spec fields the OpenTelemetryCollector CRD exposes for it.
+  #
+  # NOT verified against a live cluster: `runAsNonRoot: true` (without
+  # pinning a specific runAsUser -- this is the upstream otel/opentelemetry-
+  # collector image, not this platform's own distroless one, so its non-root
+  # UID is whatever the image bakes in) and `readOnlyRootFilesystem: true`
+  # assume this pipeline (otlp receiver -> resource processor -> prometheus
+  # exporter, no file_storage extension, no on-disk queueing) needs no
+  # writable path. Confirm against a real pod before relying on it -- if the
+  # operator or image needs a writable scratch dir this chart doesn't know
+  # about, this is the first thing to relax.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: {{ .Values.copilotOtel.resources.requests.cpu | quote }}
+      memory: {{ .Values.copilotOtel.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.copilotOtel.resources.limits.cpu | quote }}
+      memory: {{ .Values.copilotOtel.resources.limits.memory | quote }}
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            # Matches how governance-ctl actually pushes
+            # (opentelemetry_otlp::MetricExporter::builder().with_tonic(),
+            # app/governance-ctl/src/metrics.rs) -- gRPC only. Omitting the
+            # `http` block entirely disables it; we don't need it, and an
+            # enabled-by-default receiver we never use is just extra attack
+            # surface.
+            endpoint: 0.0.0.0:4317
+    processors:
+      resource:
+        # THE CHURN TRAP: every copilot-sync run is a BRAND NEW pod, so any
+        # per-pod resource attribute (k8s.pod.name, k8s.pod.uid,
+        # service.instance.id, process.pid, ...) differs on every single
+        # run. With resource_to_telemetry_conversion disabled below these
+        # never become per-metric labels, but the prometheus exporter still
+        # emits one `target_info` series per DISTINCT resource it has seen
+        # -- carrying these attributes as labels on THAT series -- which
+        # would grow one new series, forever, one per run, unbounded. Strip
+        # the per-run ones; keep service.name (set explicitly below) so the
+        # metrics stay attributable to "the copilot connector" without
+        # tying that attribution to any one pod.
+        #
+        # As of this chart, governance-ctl's SdkMeterProvider attaches no
+        # explicit Resource at all (verified: no Resource::builder/
+        # .with_resource() call anywhere in app/governance-ctl/src/metrics.rs,
+        # and no OTEL_RESOURCE_ATTRIBUTES/OTEL_SERVICE_NAME/POD_* env var is
+        # set anywhere in this chart), so most of these keys are typically
+        # already absent today. This list is defence-in-depth for whatever
+        # the SDK's own auto-detection adds after a future dependency
+        # upgrade, and for if per-pod downward-API env vars are ever wired
+        # into the CronJob later -- cheap insurance either way.
+        attributes:
+          - key: service.name
+            value: governance-copilot
+            action: upsert
+          - key: k8s.pod.name
+            action: delete
+          - key: k8s.pod.uid
+            action: delete
+          - key: k8s.pod.start_time
+            action: delete
+          - key: service.instance.id
+            action: delete
+          - key: process.pid
+            action: delete
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:{{ .Values.copilotOtel.prometheusPort }}
+        # See copilotOtel.metricExpiration in values.yaml for the full
+        # reasoning: comfortably longer than the 6h CronJob schedule so the
+        # last run's values survive BETWEEN runs, instead of vanishing from
+        # /metrics ~5 minutes after each one-shot push (this exporter's own
+        # default).
+        metric_expiration: {{ .Values.copilotOtel.metricExpiration }}
+        # Explicit even though false is the exporter's own default: `true`
+        # would turn the resource attributes the processor above just
+        # normalised (service.name, plus whatever it didn't strip) into a
+        # label on EVERY metric series, not just the one target_info series
+        # -- multiplying cardinality by however many metrics copilot-ctl
+        # emits, for no benefit here (there's exactly one resource, one
+        # connector).
+        resource_to_telemetry_conversion:
+          enabled: false
+        # Explicit even though false is the exporter's own default:
+        # re-report the last known value stamped with the SCRAPE's own
+        # timestamp, not the timestamp of the (possibly 6h-old) push --
+        # some remote-write backends reject samples whose timestamp is too
+        # far in the past, which would otherwise make a value that displays
+        # correctly at /metrics still silently fail to land in Mimir.
+        send_timestamps: false
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [resource]
+          exporters: [prometheus]
+{{- end }}
