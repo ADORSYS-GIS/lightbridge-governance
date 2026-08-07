@@ -207,6 +207,12 @@ pub async fn ingest(
             if result.identity_mismatch_detection_failed {
                 state.metrics.ingest_identity_mismatch_failures_total.inc();
             }
+            if result.identity_mismatches > 0 {
+                state
+                    .metrics
+                    .ingest_identity_mismatches_total
+                    .inc_by(result.identity_mismatches as u64);
+            }
 
             tracing::info!(
                 executions = result.executions_upserted,

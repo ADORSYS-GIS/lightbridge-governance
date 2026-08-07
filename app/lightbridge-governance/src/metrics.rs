@@ -77,10 +77,12 @@ pub struct Metrics {
     pub ingest_tool_calls_total: IntCounter,
     /// Identity mismatch detection failures (best-effort query failures).
     pub ingest_identity_mismatch_failures_total: IntCounter,
+    /// Executions whose payload email contradicted the token-derived identity.
+    pub ingest_identity_mismatches_total: IntCounter,
     /// Unix timestamp (seconds) of the most recent report day `{provider}`
-    /// has successfully ingested at least one report for. Absent for a
+    /// has successfully ingested at least one report. Absent for a
     /// provider that has never synced, or before the first successful
-    /// refresh -- never `0`, which would misread as "just synced". Backs the
+    /// refresh -- never `0`, which reads as "just synced". Backs the
     /// runbook's "no successful sync in 36h" / "report older than 72h"
     /// alerts via `time() - metric > threshold` in PromQL.
     connector_last_success_timestamp_seconds: IntGaugeVec,
@@ -136,6 +138,11 @@ impl Metrics {
             "identity mismatch detection failures (best-effort query failures)",
         )
         .expect("static metric definition");
+        let ingest_identity_mismatches_total = IntCounter::new(
+            "governance_ingest_identity_mismatches_total",
+            "executions whose payload email contradicted the token-derived identity",
+        )
+        .expect("static metric definition");
         let connector_last_success_timestamp_seconds = IntGaugeVec::new(
             opts!(
                 "governance_connector_last_success_timestamp_seconds",
@@ -172,6 +179,7 @@ impl Metrics {
             ingest_tool_calls_total: ingest_tool_calls_total.clone(),
             ingest_identity_mismatch_failures_total: ingest_identity_mismatch_failures_total
                 .clone(),
+            ingest_identity_mismatches_total: ingest_identity_mismatches_total.clone(),
             connector_last_success_timestamp_seconds: connector_last_success_timestamp_seconds
                 .clone(),
             connector_has_synced: connector_has_synced.clone(),
@@ -182,12 +190,13 @@ impl Metrics {
         // registered collector -- impossible here since each is registered
         // exactly once. Logged, not fatal: a missing metric is worse than a
         // 500 on startup.
-        let collectors: [Box<dyn prometheus::core::Collector>; 8] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 9] = [
             Box::new(ingest_requests_total),
             Box::new(ingest_executions_total),
             Box::new(ingest_model_calls_total),
             Box::new(ingest_tool_calls_total),
             Box::new(ingest_identity_mismatch_failures_total),
+            Box::new(ingest_identity_mismatches_total),
             Box::new(connector_last_success_timestamp_seconds),
             Box::new(connector_has_synced),
             Box::new(connector_metrics_scrape_errors_total),
@@ -312,11 +321,13 @@ mod tests {
             .inc();
         metrics.ingest_executions_total.inc();
         metrics.ingest_identity_mismatch_failures_total.inc();
+        metrics.ingest_identity_mismatches_total.inc();
 
         let out = metrics.render();
         assert!(out.contains("governance_ingest_requests_total{outcome=\"success\"} 1"));
         assert!(out.contains("governance_ingest_executions_total 1"));
         assert!(out.contains("governance_ingest_identity_mismatch_failures_total 1"));
+        assert!(out.contains("governance_ingest_identity_mismatches_total 1"));
     }
 
     #[test]
