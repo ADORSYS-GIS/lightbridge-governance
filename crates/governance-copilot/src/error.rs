@@ -51,9 +51,11 @@ pub enum CopilotError {
     #[error("copilot connector io: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A reqwest transport error.
+    /// A reqwest transport error. Always constructed via
+    /// [`CopilotError::transport`], never the tuple variant directly (no
+    /// `#[from]` here on purpose) -- see that constructor's doc comment.
     #[error("copilot connector transport: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(reqwest::Error),
 
     /// A failure writing to or reading from the raw archive (S3 or local).
     /// Kept opaque so the library never depends on a storage SDK; the archive
@@ -75,6 +77,22 @@ impl CopilotError {
             detail: detail.into(),
         }
     }
+
+    /// Wrap a transport error, stripping any URL it carries first.
+    ///
+    /// `reqwest::Error` attaches the request URL to itself by default (it
+    /// shows up in `Display` and in `Debug`) -- for `report.rs`'s second
+    /// call, that URL is the short-lived SIGNED download URL RFC-0001
+    /// describes, i.e. exactly the secret AGENTS.md says must never be
+    /// logged. Every `CopilotError::Transport` in this crate goes through
+    /// this constructor (the tuple variant has no `#[from]`, so nothing can
+    /// bypass it via `?`), which is what makes every downstream `%e`/
+    /// `{}`/`{:?}` on a `CopilotError` safe by construction -- retry
+    /// logging (`client.rs`) included -- rather than something every new
+    /// call site has to remember to redact itself.
+    pub(crate) fn transport(e: reqwest::Error) -> Self {
+        Self::Transport(e.without_url())
+    }
 }
 
 /// Convenience alias for Copilot connector fallible operations.
@@ -91,5 +109,34 @@ mod tests {
         let secret = RawSecret::new("supersecret".to_owned());
         assert_eq!(format!("{secret:?}"), "<redacted>");
         assert_eq!(format!("{secret}"), "<redacted>");
+    }
+
+    /// `reqwest::Error` attaches the request URL to itself by default; for
+    /// the signed report-download call that URL IS the secret. Prove
+    /// `CopilotError::transport` strips it before it can reach a `Display`
+    /// (and therefore a log line) anywhere downstream.
+    #[tokio::test]
+    async fn transport_error_display_never_leaks_the_request_url() {
+        // A connection refused on a loopback port carries the request URL
+        // on the `reqwest::Error` by default -- this stands in for the real
+        // signed download URL, which carries a token in its query string.
+        let secret_looking_url = "http://127.0.0.1:1/download?token=super-secret-signed-value";
+        let reqwest_err = reqwest::Client::new()
+            .get(secret_looking_url)
+            .send()
+            .await
+            .expect_err("connecting to port 1 must fail");
+        assert!(
+            reqwest_err.url().is_some(),
+            "test precondition: reqwest must attach a url to this error, or this test is not \
+             exercising the redaction at all"
+        );
+
+        let err = crate::CopilotError::transport(reqwest_err);
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("super-secret-signed-value") && !rendered.contains("127.0.0.1:1"),
+            "transport error Display must never include the request url: {rendered:?}"
+        );
     }
 }

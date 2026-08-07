@@ -15,6 +15,10 @@ use crate::{
 
 /// Response to a report fetch: the raw NDJSON (to archive + parse) plus the
 /// signed-download host (used once for egress verification, never the URL).
+/// `Debug` is safe to derive: no field here carries a secret or a signed
+/// URL, only bytes/host/a flag (`RawSecret` is what exists for the fields
+/// that would need redaction).
+#[derive(Debug)]
 pub struct DownloadedReport {
     /// The raw NDJSON bytes of the report (empty when GitHub returned 204).
     pub bytes: Vec<u8>,
@@ -39,17 +43,19 @@ impl GithubClient {
         day: &str,
         token: &RawSecret,
     ) -> Result<DownloadedReport> {
-        let url =
-            format!("https://api.github.com/orgs/{org}/copilot/metrics/reports/{report}?day={day}");
+        let url = format!(
+            "{}/orgs/{org}/copilot/metrics/reports/{report}?day={day}",
+            self.api_base()
+        );
         let resp = self
-            .inner()
-            .get(&url)
-            .bearer_auth(token.as_ref())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", crate::API_VERSION)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?;
+            .send_with_retry(|| {
+                self.inner()
+                    .get(&url)
+                    .bearer_auth(token.as_ref())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", crate::API_VERSION)
+            })
+            .await?;
         let status = resp.status().as_u16();
 
         // 204 = valid "no data for this day". Return empty, not failure.
@@ -60,7 +66,7 @@ impl GithubClient {
                 empty: true,
             });
         }
-        let text = resp.text().await.map_err(CopilotError::Transport)?;
+        let text = resp.text().await.map_err(CopilotError::transport)?;
         if status != 200 {
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             let msg = json
@@ -94,14 +100,14 @@ impl GithubClient {
             .nth(1)
             .and_then(|rest| rest.split('/').next())
             .map(str::to_owned);
-        let mut resp = self
-            .inner()
-            .get(signed)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?
-            .error_for_status()
-            .map_err(CopilotError::Transport)?;
+        let mut resp = self.send_with_retry(|| self.inner().get(signed)).await?;
+        if !resp.status().is_success() {
+            return Err(CopilotError::github(
+                "copilot-reports download",
+                resp.status().as_u16(),
+                "signed download returned a non-success status",
+            ));
+        }
         let too_large = |size: u64| CopilotError::ReportTooLarge {
             report: report.to_owned(),
             day: day.to_owned(),
@@ -116,7 +122,7 @@ impl GithubClient {
             _ => {}
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(CopilotError::Transport)? {
+        while let Some(chunk) = resp.chunk().await.map_err(CopilotError::transport)? {
             let next = bytes.len() + chunk.len();
             if next > MAX_REPORT_BYTES {
                 return Err(too_large(next as u64));

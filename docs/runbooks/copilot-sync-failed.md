@@ -47,12 +47,27 @@ kubectl -n governance logs job/<name> --tail=200
 
 Logs are structured JSON. The `status` field and `reasonCode` say which stage failed.
 
+A Job's exit code distinguishes two very different situations, so do not treat every failed
+Job the same:
+
+- **Non-zero exit** (`backoffLimit`/alerting engaged): every day in that run's window failed --
+  a totally broken run (dead credential, GitHub unreachable for the whole run). Go straight to
+  the credential/egress checks below.
+- **Exit 0, but the logs show `"day failed; continuing backfill"` for one or more days**: a
+  partial failure. This is expected to self-heal -- the failed day is within the trailing
+  lookback window and gets re-attempted on the next scheduled run with no operator action. Only
+  chase this by hand if `governance-ctl verify` still shows drift for that day after the next
+  scheduled run has had a chance to retry it.
+
 ### 403 from the report endpoints
 
 **The most likely cause is not the credential.** Check, in this order:
 
-1. Does the App still hold **all three** org permissions -- Copilot metrics, Copilot seat
-   management **and Members**, all read? Losing any one gives 400/403.
+1. Does the App still hold **both** required org permissions -- Copilot metrics and Copilot
+   seat management, both read -- plus `Metadata: Read`? Losing either of the first two gives
+   400/403. **`Members: Read` is NOT required** -- spike-0007's live A/B removed it from the
+   App and the report endpoints kept returning `200`
+   (`docs/spikes/0007-github-app-token-on-copilot-reports.md`); do not spend time re-adding it.
 2. Is the organization's **"Copilot metrics API access policy"** still enabled? It is an
    org *setting*, not a permission, and an org owner can turn it off without touching the App.
 3. Only then suspect the credential itself.

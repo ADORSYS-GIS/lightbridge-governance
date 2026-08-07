@@ -65,16 +65,17 @@ impl<'c> AppAuth<'c> {
     async fn get(&self, url: &str, bearer: &RawSecret) -> Result<(u16, serde_json::Value)> {
         let resp = self
             .client
-            .inner()
-            .get(url)
-            .bearer_auth(bearer.as_ref())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", crate::API_VERSION)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?;
+            .send_with_retry(|| {
+                self.client
+                    .inner()
+                    .get(url)
+                    .bearer_auth(bearer.as_ref())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", crate::API_VERSION)
+            })
+            .await?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(CopilotError::Transport)?;
+        let text = resp.text().await.map_err(CopilotError::transport)?;
         let json = serde_json::from_str(&text)
             .map_err(|e| CopilotError::github(kind_for(url), status, e.to_string()))?;
         Ok((status, json))
@@ -84,9 +85,8 @@ impl<'c> AppAuth<'c> {
     /// GitHub treats org logins).
     async fn installation_id(&self, org: &str) -> Result<String> {
         let jwt = RawSecret::new(self.app_jwt()?);
-        let (status, json) = self
-            .get("https://api.github.com/app/installations", &jwt)
-            .await?;
+        let url = format!("{}/app/installations", self.client.api_base());
+        let (status, json) = self.get(&url, &jwt).await?;
         if status != 200 {
             return Err(CopilotError::github(
                 "app/installations",
@@ -118,20 +118,23 @@ impl<'c> AppAuth<'c> {
     pub async fn token_for_org(&self, org: &str) -> Result<RawSecret> {
         let id = self.installation_id(org).await?;
         let jwt = RawSecret::new(self.app_jwt()?);
+        let url = format!(
+            "{}/app/installations/{id}/access_tokens",
+            self.client.api_base()
+        );
         let resp = self
             .client
-            .inner()
-            .post(format!(
-                "https://api.github.com/app/installations/{id}/access_tokens"
-            ))
-            .bearer_auth(jwt.as_ref())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", crate::API_VERSION)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?;
+            .send_with_retry(|| {
+                self.client
+                    .inner()
+                    .post(&url)
+                    .bearer_auth(jwt.as_ref())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", crate::API_VERSION)
+            })
+            .await?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(CopilotError::Transport)?;
+        let text = resp.text().await.map_err(CopilotError::transport)?;
         let json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| CopilotError::Token(format!("token response: {e}")))?;
         if status != 201 {
