@@ -51,3 +51,10 @@ opentelemetry_sdk.workspace = true
 # chain -- same precedent as governance-copilot's tests/support/mock_github.rs.
 axum.workspace = true
 serde_json.workspace = true
+# `testing` unlocks `opentelemetry_sdk::metrics::InMemoryMetricExporter`, used
+# by `metrics.rs`'s tests to inspect which instrument type (Gauge vs Sum) a
+# recording actually produced, without a network OTLP endpoint. Cargo's
+# resolver (workspace `resolver = "3"`) keeps this feature out of the
+# `[dependencies]`-only build graph, so it is compiled in for `cargo test`
+# only, never for the shipped binary.
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
