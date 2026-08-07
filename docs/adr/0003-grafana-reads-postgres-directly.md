@@ -1,8 +1,24 @@
 # ADR-0003: Grafana reads the governance database directly
 
-- Status: Accepted
+- Status: Accepted -- one scoping clause amended by [ADR-0011](./0011-bridge-copilot-run-metrics-push-to-pull.md)
 - Date: 2026-07-31
 - Decision owners: @stephane-segning
+
+> **Amendment note (2026-08-07, ADR-0011).** One sentence in the Decision below is no
+> longer true as written: "Mimir keeps only the ~10 low-cardinality
+> `governance_connector_*` operational metrics ... and nothing else." ADR-0011 adds a
+> second family, `governance_copilot_*` (8 series, labels limited to
+> `command`/`report`/`status`), carrying per-run detail that is not reconstructible from
+> `ingest_manifests` and therefore cannot be derived the way ADR-0007 derives
+> `governance_connector_*`.
+>
+> Everything else in this ADR stands unchanged and is still the decision: business and
+> reporting data is read from Postgres by Grafana rather than published to Mimir, the
+> cardinality argument that motivates that is unaffected, and **alerting still belongs on
+> `governance_connector_*`** -- the new family is dashboard-grade only, because it lives
+> in a collector's in-memory cache and is blanked by a restart. The body below is left
+> exactly as written, per this directory's rule that an accepted ADR's decision is not
+> edited in place.
 
 ## Context
 

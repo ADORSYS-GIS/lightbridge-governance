@@ -9,7 +9,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 |---|---|---|---|
 | [0001](./0001-single-tenant-deployable-not-saas.md) | Ship a single-tenant deployable, not a multi-tenant SaaS | Accepted | 2026-07-31 |
 | [0002](./0002-postgres-is-the-system-of-record-not-parquet-on-s3.md) | Postgres is the system of record; S3 is the raw archive | Accepted | 2026-07-31 |
-| [0003](./0003-grafana-reads-postgres-directly.md) | Grafana reads the governance database directly | Accepted | 2026-07-31 |
+| [0003](./0003-grafana-reads-postgres-directly.md) | Grafana reads the governance database directly | Accepted (one clause amended by 0011) | 2026-07-31 |
 | [0004](./0004-observability-stack-stays-single-tenant.md) | Leave the LGTM stack single-tenant; the database is the isolation boundary | Accepted | 2026-07-31 |
 | [0005](./0005-one-workspace-registry-first-connectors-as-crates.md) | One workspace, registry first, connectors as crates | Accepted | 2026-07-31 |
 | [0006](./0006-foundry-auth-reuses-core-gateway-and-authorino.md) | Foundry OTLP auth reuses core-gateway + Authorino | Accepted | 2026-07-31 |
@@ -17,6 +17,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0008](./0008-money-is-integer-micro-usd.md) | Money is integer micro-USD, everywhere | Accepted | 2026-07-31 |
 | [0009](./0009-cratestack-only-rest-transport-cbor-payloads.md) | cratestack is the only persistence layer; REST transport, CBOR payloads | Accepted | 2026-07-31 |
 | [0010](./0010-bidirectional-scanning-request-and-response-paths.md) | Both request and response are scanned before they cross the trust boundary; incremental streaming for response path | Proposed | 2026-08-04 |
+| [0011](./0011-bridge-copilot-run-metrics-push-to-pull.md) | Bridge copilot-sync's run-detail metrics from push to pull with a dedicated collector | Proposed | 2026-08-07 |
 
 ## Writing one
 
