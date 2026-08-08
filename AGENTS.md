@@ -45,6 +45,18 @@ There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain
   for the estate-wide version of this rule — this repo already satisfies its strictest clause
   (no direct sqlx dependency), but ADR-0038's capability findings were verified against
   cratestack 0.7.8 and we're on 0.5.1, so re-verify them here before relying on them.
+- **Every id we mint is a CUID2** — 24 chars, lowercase `a-z0-9`, starts with a letter
+  ([ADR-0039](https://github.com/ADORSYS-GIS/webank-context/blob/master/decisions/0039-cuid2-is-the-house-id-format.md)).
+  This repo already does this — `cuid::cuid2()`, never `Uuid::new_v4()` — so the rule is: keep it
+  that way, and never add a new call site that reaches for the `uuid` crate instead.
+  Bans **minting**, not **storing**: an id we don't own (Keycloak's `sub`, an external token)
+  stays exactly as it arrives and keeps being accepted, unvalidated.
+  - Never validate an id's shape — no regex, no parse, no length check, no hyphen branching.
+    Ids are opaque strings.
+  - Never sort or paginate by id — CUID2 has no ordering. Use `createdAt`.
+  - Store as TEXT (cratestack's `id String @id` already does this) — no native `uuid` column,
+    no `DEFAULT gen_random_uuid()`.
+  - Mint through one chokepoint, not a `cuid::cuid2()` call at every insert site.
 - **REST transport, CBOR payloads.** JSON is retained for exactly one consumer:
   `/internal/v1/resolve`, because Authorino's `metadata.http` speaks JSON and cannot be
   taught CBOR. Do not reach for JSON on the product API.
