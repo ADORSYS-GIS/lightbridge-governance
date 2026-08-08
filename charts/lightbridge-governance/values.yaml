@@ -161,6 +161,65 @@ serviceMonitor:
   enabled: true
   interval: 30s
 
+# Alerting rules over the two ALERT-GRADE metric families (templates/
+# prometheusrule.yaml). Deliberately none over `governance_copilot_*`, which
+# ADR-0011 classes as dashboard-grade -- it lives in the collector's memory and
+# a restart blanks it for up to 6h.
+prometheusRule:
+  enabled: true
+
+  # ⚠️ TWO WAYS THIS SILENTLY DOES NOTHING, both worth checking before
+  # trusting any alert below.
+  #
+  # 1. Prometheus/Mimir selects rules by LABEL (`ruleSelector`). Wrong labels
+  #    and the resource applies cleanly, shows up in `kubectl get
+  #    prometheusrule`, and is never evaluated -- no error anywhere. Exactly
+  #    how the Grafana dashboard's `instanceSelector` failed. Copy from a rule
+  #    already evaluating on this cluster:
+  #      kubectl get prometheusrule -A --show-labels
+  #
+  # 2. ADR-0007 says Alloy discovers ServiceMonitor/PodMonitor and
+  #    remote-writes to Mimir. Alloy does NOT evaluate rules -- Mimir's ruler
+  #    does. If this cluster feeds its ruler some other way (a Mimir bucket, a
+  #    mimir-rules ConfigMap), a PrometheusRule CR is inert here whatever its
+  #    labels, and these expressions need lifting into that mechanism instead.
+  #
+  # NOT VERIFIED against the deployed cluster -- no PrometheusRule existed
+  # anywhere in this repo before this, so there was no convention to copy.
+  additionalLabels: {}
+
+  # Empty = the release namespace, matching templates/servicemonitor.yaml.
+  # Set it if the ruler only watches a specific namespace.
+  namespace: ""
+
+  thresholds:
+    # Freshness. 36h/72h are the numbers docs/runbooks/copilot-sync-failed.md
+    # already names, so the alert and the runbook agree. Both are generous
+    # against the 6h schedule: several consecutive failed runs before anyone
+    # is woken.
+    syncStaleHours: 36
+    syncVeryStaleHours: 72
+
+    # Month-to-date spend ceiling, in INTEGER micro-USD (ADR-0008 -- no float
+    # ever touches a monetary value, and PromQL does the display division).
+    # 5_000_000_000 micro-USD = $5,000. Set this to something meaningful for
+    # the deployment; the default is a placeholder, not a considered budget.
+    monthlySpendMicroUsd: 5000000000
+
+    # Seats assigned that have never once been used. Tune to the seat count --
+    # 20 is meaningless for a 15-seat org. A ratio works better where seat
+    # counts vary:
+    #   governance_org_seats_never_used / governance_org_seats_assigned > 0.3
+    seatsNeverUsed: 20
+
+    # Active-user drop, compared against the SAME WEEKDAY rather than
+    # yesterday. Copilot usage is strongly weekday-seasonal: a Saturday is
+    # legitimately far below a Friday, so `offset 1d` would page every weekend
+    # and be muted within a fortnight. 0.7 = fire below 70% of the comparison
+    # point.
+    activeUsersDropRatio: 0.7
+    activeUsersCompareOffset: 7d
+
 # Ships dashboards/copilot-connector.json to Grafana as a GrafanaDashboard CR
 # (templates/grafanadashboard.yaml), per ADR-0003's precedent (ai-helm
 # ADR-0063's read-only-Postgres-datasource pattern for Grafana Operator
