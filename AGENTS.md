@@ -31,11 +31,22 @@ There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain
 
 ## Conventions that are not negotiable
 
-- **cratestack is the only persistence layer** (ADR-0009). `crates/governance-core/schema/governance.cstack`
-  is the source of truth for tables, migrations, CRUD and routes. Do **not** hand-write SQL
-  or a migration — if the generated CRUD cannot express it, add a schema `procedure`.
-- **Every id we mint is a CUID2** — 24 chars, lowercase `a-z0-9`, starts with a letter (ADR-0039,
-  pending merge: [webank-context#66](https://github.com/ADORSYS-GIS/webank-context/pull/66)).
+- **No second persistence path** (ADR-0009). `crates/governance-core/schema/governance.cstack`
+  is the source of truth for tables, migrations, CRUD and routes. Never add a direct `sqlx`
+  dependency to any `Cargo.toml` — reach sqlx only through `cratestack::sqlx`. Every manifest
+  in this repo has zero direct sqlx edges today; that is the property to preserve, not "no raw
+  SQL."
+- **Raw SQL exists and is allowed** where generated CRUD can't express the operation — an
+  advisory lock and trigger DDL in `migrate.rs`, a credential-resolve JOIN in `credential.rs`,
+  transactional upserts in `ingest.rs` and `governance-copilot/src/store.rs`, a batch
+  `= ANY($3)` lookup in `identity.rs`. It belongs inside a schema `procedure` or a dedicated
+  store module, never as a parallel path to the database. See webank-context's
+  [ADR-0038](https://github.com/ADORSYS-GIS/webank-context/blob/master/decisions/0038-cratestack-is-the-only-database-api.md)
+  for the estate-wide version of this rule — this repo already satisfies its strictest clause
+  (no direct sqlx dependency), but ADR-0038's capability findings were verified against
+  cratestack 0.7.8 and we're on 0.5.1, so re-verify them here before relying on them.
+- **Every id we mint is a CUID2** — 24 chars, lowercase `a-z0-9`, starts with a letter
+  ([ADR-0039](https://github.com/ADORSYS-GIS/webank-context/blob/master/decisions/0039-cuid2-is-the-house-id-format.md)).
   This repo already does this — `cuid::cuid2()`, never `Uuid::new_v4()` — so the rule is: keep it
   that way, and never add a new call site that reaches for the `uuid` crate instead.
   Bans **minting**, not **storing**: an id we don't own (Keycloak's `sub`, an external token)

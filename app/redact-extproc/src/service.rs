@@ -175,9 +175,16 @@ impl ResponseState {
         let Some(hm) = headers.headers.as_ref() else {
             return;
         };
+        let hdr_val = |h: &HeaderValue| -> String {
+            if !h.value.is_empty() {
+                h.value.clone()
+            } else {
+                String::from_utf8_lossy(&h.raw_value).into_owned()
+            }
+        };
         let is_sse = hm.headers.iter().any(|h| {
             h.key.eq_ignore_ascii_case("content-type")
-                && h.value
+                && hdr_val(h)
                     .to_ascii_lowercase()
                     .starts_with("text/event-stream")
         });
@@ -185,10 +192,11 @@ impl ResponseState {
             self.mode = ResponseBodyMode::Sse;
         }
         for h in &hm.headers {
+            let val = hdr_val(h);
             if h.key.eq_ignore_ascii_case("content-type") {
-                self.content_type = Some(h.value.clone());
+                self.content_type = Some(val);
             } else if h.key.eq_ignore_ascii_case("content-encoding") {
-                self.content_encoding = Some(h.value.clone());
+                self.content_encoding = Some(val);
             }
         }
     }
@@ -269,6 +277,22 @@ fn dispatch(
             // Gateway-wide, so that's not a rare path.
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
+            }
+            // DIAGNOSTIC: log response headers to verify Envoy sends them.
+            // HeaderValue can carry value in `value` (string) or `raw_value`
+            // (bytes). EG-generated envoy_grpc config populates both. Check
+            // both to be safe across Envoy versions.
+            if let Some(hm) = &headers.headers {
+                for h in &hm.headers {
+                    let val = if !h.value.is_empty() {
+                        &h.value
+                    } else {
+                        std::str::from_utf8(&h.raw_value).unwrap_or("(empty)")
+                    };
+                    tracing::info!(key = %h.key, value = %val, "ResponseHeader");
+                }
+            } else {
+                tracing::info!("ResponseHeaders received but headers field is None");
             }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
