@@ -31,9 +31,20 @@ There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain
 
 ## Conventions that are not negotiable
 
-- **cratestack is the only persistence layer** (ADR-0009). `crates/governance-core/schema/governance.cstack`
-  is the source of truth for tables, migrations, CRUD and routes. Do **not** hand-write SQL
-  or a migration — if the generated CRUD cannot express it, add a schema `procedure`.
+- **No second persistence path** (ADR-0009). `crates/governance-core/schema/governance.cstack`
+  is the source of truth for tables, migrations, CRUD and routes. Never add a direct `sqlx`
+  dependency to any `Cargo.toml` — reach sqlx only through `cratestack::sqlx`. Every manifest
+  in this repo has zero direct sqlx edges today; that is the property to preserve, not "no raw
+  SQL."
+- **Raw SQL exists and is allowed** where generated CRUD can't express the operation — an
+  advisory lock and trigger DDL in `migrate.rs`, a credential-resolve JOIN in `credential.rs`,
+  transactional upserts in `ingest.rs` and `governance-copilot/src/store.rs`, a batch
+  `= ANY($3)` lookup in `identity.rs`. It belongs inside a schema `procedure` or a dedicated
+  store module, never as a parallel path to the database. See webank-context's
+  [ADR-0038](https://github.com/ADORSYS-GIS/webank-context/blob/master/decisions/0038-cratestack-is-the-only-database-api.md)
+  for the estate-wide version of this rule — this repo already satisfies its strictest clause
+  (no direct sqlx dependency), but ADR-0038's capability findings were verified against
+  cratestack 0.7.8 and we're on 0.5.1, so re-verify them here before relying on them.
 - **REST transport, CBOR payloads.** JSON is retained for exactly one consumer:
   `/internal/v1/resolve`, because Authorino's `metadata.http` speaks JSON and cannot be
   taught CBOR. Do not reach for JSON on the product API.
