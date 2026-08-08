@@ -1,0 +1,44 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; claude_code.rs's module doc: resource attributes user.email/service.name, span attributes session.id/model.name/tokens.input/tokens.output, tool.call events with tool.name/duration.ms) -- NOT captured from a real Claude Code OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "happy path: one execution, one model call with known token counts, one tool call"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } },
+          { "key": "user.email", "value": { "stringValue": "dev@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cc-trace-0001",
+              "spanId": "cc-span-0001",
+              "startTimeUnixNano": "1706000000000000000",
+              "endTimeUnixNano": "1706000004200000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cc-session-01" } },
+                { "key": "model.name", "value": { "stringValue": "claude-3-7-sonnet" } },
+                { "key": "tokens.input", "value": { "intValue": "2200" } },
+                { "key": "tokens.output", "value": { "intValue": "640" } }
+              ],
+              "events": [
+                {
+                  "name": "tool.call",
+                  "attributes": [
+                    { "key": "tool.name", "value": { "stringValue": "edit_file" } },
+                    { "key": "duration.ms", "value": { "intValue": "310" } }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

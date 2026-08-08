@@ -1,0 +1,35 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; foundry.rs's module doc) -- NOT captured from a real Microsoft Foundry hosted-agent OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "span.events is a string, not an array -- structurally invalid OTLP. Must reject (InvalidFieldType), never be treated as 'zero tool calls' (indistinguishable from a span that legitimately called none)"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "user.email", "value": { "stringValue": "agent-owner@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "fy-trace-0005",
+              "spanId": "fy-span-0005",
+              "startTimeUnixNano": "1722000000000000000",
+              "endTimeUnixNano": "1722000009800000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "fy-session-05" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-4o" } },
+                { "key": "tokens.input", "value": { "intValue": "2000" } },
+                { "key": "tokens.output", "value": { "intValue": "500" } }
+              ],
+              "events": "not-an-array"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

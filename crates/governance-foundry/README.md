@@ -19,6 +19,16 @@ this crate is meant to own hasn't been built yet.
 
 - The normalizer turning OTLP GenAI spans into execution / model-call / tool-call records.
 
+## Fixtures and the normalizer replay harness
+
+`fixtures/` and `tests/normalizer_fixtures.rs` implement the "golden-dataset fixture"
+RFC-0002's Verification section asks for, with an honesty caveat that matters: see
+[`fixtures/README.md`](fixtures/README.md) and
+[`docs/integrations/foundry-golden-fixtures.md`](../../docs/integrations/foundry-golden-fixtures.md)
+for what it actually checks (normalizer output pinned against committed snapshots) and what
+it does not (there is no real captured payload behind it yet, so the attribute-naming
+assumption the pre-go-live review flagged is still open).
+
 ## Design decisions already made
 
 - **`resolve` sits in Authorino's `ext_authz` hot path.** Whatever calls it must stay fast

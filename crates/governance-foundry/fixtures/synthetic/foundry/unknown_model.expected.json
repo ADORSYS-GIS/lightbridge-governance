@@ -1,0 +1,23 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "fy-trace-0004",
+        "span_id": "fy-span-0004",
+        "user_email": "agent-owner@example.com",
+        "started_at": "2024-07-26T13:20:00Z",
+        "duration_ms": 9800,
+        "model_calls": [
+          {
+            "trace_id": "fy-trace-0004",
+            "span_id": "fy-span-0004:mc",
+            "model": "foundry-custom-deployment-xyz",
+            "input_tokens": 700,
+            "output_tokens": 180
+          }
+        ],
+        "tool_calls": []
+      }
+    ]
+  }
+}

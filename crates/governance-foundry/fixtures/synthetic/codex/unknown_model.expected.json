@@ -1,0 +1,23 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "cx-trace-0004",
+        "span_id": "cx-span-0004",
+        "user_email": "dev@example.com",
+        "started_at": "2024-04-01T19:33:20Z",
+        "duration_ms": 6500,
+        "model_calls": [
+          {
+            "trace_id": "cx-trace-0004",
+            "span_id": "cx-span-0004:mc",
+            "model": "codex-unreleased-experimental",
+            "input_tokens": 800,
+            "output_tokens": 200
+          }
+        ],
+        "tool_calls": []
+      }
+    ]
+  }
+}

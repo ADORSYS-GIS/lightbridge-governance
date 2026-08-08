@@ -1,0 +1,35 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; foundry.rs's module doc) -- NOT captured from a real Microsoft Foundry hosted-agent OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "endTimeUnixNano is before startTimeUnixNano -- malformed input, must reject (InvalidDuration), never clamp to a zero or negative duration"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "user.email", "value": { "stringValue": "agent-owner@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "fy-trace-0006",
+              "spanId": "fy-span-0006",
+              "startTimeUnixNano": "1722000009800000000",
+              "endTimeUnixNano": "1722000000000000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "fy-session-06" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-4o" } },
+                { "key": "tokens.input", "value": { "intValue": "2000" } },
+                { "key": "tokens.output", "value": { "intValue": "500" } }
+              ],
+              "events": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

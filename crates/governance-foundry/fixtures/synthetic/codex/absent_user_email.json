@@ -1,0 +1,33 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; codex.rs's module doc) -- NOT captured from a real Codex OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "resource carries no user.email -- codex.rs's module doc: this is the API-key/custom-provider-auth case, not an edge case. normalize() must succeed with user_email: null, not reject"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": []
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cx-trace-0002",
+              "spanId": "cx-span-0002",
+              "startTimeUnixNano": "1712000000000000000",
+              "endTimeUnixNano": "1712000006500000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cx-session-02" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-5-codex" } },
+                { "key": "input_token_count", "value": { "intValue": "1000" } },
+                { "key": "output_token_count", "value": { "intValue": "400" } }
+              ],
+              "events": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
