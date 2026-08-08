@@ -72,3 +72,87 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check ${{ matrix.checks }}
+
+  # Charts were previously only exercised by helm-oci.yml, which runs on push
+  # to main -- i.e. AFTER merge. A chart that failed to render was found by the
+  # publish job, not by the PR that broke it. This job renders on every PR.
+  #
+  # It also runs `promtool check rules` over the alerting expressions. Those
+  # live inside a PrometheusRule CR, and every way they can be wrong is quiet:
+  # a rendered expression with an embedded newline or in float notation is
+  # still valid PromQL (both happened while writing them, and both were only
+  # caught by parsing the rendered YAML), while a genuine syntax error would
+  # not surface until Mimir's ruler rejected the group at load time -- where
+  # nobody is looking.
+  helm-charts:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned rather than `latest`: an unpinned tool that changes its
+      # validation rules turns an unrelated PR red for reasons its author
+      # cannot act on.
+      PROMTOOL_VERSION: "3.1.0"
+      YQ_VERSION: "v4.44.6"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v4.3.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add chart dependency repos
+        run: |
+          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+          helm repo update
+
+      - name: Lint and render every chart
+        run: |
+          set -euo pipefail
+          for chart in charts/*/; do
+            [ -f "${chart}Chart.yaml" ] || continue
+            echo "::group::${chart}"
+            helm dependency build "${chart}"
+            helm lint --strict "${chart}"
+            helm template ci "${chart}" > "/tmp/$(basename "${chart}").rendered.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Install promtool and yq
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin "prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool"
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+          promtool --version
+          yq --version
+
+      - name: Check PrometheusRule expressions with promtool
+        run: |
+          set -euo pipefail
+          # A PrometheusRule CR carries the groups under `.spec.groups`, while
+          # promtool expects them at the top level -- hence the reshape rather
+          # than feeding it the manifest directly.
+          yq eval-all 'select(.kind == "PrometheusRule") | .spec' /tmp/*.rendered.yaml \
+            | yq eval-all '. as $item ireduce ({"groups": []}; .groups += $item.groups)' - \
+            > /tmp/promrules.yaml
+
+          groups=$(yq '.groups | length' /tmp/promrules.yaml)
+          rules=$(yq '[.groups[].rules[]] | length' /tmp/promrules.yaml)
+
+          # Refuse to pass by finding nothing. If the PrometheusRule stops
+          # rendering -- template deleted, toggle defaulted off, a `kind`
+          # rename -- promtool would happily validate an empty file and this
+          # job would go green having checked no expressions at all. That is
+          # the same green-but-ran-nothing failure the DATABASE_URL service
+          # block above exists to prevent.
+          if [ "${groups}" -eq 0 ] || [ "${rules}" -eq 0 ]; then
+            echo "::error::No PrometheusRule groups/rules were rendered by any chart."
+            echo "Either a chart stopped emitting its PrometheusRule, or this"
+            echo "extraction no longer matches the manifest shape. Refusing to"
+            echo "report success without having validated any expression."
+            exit 1
+          fi
+
+          echo "Validating ${rules} rule(s) across ${groups} group(s):"
+          yq '[.groups[].rules[].alert] | .[]' /tmp/promrules.yaml
+          promtool check rules /tmp/promrules.yaml
