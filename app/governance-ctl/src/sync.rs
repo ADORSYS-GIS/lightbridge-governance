@@ -21,6 +21,25 @@ pub const DEFAULT_LOOKBACK_DAYS: i64 = 3;
 /// walk back in one run. Bounds the request volume of a first-ever sync.
 pub const DEFAULT_MAX_BACKFILL_DAYS: i64 = 28;
 
+/// Days behind real calendar `today` before GitHub's Copilot metrics API will
+/// answer for a day at all -- confirmed live: a request for day D-0 returns
+/// `400 "Date must be within the last year and not in the future"`.
+///
+/// Deliberately NOT an env var like [`DEFAULT_LOOKBACK_DAYS`]/
+/// [`DEFAULT_MAX_BACKFILL_DAYS`]. Those two encode a real per-deployment
+/// policy choice (how much re-checking versus API call volume, how far a
+/// cold start may walk back) and different operators could reasonably want
+/// different values. This encodes a fact about GitHub's data pipeline --
+/// every deployment talks to the same API with the same latency, so there is
+/// no deployment where a value other than `1` is correct. An env var here
+/// would only add a way to reintroduce the exact bug this constant fixes (set
+/// it to `0` while debugging and the D-0 400s are back), for no compensating
+/// flexibility. If GitHub's latency ever changes, that is a fact to update
+/// here -- and in RFC-0001's own "D-1, D-2 and D-3" wording, so the spec and
+/// the implementation can't drift apart -- not something to tune per
+/// deployment.
+const COPILOT_DATA_LAG_DAYS: u64 = 1;
+
 /// Connector configuration, read from the environment.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -205,6 +224,16 @@ async fn ingest_seats(
 /// The `[start, end]` (inclusive) window of report days a `sync` run should
 /// (re-)ingest. Three RFC-0001 requirements, one expression:
 ///
+/// - **The upper bound is D-1, never D-0 ("today").** GitHub's Copilot
+///   metrics have same-day latency: a request for `today` always fails with
+///   HTTP 400 ("Date must be within the last year and not in the future").
+///   RFC-0001 §Scheduling is explicit that a run "re-fetches D-1, D-2 and
+///   D-3", not D-0 through D-2 -- confirmed live in production, where every
+///   6h run was burning four guaranteed-to-fail requests (one per report
+///   type) on `today` and logging a WARN for each, forever. `today` is still
+///   the parameter's meaning (the real calendar day the run executes on);
+///   every bound below is computed relative to it, but the window itself
+///   never extends past `today - 1`.
 /// - **Always re-fetch the trailing `lookback_days`**, regardless of where
 ///   the high-water mark sits. This is what makes a late-published report
 ///   self-heal with no operator action, and it is what stops the
@@ -218,21 +247,34 @@ async fn ingest_seats(
 /// - **Never walk back further than `max_backfill_days`**, so a cold start
 ///   (or a watermark that never advanced) cannot stampede the API.
 ///
-/// `start = max(min(hwm + 1, today - lookback_days), today - max_backfill_days)`,
-/// `end = today`. See the `backfill_window_*` tests below for the three
-/// cases this is required to get right (recent/stale/absent high-water
-/// mark) plus the exact re-orphaning scenario from the review.
+/// `end = today - COPILOT_DATA_LAG_DAYS` (currently 1 day),
+/// `start = max(min(hwm + 1, end, today - lookback_days), today - max_backfill_days)`.
+/// See the `backfill_window_*` tests below for the three cases this is
+/// required to get right (recent/stale/absent high-water mark) plus the
+/// exact re-orphaning scenario from the review and the D-1-upper-bound
+/// regression.
 pub fn backfill_window(
     hwm: Option<chrono::NaiveDate>,
     today: chrono::NaiveDate,
     lookback_days: i64,
     max_backfill_days: i64,
 ) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    // The most recent day GitHub can ever answer for. This is the ONLY place
+    // that decides that -- every caller (`run_backfill`/`run_backfill_at`)
+    // passes real calendar `today` straight through; `sync-day` bypasses
+    // this function entirely and is unaffected (an explicit operator
+    // request for "today" should still be tried and get GitHub's real
+    // error, not be silently blocked here).
+    let end = today - chrono::Days::new(COPILOT_DATA_LAG_DAYS);
     let lookback_bound = today - chrono::Days::new(lookback_days.max(0) as u64);
     let max_backfill_bound = today - chrono::Days::new(max_backfill_days.max(0) as u64);
     let start = match hwm {
         Some(h) => {
-            let resume = (h + chrono::Days::new(1)).min(today);
+            // Resume the day after the high-water mark, but never past the
+            // last queryable day -- a stale-in-the-other-direction hwm (or a
+            // 0-day lookback in a test config) must not push `start` beyond
+            // `end`.
+            let resume = (h + chrono::Days::new(1)).min(end);
             resume.min(lookback_bound).max(max_backfill_bound)
         }
         // No manifest row exists at all: treat as a cold start, bounded by
@@ -240,7 +282,7 @@ pub fn backfill_window(
         // lookback window.
         None => max_backfill_bound,
     };
-    (start, today)
+    (start, end)
 }
 
 /// The outcome of one `sync` (backfill) run.
@@ -592,10 +634,15 @@ mod tests {
         std::env::temp_dir().join(format!("lb-ctl-sync-test-{label}-{}", std::process::id()))
     }
 
-    /// `lookback_days: 0, max_backfill_days: 0` collapses `backfill_window`
-    /// (with no high-water mark) to exactly `[today, today]` -- a
-    /// one-day window keeps these tests to a single round trip to the mock
-    /// server per report type instead of a full multi-day backfill.
+    /// `lookback_days: 1, max_backfill_days: 1` collapses `backfill_window`
+    /// (with no high-water mark) to exactly `[today - 1, today - 1]` -- the
+    /// single most-recent day GitHub can actually answer for (D-1, never
+    /// D-0/"today" -- same-day latency, RFC-0001 §Scheduling) -- so these
+    /// tests stay to a single round trip to the mock server per report type
+    /// instead of a full multi-day backfill. `0` would collapse the window
+    /// to `[today, today]` instead, which is no longer a valid window: `end`
+    /// is always `today - 1`, so a `0`-sized lookback/max-backfill would put
+    /// `start` (`today`) after `end` (`today - 1`).
     fn test_config(tenant_id: String, org: String, archive_dir: std::path::PathBuf) -> Config {
         Config {
             tenant_id,
@@ -603,8 +650,8 @@ mod tests {
             app_id: "123456".to_owned(),
             private_key: RawSecret::new(TEST_APP_PRIVATE_KEY_PEM.to_owned()),
             archive: Archive::Local { dir: archive_dir },
-            lookback_days: 0,
-            max_backfill_days: 0,
+            lookback_days: 1,
+            max_backfill_days: 1,
         }
     }
 
@@ -683,7 +730,8 @@ mod tests {
 
         assert_eq!(
             result.window_days, 1,
-            "lookback=1, max_backfill=1 => just today"
+            "lookback=1, max_backfill=1 => just D-1 (today - 1; GitHub's same-day \
+             latency means today, D-0, is never queryable)"
         );
         assert_eq!(result.covered, 1, "covered must count day-reports only");
         assert!(result.failed.is_empty());
@@ -703,7 +751,9 @@ mod tests {
         assert_eq!(
             status,
             SyncStatus::Synced {
-                age_days: 0,
+                // The manifest row was written for D-1 (today - 1), not
+                // today, so the most recent success is 1 day old, not 0.
+                age_days: 1,
                 unmapped_users: 0
             }
         );
@@ -785,8 +835,12 @@ mod tests {
 
         let result = run_backfill_at(&client, &pool, &cfg, today).await.unwrap();
 
-        assert_eq!(result.window_days, 4, "today plus 3 days back");
-        assert_eq!(result.covered, 4);
+        assert_eq!(
+            result.window_days, 3,
+            "D-1 (today - 1) down through D-3 (today - 3) -- D-0/today is never in the \
+             window (same-day latency)"
+        );
+        assert_eq!(result.covered, 3);
         assert_eq!(result.seats, Ok(2));
         assert_eq!(
             mock.seats_call_count().unwrap(),
@@ -908,47 +962,91 @@ mod tests {
 
     /// A recent high-water mark (yesterday) must not shrink the window down
     /// to "just the gap" -- the trailing lookback always applies on top of
-    /// it, per RFC-0001 ("each run re-fetches D-1, D-2 and D-3").
+    /// it, per RFC-0001 ("each run re-fetches D-1, D-2 and D-3"). `end` is
+    /// D-1 (today - 1), never D-0/today: GitHub's Copilot metrics have
+    /// same-day latency and reject a `today` request outright.
     #[test]
     fn backfill_window_with_recent_hwm_still_covers_the_trailing_lookback() {
         let today = date("2026-08-10");
         let hwm = Some(date("2026-08-09")); // yesterday
         let (start, end) = backfill_window(hwm, today, 3, 28);
         assert_eq!(start, date("2026-08-07")); // today - 3
-        assert_eq!(end, today);
+        assert_eq!(end, date("2026-08-09")); // today - 1 (D-1), not today
     }
 
     /// A stale high-water mark (older than max_backfill_days) must be
-    /// bounded, not walked back forever.
+    /// bounded, not walked back forever. `end` is still D-1, not today.
     #[test]
     fn backfill_window_with_stale_hwm_is_bounded_by_max_backfill_days() {
         let today = date("2026-08-10");
         let hwm = Some(date("2026-07-01")); // 40 days ago
         let (start, end) = backfill_window(hwm, today, 3, 28);
         assert_eq!(start, date("2026-07-13")); // today - 28
-        assert_eq!(end, today);
+        assert_eq!(end, date("2026-08-09")); // today - 1 (D-1), not today
     }
 
     /// No high-water mark at all (first-ever run) is a cold start: bounded
-    /// by max_backfill_days, not just the trailing lookback.
+    /// by max_backfill_days, not just the trailing lookback. `end` is still
+    /// D-1, not today.
     #[test]
     fn backfill_window_with_no_hwm_is_a_cold_start_bounded_by_max_backfill_days() {
         let today = date("2026-08-10");
         let (start, end) = backfill_window(None, today, 3, 28);
         assert_eq!(start, date("2026-07-13")); // today - 28
-        assert_eq!(end, today);
+        assert_eq!(end, date("2026-08-09")); // today - 1 (D-1), not today
     }
 
     /// A moderately stale high-water mark (inside max_backfill_days but
     /// outside the trailing lookback) must still close the whole gap, not
-    /// just the trailing window.
+    /// just the trailing window. `end` is still D-1, not today.
     #[test]
     fn backfill_window_fills_a_gap_wider_than_the_trailing_lookback() {
         let today = date("2026-08-10");
         let hwm = Some(date("2026-07-31")); // 10 days ago
         let (start, end) = backfill_window(hwm, today, 3, 28);
         assert_eq!(start, date("2026-08-01")); // hwm + 1, not just today - 3
-        assert_eq!(end, today);
+        assert_eq!(end, date("2026-08-09")); // today - 1 (D-1), not today
+    }
+
+    /// The window's upper bound is always D-1 (today - 1), never D-0
+    /// ("today"): GitHub's Copilot metrics have same-day latency and reject
+    /// a `day=today` request with HTTP 400 every time. Confirmed live in
+    /// production: before this fix, every 6h scheduled run burned four
+    /// guaranteed-to-fail requests (one per report type) on `today` and
+    /// logged a WARN for each, forever. Covers all three `hwm` shapes so a
+    /// fix that only patches one branch (e.g. only the `None` arm) cannot
+    /// pass by accident.
+    #[test]
+    fn backfill_window_end_is_always_yesterday_never_today() {
+        let today = date("2026-08-10");
+        let expected_end = date("2026-08-09"); // D-1
+
+        let (_, end_no_hwm) = backfill_window(None, today, 3, 28);
+        assert_eq!(end_no_hwm, expected_end, "no hwm: end must be D-1");
+
+        let (_, end_recent_hwm) = backfill_window(Some(date("2026-08-09")), today, 3, 28);
+        assert_eq!(end_recent_hwm, expected_end, "recent hwm: end must be D-1");
+
+        let (_, end_stale_hwm) = backfill_window(Some(date("2026-07-01")), today, 3, 28);
+        assert_eq!(end_stale_hwm, expected_end, "stale hwm: end must be D-1");
+    }
+
+    /// The exact regression this prevents: a day inside the trailing
+    /// lookback window (i.e. `today` itself) must never be the window's
+    /// `end` -- GitHub returns HTTP 400 for `day=today` every single time,
+    /// so requesting it is always wasted API quota and a guaranteed WARN
+    /// log, on every 6h run, forever.
+    #[test]
+    fn backfill_window_never_places_todays_unqueryable_day_at_the_end() {
+        let today = date("2026-08-10");
+        for lookback_days in [1, 3, 7] {
+            let (_, end) = backfill_window(None, today, lookback_days, 28);
+            assert_ne!(
+                end, today,
+                "lookback_days={lookback_days}: window end must never be today (D-0), \
+                 GitHub has same-day latency and rejects it with HTTP 400"
+            );
+        }
     }
 
     /// The exact review scenario (BLOCKER 2): a day D fails (or gets an
