@@ -1,0 +1,23 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "cc-trace-0002",
+        "span_id": "cc-span-0002",
+        "user_email": null,
+        "started_at": "2024-01-23T08:53:20Z",
+        "duration_ms": 4200,
+        "model_calls": [
+          {
+            "trace_id": "cc-trace-0002",
+            "span_id": "cc-span-0002:mc",
+            "model": "claude-3-7-sonnet",
+            "input_tokens": 1000,
+            "output_tokens": 300
+          }
+        ],
+        "tool_calls": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "cc-trace-0004",
+        "span_id": "cc-span-0004",
+        "user_email": "dev@example.com",
+        "started_at": "2024-01-23T08:53:20Z",
+        "duration_ms": 4200,
+        "model_calls": [
+          {
+            "trace_id": "cc-trace-0004",
+            "span_id": "cc-span-0004:mc",
+            "model": "claude-vNext-unreleased-preview",
+            "input_tokens": 500,
+            "output_tokens": 120
+          }
+        ],
+        "tool_calls": []
+      }
+    ]
+  }
+}

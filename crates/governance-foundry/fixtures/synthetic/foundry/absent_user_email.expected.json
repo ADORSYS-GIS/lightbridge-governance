@@ -1,0 +1,23 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "fy-trace-0002",
+        "span_id": "fy-span-0002",
+        "user_email": null,
+        "started_at": "2024-07-26T13:20:00Z",
+        "duration_ms": 9800,
+        "model_calls": [
+          {
+            "trace_id": "fy-trace-0002",
+            "span_id": "fy-span-0002:mc",
+            "model": "gpt-4o",
+            "input_tokens": 2000,
+            "output_tokens": 500
+          }
+        ],
+        "tool_calls": []
+      }
+    ]
+  }
+}

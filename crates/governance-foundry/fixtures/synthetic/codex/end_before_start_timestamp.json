@@ -1,0 +1,35 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; codex.rs's module doc) -- NOT captured from a real Codex OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "endTimeUnixNano is before startTimeUnixNano -- malformed input, must reject (InvalidDuration), never clamp to a zero or negative duration"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "user.email", "value": { "stringValue": "dev@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cx-trace-0006",
+              "spanId": "cx-span-0006",
+              "startTimeUnixNano": "1712000006500000000",
+              "endTimeUnixNano": "1712000000000000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cx-session-06" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-5-codex" } },
+                { "key": "input_token_count", "value": { "intValue": "1000" } },
+                { "key": "output_token_count", "value": { "intValue": "400" } }
+              ],
+              "events": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "cx-trace-0001",
+        "span_id": "cx-span-0001",
+        "user_email": "dev@example.com",
+        "started_at": "2024-04-01T19:33:20Z",
+        "duration_ms": 6500,
+        "model_calls": [
+          {
+            "trace_id": "cx-trace-0001",
+            "span_id": "cx-span-0001:mc",
+            "model": "gpt-5-codex",
+            "input_tokens": 3100,
+            "output_tokens": 780
+          }
+        ],
+        "tool_calls": [
+          {
+            "trace_id": "cx-trace-0001",
+            "span_id": "cx-span-0001:tc:0",
+            "tool_name": "shell",
+            "duration_ms": 420
+          }
+        ]
+      }
+    ]
+  }
+}
