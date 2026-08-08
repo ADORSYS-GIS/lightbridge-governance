@@ -21,6 +21,25 @@ pub const DEFAULT_LOOKBACK_DAYS: i64 = 3;
 /// walk back in one run. Bounds the request volume of a first-ever sync.
 pub const DEFAULT_MAX_BACKFILL_DAYS: i64 = 28;
 
+/// Days behind real calendar `today` before GitHub's Copilot metrics API will
+/// answer for a day at all -- confirmed live: a request for day D-0 returns
+/// `400 "Date must be within the last year and not in the future"`.
+///
+/// Deliberately NOT an env var like [`DEFAULT_LOOKBACK_DAYS`]/
+/// [`DEFAULT_MAX_BACKFILL_DAYS`]. Those two encode a real per-deployment
+/// policy choice (how much re-checking versus API call volume, how far a
+/// cold start may walk back) and different operators could reasonably want
+/// different values. This encodes a fact about GitHub's data pipeline --
+/// every deployment talks to the same API with the same latency, so there is
+/// no deployment where a value other than `1` is correct. An env var here
+/// would only add a way to reintroduce the exact bug this constant fixes (set
+/// it to `0` while debugging and the D-0 400s are back), for no compensating
+/// flexibility. If GitHub's latency ever changes, that is a fact to update
+/// here -- and in RFC-0001's own "D-1, D-2 and D-3" wording, so the spec and
+/// the implementation can't drift apart -- not something to tune per
+/// deployment.
+const COPILOT_DATA_LAG_DAYS: u64 = 1;
+
 /// Connector configuration, read from the environment.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -228,7 +247,7 @@ async fn ingest_seats(
 /// - **Never walk back further than `max_backfill_days`**, so a cold start
 ///   (or a watermark that never advanced) cannot stampede the API.
 ///
-/// `end = today - 1`,
+/// `end = today - COPILOT_DATA_LAG_DAYS` (currently 1 day),
 /// `start = max(min(hwm + 1, end, today - lookback_days), today - max_backfill_days)`.
 /// See the `backfill_window_*` tests below for the three cases this is
 /// required to get right (recent/stale/absent high-water mark) plus the
@@ -246,7 +265,7 @@ pub fn backfill_window(
     // this function entirely and is unaffected (an explicit operator
     // request for "today" should still be tried and get GitHub's real
     // error, not be silently blocked here).
-    let end = today - chrono::Days::new(1);
+    let end = today - chrono::Days::new(COPILOT_DATA_LAG_DAYS);
     let lookback_bound = today - chrono::Days::new(lookback_days.max(0) as u64);
     let max_backfill_bound = today - chrono::Days::new(max_backfill_days.max(0) as u64);
     let start = match hwm {
