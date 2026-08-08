@@ -270,6 +270,18 @@ fn dispatch(
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
             }
+            // DIAGNOSTIC: log response headers to verify Envoy sends them.
+            // Remove once the production SSE issue is resolved.
+            if let Some(hm) = &headers.headers {
+                for h in &hm.headers {
+                    if h.key.eq_ignore_ascii_case("content-type") {
+                        tracing::info!(
+                            content_type = %h.value,
+                            "ResponseHeaders received with Content-Type"
+                        );
+                    }
+                }
+            }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
             // `ResponseState::set_mode_from_headers`. Reachable for both the
