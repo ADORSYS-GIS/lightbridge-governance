@@ -34,6 +34,18 @@ There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain
 - **cratestack is the only persistence layer** (ADR-0009). `crates/governance-core/schema/governance.cstack`
   is the source of truth for tables, migrations, CRUD and routes. Do **not** hand-write SQL
   or a migration — if the generated CRUD cannot express it, add a schema `procedure`.
+- **Every id we mint is a CUID2** — 24 chars, lowercase `a-z0-9`, starts with a letter (ADR-0039,
+  pending merge: [webank-context#66](https://github.com/ADORSYS-GIS/webank-context/pull/66)).
+  This repo already does this — `cuid::cuid2()`, never `Uuid::new_v4()` — so the rule is: keep it
+  that way, and never add a new call site that reaches for the `uuid` crate instead.
+  Bans **minting**, not **storing**: an id we don't own (Keycloak's `sub`, an external token)
+  stays exactly as it arrives and keeps being accepted, unvalidated.
+  - Never validate an id's shape — no regex, no parse, no length check, no hyphen branching.
+    Ids are opaque strings.
+  - Never sort or paginate by id — CUID2 has no ordering. Use `createdAt`.
+  - Store as TEXT (cratestack's `id String @id` already does this) — no native `uuid` column,
+    no `DEFAULT gen_random_uuid()`.
+  - Mint through one chokepoint, not a `cuid::cuid2()` call at every insert site.
 - **REST transport, CBOR payloads.** JSON is retained for exactly one consumer:
   `/internal/v1/resolve`, because Authorino's `metadata.http` speaks JSON and cannot be
   taught CBOR. Do not reach for JSON on the product API.
