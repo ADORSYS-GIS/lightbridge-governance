@@ -59,6 +59,24 @@ pub struct OauthConfigArgs {
     /// needs one to scope the issued token to the gateway.
     #[arg(long, env = "GOVERNANCE_AUTH_AUDIENCE", global = true)]
     audience: Option<String>,
+
+    /// OTLP collector base URL written into Claude Code's and Codex's config
+    /// on `login`. Signal suffixes (`/v1/metrics`, ...) are appended by those
+    /// tools' own SDKs -- pass the base, not a per-signal path. Same
+    /// HTTPS-or-loopback rule as `--issuer`: telemetry carries prompts and
+    /// tool detail, so it must not go out in plaintext by typo.
+    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_ENDPOINT", value_parser = parse_issuer, global = true)]
+    otel_endpoint: Option<String>,
+
+    /// Long-lived OTLP ingest credential. Written verbatim into both tools'
+    /// config as an `Authorization: Bearer` header.
+    ///
+    /// Deliberately NOT the Keycloak access token: neither tool re-reads its
+    /// config mid-session and neither has a credential-helper hook for OTLP
+    /// headers, so a 300s token would export for five minutes and then fail
+    /// silently. See `crate::otel`'s module doc.
+    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_TOKEN", global = true)]
+    otel_token: Option<String>,
 }
 
 impl OauthConfigArgs {
@@ -76,6 +94,8 @@ impl OauthConfigArgs {
                 .ok_or("--client-id (or GOVERNANCE_AUTH_CLIENT_ID) is required")?,
             scopes: self.scopes,
             audience: self.audience,
+            otel_endpoint: self.otel_endpoint,
+            otel_token: self.otel_token,
         })
     }
 }
@@ -92,6 +112,8 @@ pub struct OauthConfig {
     pub client_id: String,
     pub scopes: String,
     pub audience: Option<String>,
+    pub otel_endpoint: Option<String>,
+    pub otel_token: Option<String>,
 }
 
 /// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER`: rejects an

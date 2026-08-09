@@ -20,7 +20,16 @@ governance-redact = { path = "./crates/governance-redact" }
 
 # --- serde / encoding ---
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# `preserve_order` so rewriting a developer's `~/.claude/settings.json`
+# (governance-auth's OTEL wiring) doesn't reorder the keys they already had --
+# it turns the object map into an `indexmap`, which is already in this tree via
+# cratestack, so this adds no new crate. Without it a merge-and-write silently
+# alphabetises someone's config file.
+serde_json = { version = "1.0", features = ["preserve_order"] }
+# Format-preserving TOML edit, for the same reason: Codex's `config.toml` is
+# hand-maintained and carries comments, and a parse-and-reserialize round trip
+# through a plain `toml` Value would delete every one of them.
+toml_edit = "0.24"
 serde_yaml = "0.9"
 
 # --- crypto / jwt ---

@@ -13,6 +13,7 @@ mod browser;
 mod cache;
 mod config;
 mod oauth;
+mod otel;
 mod redacted;
 mod security;
 
@@ -51,6 +52,12 @@ enum Command {
     /// `auth.command`. Fails closed and non-interactively if there's no
     /// valid session.
     Token,
+    /// Re-apply the OpenTelemetry configuration to Claude Code and Codex
+    /// without re-running the interactive login. `login` already does this;
+    /// this is for an existing session whose endpoint or ingest token
+    /// changed, and it's the command to re-run after installing one of the
+    /// two tools for the first time.
+    Configure,
     /// Print whether a cached session exists and its freshness.
     Status,
     /// Remove the cached session.
@@ -86,6 +93,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Login { device_code } => oauth::login(&http, &oauth, device_code).await,
         Command::Token => oauth::token(&http, &oauth).await,
+        Command::Configure => oauth::configure(&oauth),
         Command::Status => oauth::status(&oauth),
         Command::Logout => oauth::logout(&oauth),
     }

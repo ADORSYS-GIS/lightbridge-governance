@@ -17,6 +17,8 @@ pub use discovery::OidcMetadata;
 use crate::{
     cache::{self, CachedSession, FileLock},
     config::OauthConfig,
+    otel,
+    redacted::Redacted,
 };
 
 pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bool) -> Result<()> {
@@ -32,6 +34,64 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
     let expires_in = session.seconds_until_expiry()?;
     cache::store(&session)?;
     eprintln!("Logged in; session cached, expires in {expires_in}s.");
+
+    // Deliberately not `?`: the session is already cached and valid by this
+    // point, and failing `login` because a dotfile couldn't be written would
+    // leave the developer with no working credential and no obvious cause --
+    // strictly worse than an un-instrumented client. Reported loudly instead.
+    // `configure` (the subcommand) propagates the same error, because there
+    // the developer asked for exactly this and nothing else.
+    if let Err(error) = apply_telemetry(config, &session) {
+        eprintln!("warning: could not configure telemetry: {error:#}");
+    }
+    Ok(())
+}
+
+/// Points Claude Code and Codex at this org's collector. Called by `login`
+/// automatically rather than left as an opt-in step: exporting telemetry is
+/// the condition for using the gateway, so authenticating and being
+/// configured to report are deliberately the same action.
+fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> {
+    let Some(endpoint) = config.otel_endpoint.clone() else {
+        eprintln!(
+            "No OTEL endpoint configured (--otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT); \
+             skipping telemetry setup."
+        );
+        return Ok(());
+    };
+
+    let home = std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
+        .context("locating the home directory for telemetry config ($HOME unset)")?;
+
+    let mut resource_attributes = otel::identity_attributes(session.access_token.expose());
+    resource_attributes.insert("service.namespace".to_owned(), "ai-cli".to_owned());
+
+    let settings = otel::OtelSettings {
+        endpoint,
+        token: config.otel_token.clone().map(Redacted::new),
+        resource_attributes,
+    };
+
+    for outcome in otel::configure_all(&home, &settings)? {
+        match outcome {
+            otel::Outcome::Written(path) => {
+                eprintln!("Telemetry configured: {}", path.display());
+            }
+            otel::Outcome::Skipped(dir) => {
+                eprintln!("Skipped telemetry setup: {} not present.", dir.display());
+            }
+        }
+    }
+
+    if config.otel_token.is_none() {
+        eprintln!(
+            "warning: no --otel-token supplied, so no OTLP credential was written. \
+             Telemetry will be rejected by an authenticating collector."
+        );
+    }
     Ok(())
 }
 
@@ -73,6 +133,15 @@ async fn refresh_or_fail(
     token_endpoint::refresh(http, &metadata, config, refresh_token)
         .await
         .context("refreshing the access token; run `governance-auth login` again if this persists")
+}
+
+/// Re-applies the telemetry configuration for an already-cached session.
+/// Unlike `login`'s call, a failure here IS an error: the developer asked for
+/// exactly this and nothing else, so silently doing nothing would be a lie.
+pub fn configure(config: &OauthConfig) -> Result<()> {
+    let session = cache::load(&config.issuer, &config.client_id)?
+        .context("no cached session for this issuer/client; run `governance-auth login` first")?;
+    apply_telemetry(config, &session)
 }
 
 pub fn status(config: &OauthConfig) -> Result<()> {
