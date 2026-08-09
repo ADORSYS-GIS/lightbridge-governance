@@ -2,6 +2,14 @@
 //! headless sessions (SSH, Coder cloud workspaces) with no local browser to
 //! open. Mirrors this org's earlier `kc-token` CLI, which defaulted to this
 //! flow for exactly that reason.
+//!
+//! Sends PKCE (`code_challenge`/`code_verifier`) unconditionally, same as
+//! `authcode.rs` -- Keycloak's device-authorization endpoint rejects a
+//! request with no `code_challenge_method` once "Proof Key for Code
+//! Exchange" is required on the client (`invalid_request: Missing parameter:
+//! code_challenge_method`), and RFC 8628 has no flow-scoped opt-out for a
+//! client-wide PKCE requirement. This isn't optional protocol decoration
+//! here: it's what makes the flow work at all against this org's IdP.
 
 use std::time::Duration;
 
@@ -9,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::{OidcMetadata, token_endpoint};
-use crate::{cache::CachedSession, config::OauthConfig, redacted::Redacted};
+use crate::{cache::CachedSession, config::OauthConfig, oauth::pkce, redacted::Redacted};
 
 #[derive(Debug, Deserialize)]
 struct DeviceAuthorizationResponse {
@@ -39,9 +47,13 @@ pub async fn run(
         .as_deref()
         .context("authorization server does not advertise a device_authorization_endpoint")?;
 
+    let pkce = pkce::generate()?;
+
     let mut params = vec![
         ("client_id", config.client_id.as_str()),
         ("scope", config.scopes.as_str()),
+        ("code_challenge", pkce.challenge.as_str()),
+        ("code_challenge_method", "S256"),
     ];
     if let Some(audience) = &config.audience {
         params.push(("audience", audience.as_str()));
@@ -69,7 +81,7 @@ pub async fn run(
         ),
     }
 
-    poll(http, metadata, config, &device).await
+    poll(http, metadata, config, &device, &pkce.verifier).await
 }
 
 async fn poll(
@@ -77,6 +89,7 @@ async fn poll(
     metadata: &OidcMetadata,
     config: &OauthConfig,
     device: &DeviceAuthorizationResponse,
+    code_verifier: &str,
 ) -> Result<CachedSession> {
     let mut interval = Duration::from_secs(device.interval.max(1));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(device.expires_in);
@@ -91,6 +104,7 @@ async fn poll(
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", device.device_code.expose().as_str()),
             ("client_id", config.client_id.as_str()),
+            ("code_verifier", code_verifier),
         ];
 
         match token_endpoint::request(http, &metadata.token_endpoint, &poll_params).await {
