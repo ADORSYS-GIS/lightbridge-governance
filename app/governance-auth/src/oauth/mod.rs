@@ -75,15 +75,33 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         resource_attributes,
     };
 
-    for outcome in otel::configure_all(&home, &settings)? {
+    let outcomes = otel::configure_all(&home, &settings)?;
+    let mut wrote_vscode = false;
+    for outcome in &outcomes {
         match outcome {
             otel::Outcome::Written(path) => {
                 eprintln!("Telemetry configured: {}", path.display());
+                // VS Code's settings live under `<flavour>/User/`, which is
+                // how a written VS Code config is told apart from the two
+                // CLI ones without threading a tool tag through `Outcome`.
+                wrote_vscode |= path.parent().is_some_and(|dir| dir.ends_with("User"));
             }
             otel::Outcome::Skipped(dir) => {
                 eprintln!("Skipped telemetry setup: {} not present.", dir.display());
             }
         }
+    }
+
+    // VS Code exposes the endpoint as a setting but authentication ONLY as an
+    // environment variable, so this is the one target whose config this binary
+    // genuinely cannot finish. Saying so is the difference between "Copilot
+    // telemetry is rejected and nobody knows why" and a one-line fix.
+    if wrote_vscode && let Some(env) = otel::vscode_manual_env(&settings) {
+        eprintln!(
+            "\nACTION REQUIRED for VS Code Copilot: it has no setting for OTLP auth headers.\n\
+             Export this in the environment you launch VS Code from, or its telemetry will be\n\
+             rejected by the collector:\n\n  export {env}\n"
+        );
     }
 
     if config.otel_token.is_none() {

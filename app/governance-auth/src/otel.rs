@@ -129,10 +129,152 @@ pub enum Outcome {
 /// someone who doesn't use Codex would be surprising, and an empty config
 /// directory changes how some tools behave on first run.
 pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
-    Ok(vec![
+    let mut outcomes = vec![
         configure_claude_code(home, settings)?,
         configure_codex(home, settings)?,
-    ])
+    ];
+    outcomes.extend(configure_vscode(home, settings)?);
+    Ok(outcomes)
+}
+
+/// Every VS Code flavour whose user-settings directory this understands.
+/// Insiders and VSCodium keep entirely separate settings trees, so a
+/// developer running one of those gets nothing if only stable `Code` is
+/// considered -- and the failure is silent, which is the worst kind.
+const VSCODE_FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
+
+/// GitHub Copilot in VS Code, via each flavour's `User/settings.json`.
+/// Setting names are verbatim from
+/// <https://code.visualstudio.com/docs/agents/guides/monitoring-agents>.
+///
+/// ⚠️ **There is no VS Code setting for OTLP headers.** The documented
+/// surface exposes the endpoint, protocol and content-capture as settings,
+/// but authentication *only* through the `OTEL_EXPORTER_OTLP_HEADERS`
+/// environment variable, which has to be present in the environment VS Code
+/// itself was launched from -- a `settings.json` key can't supply it, and
+/// neither can this binary. Against an authenticating collector that means
+/// Copilot telemetry is rejected until that variable is exported. The caller
+/// surfaces this rather than writing a config that looks complete and
+/// silently drops every span.
+pub fn configure_vscode(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    let mut outcomes = Vec::new();
+    for flavour in VSCODE_FLAVOURS {
+        let dir = vscode_user_dir(home, flavour);
+        if !dir.is_dir() {
+            continue;
+        }
+        outcomes.push(configure_vscode_flavour(&dir, settings)?);
+    }
+    if outcomes.is_empty() {
+        outcomes.push(Outcome::Skipped(vscode_user_dir(home, VSCODE_FLAVOURS[0])));
+    }
+    Ok(outcomes)
+}
+
+/// `~/.config/<flavour>/User` on Linux, `~/Library/Application
+/// Support/<flavour>/User` on macOS -- VS Code does not follow
+/// `XDG_CONFIG_HOME` on macOS.
+fn vscode_user_dir(home: &Path, flavour: &str) -> PathBuf {
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        home.join(".config")
+    };
+    base.join(flavour).join("User")
+}
+
+fn configure_vscode_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<Outcome> {
+    let path = user_dir.join("settings.json");
+
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+
+    // VS Code's settings.json is JSONC -- comments and trailing commas are
+    // legal there and developers really do use them. `serde_json` can't parse
+    // that, and the tempting fixes are both destructive: stripping comments
+    // to parse then writing plain JSON back deletes them permanently. So a
+    // file this can't parse losslessly is REFUSED, with the exact settings
+    // printed for the developer to paste. Declining to edit beats silently
+    // eating someone's annotated config.
+    let mut root: serde_json::Value = if existing.trim().is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_str(&existing).with_context(|| {
+            format!(
+                "{} is not plain JSON (VS Code allows JSONC comments/trailing commas, which \
+                 cannot be rewritten without discarding them). Leaving it untouched -- add \
+                 these settings by hand:\n{}",
+                path.display(),
+                vscode_settings_hint(settings)
+            )
+        })?
+    };
+
+    let object = root
+        .as_object_mut()
+        .with_context(|| format!("{} is not a JSON object", path.display()))?;
+
+    for (key, value) in vscode_settings(settings) {
+        object.insert(key.to_owned(), value);
+    }
+
+    let mut bytes = serde_json::to_vec_pretty(&root).context("serializing VS Code settings")?;
+    bytes.push(b'\n');
+    write_atomically(&path, &bytes)?;
+    Ok(Outcome::Written(path))
+}
+
+/// The exact `settings.json` entries this module owns, in one place so the
+/// "what do we touch" question and the paste-this-by-hand fallback can't
+/// drift apart.
+///
+/// `captureContent` is pinned to `false`: the collector's redaction is the
+/// authoritative control, but a client that never sends prompts is one fewer
+/// place they can leak -- matching the `log_user_prompt = false` choice on
+/// the Codex side.
+fn vscode_settings(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            "github.copilot.chat.otel.enabled",
+            serde_json::Value::Bool(true),
+        ),
+        (
+            "github.copilot.chat.otel.exporterType",
+            serde_json::Value::String("otlp-http".to_owned()),
+        ),
+        (
+            "github.copilot.chat.otel.otlpEndpoint",
+            serde_json::Value::String(settings.endpoint.clone()),
+        ),
+        (
+            "github.copilot.chat.otel.captureContent",
+            serde_json::Value::Bool(false),
+        ),
+    ]
+}
+
+/// Rendered into the error when a JSONC `settings.json` can't be rewritten
+/// losslessly, so declining to edit still leaves the developer with
+/// everything they need to do it themselves.
+fn vscode_settings_hint(settings: &OtelSettings) -> String {
+    vscode_settings(settings)
+        .into_iter()
+        .map(|(key, value)| format!("  \"{key}\": {value},"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether Copilot telemetry will actually be accepted, given VS Code has no
+/// settings key for OTLP headers. Returns the env var the developer has to
+/// export themselves when a credential is in play -- there is no file this
+/// binary can write that supplies it.
+pub fn vscode_manual_env(settings: &OtelSettings) -> Option<String> {
+    settings
+        .headers_value()
+        .map(|headers| format!("OTEL_EXPORTER_OTLP_HEADERS={headers}"))
 }
 
 /// Claude Code: `~/.claude/settings.json`, `env` block. Key names are taken
@@ -475,6 +617,94 @@ mod tests {
             value["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
             "https://otel.example.com"
         );
+    }
+
+    #[test]
+    fn vscode_settings_are_merged_into_an_existing_user_config() {
+        let home = tempdir();
+        let user = vscode_user_dir(home.path(), "Code");
+        fs::create_dir_all(&user).expect("create VS Code User dir");
+        fs::write(
+            user.join("settings.json"),
+            r#"{"editor.fontSize":14,"github.copilot.enable":{"*":true}}"#,
+        )
+        .expect("seed existing VS Code settings");
+
+        let outcomes = configure_vscode(home.path(), &settings()).expect("configure vscode");
+        assert!(matches!(outcomes.as_slice(), [Outcome::Written(_)]));
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(user.join("settings.json")).expect("read"))
+                .expect("valid JSON out");
+        assert_eq!(value["editor.fontSize"], 14, "unrelated settings survive");
+        assert_eq!(value["github.copilot.enable"]["*"], true);
+        assert_eq!(value["github.copilot.chat.otel.enabled"], true);
+        assert_eq!(value["github.copilot.chat.otel.exporterType"], "otlp-http");
+        assert_eq!(
+            value["github.copilot.chat.otel.otlpEndpoint"],
+            "https://otel.example.com"
+        );
+        assert_eq!(
+            value["github.copilot.chat.otel.captureContent"], false,
+            "content capture must stay off unless deliberately enabled"
+        );
+    }
+
+    #[test]
+    fn a_jsonc_vscode_config_is_refused_rather_than_stripped_of_its_comments() {
+        // VS Code's settings.json legitimately allows comments. Parsing them
+        // out and writing plain JSON back would delete a developer's
+        // annotations permanently, so this must decline and tell them what to
+        // add -- the file has to come back untouched.
+        let home = tempdir();
+        let user = vscode_user_dir(home.path(), "Code");
+        fs::create_dir_all(&user).expect("create VS Code User dir");
+        let original = "{\n  // my carefully explained setting\n  \"editor.fontSize\": 14\n}\n";
+        fs::write(user.join("settings.json"), original).expect("seed JSONC settings");
+
+        let error = configure_vscode(home.path(), &settings())
+            .expect_err("a JSONC config must be refused, not silently rewritten");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("github.copilot.chat.otel.enabled"),
+            "the error must tell the developer exactly what to add; got: {rendered}"
+        );
+
+        assert_eq!(
+            fs::read_to_string(user.join("settings.json")).expect("read back"),
+            original,
+            "the file must be left byte-for-byte untouched"
+        );
+    }
+
+    #[test]
+    fn vscode_insiders_and_vscodium_are_configured_too() {
+        // A developer on Insiders or VSCodium would otherwise get nothing,
+        // silently, because those keep entirely separate settings trees.
+        let home = tempdir();
+        for flavour in ["Code - Insiders", "VSCodium"] {
+            fs::create_dir_all(vscode_user_dir(home.path(), flavour)).expect("create user dir");
+        }
+
+        let outcomes = configure_vscode(home.path(), &settings()).expect("configure vscode");
+        assert_eq!(outcomes.len(), 2, "both flavours present must be written");
+        for flavour in ["Code - Insiders", "VSCodium"] {
+            let path = vscode_user_dir(home.path(), flavour).join("settings.json");
+            assert!(path.exists(), "{flavour} settings.json should exist");
+        }
+    }
+
+    #[test]
+    fn vscode_auth_needs_an_env_var_because_no_setting_can_carry_it() {
+        // Pins the documented gap: if VS Code ever gains a headers setting
+        // this test is the thing that should be revisited.
+        assert_eq!(
+            vscode_manual_env(&settings()).as_deref(),
+            Some("OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer ingest-token")
+        );
+        let mut without = settings();
+        without.token = None;
+        assert_eq!(vscode_manual_env(&without), None);
     }
 
     #[test]
