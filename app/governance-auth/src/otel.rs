@@ -134,7 +134,177 @@ pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome
         configure_codex(home, settings)?,
     ];
     outcomes.extend(configure_vscode(home, settings)?);
+    outcomes.extend(configure_shell_env(home, settings)?);
     Ok(outcomes)
+}
+
+/// Marker pair delimiting the block this binary owns in a shell rc file.
+/// Everything between them is replaced wholesale on each run; everything
+/// outside is never touched. Without markers the only idempotent options are
+/// "append every time" (the block accumulates forever) or "rewrite the file"
+/// (destroys the developer's own config).
+const BLOCK_BEGIN: &str = "# >>> governance-auth otel (managed) >>>";
+const BLOCK_END: &str = "# <<< governance-auth otel (managed) <<<";
+
+/// POSIX rc files, then fish (different syntax, different path).
+const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profile"];
+
+/// Exports the OTLP credential into the developer's shell, which is the only
+/// way VS Code Copilot can be authenticated -- it has no settings key for
+/// OTLP headers (see [`configure_vscode`]).
+///
+/// The token does **not** go into `.bashrc`. Those files are routinely mode
+/// 0644 and routinely committed to a dotfiles repo, so writing a bearer token
+/// there is how a credential ends up in someone's public GitHub. Instead the
+/// secret lives in `~/.config/governance-auth/otel.env` at 0600 and the rc
+/// block is a one-line `source` of it -- so a committed `.bashrc` leaks
+/// nothing.
+///
+/// ⚠️ `OTEL_EXPORTER_OTLP_HEADERS` is a **global** OpenTelemetry variable, not
+/// a Copilot-scoped one. Once exported, every OTLP exporter started from that
+/// shell attaches this Authorization header to whatever collector it targets.
+/// VS Code offers no scoped alternative (its `COPILOT_OTEL_*` variables cover
+/// endpoint/protocol/capture, but not headers), so this is inherent to
+/// authenticating Copilot at all, not a choice made here. Callers should say
+/// so out loud.
+pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    let Some(headers) = settings.headers_value() else {
+        // Nothing secret to place, and an rc block that exports nothing is
+        // just noise in someone's shell startup.
+        return Ok(Vec::new());
+    };
+
+    let env_dir = home.join(".config").join("governance-auth");
+    fs::create_dir_all(&env_dir).with_context(|| format!("creating {}", env_dir.display()))?;
+
+    let posix_env = env_dir.join("otel.env");
+    write_atomically(
+        &posix_env,
+        format!(
+            "# Written by `governance-auth`. Mode 0600 on purpose: this file holds a\n\
+             # credential. It is sourced from your shell rc file so the rc file itself\n\
+             # stays safe to commit.\n\
+             export OTEL_EXPORTER_OTLP_HEADERS='{headers}'\n"
+        )
+        .as_bytes(),
+    )?;
+
+    let fish_env = env_dir.join("otel.fish");
+    write_atomically(
+        &fish_env,
+        format!(
+            "# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n\
+             set -gx OTEL_EXPORTER_OTLP_HEADERS '{headers}'\n"
+        )
+        .as_bytes(),
+    )?;
+
+    let mut outcomes = vec![
+        Outcome::Written(posix_env.clone()),
+        Outcome::Written(fish_env.clone()),
+    ];
+
+    for rc in POSIX_RC_FILES {
+        let path = home.join(rc);
+        // Only existing rc files are edited. Creating a `.zshrc` for someone
+        // who doesn't run zsh changes which startup path their shell takes.
+        if !path.is_file() {
+            continue;
+        }
+        let line = format!(
+            "[ -f \"{}\" ] && . \"{}\"",
+            display_with_home(&posix_env),
+            display_with_home(&posix_env)
+        );
+        upsert_block(&path, &line)?;
+        outcomes.push(Outcome::Written(path));
+    }
+
+    let fish_rc = home.join(".config").join("fish").join("config.fish");
+    if fish_rc.is_file() {
+        let line = format!(
+            "test -f \"{}\"; and source \"{}\"",
+            display_with_home(&fish_env),
+            display_with_home(&fish_env)
+        );
+        upsert_block(&fish_rc, &line)?;
+        outcomes.push(Outcome::Written(fish_rc));
+    }
+
+    Ok(outcomes)
+}
+
+/// Renders an absolute path under the home directory as `$HOME/...` so the
+/// line written into an rc file stays correct if that file is shared between
+/// machines with different usernames -- a real pattern for dotfiles repos.
+fn display_with_home(path: &Path) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
+            path.strip_prefix(&home).map_or_else(
+                |_| path.display().to_string(),
+                |rest| format!("$HOME/{}", rest.display()),
+            )
+        }
+        _ => path.display().to_string(),
+    }
+}
+
+/// Replaces the managed block in `path`, or appends one if absent. Everything
+/// outside the markers is preserved byte-for-byte.
+fn upsert_block(path: &Path, body: &str) -> Result<()> {
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+
+    let block = format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}");
+
+    let updated = match (existing.find(BLOCK_BEGIN), existing.find(BLOCK_END)) {
+        (Some(start), Some(end)) if end > start => {
+            let mut out = String::with_capacity(existing.len() + block.len());
+            out.push_str(existing.get(..start).unwrap_or_default());
+            out.push_str(&block);
+            out.push_str(
+                existing
+                    .get(end.saturating_add(BLOCK_END.len())..)
+                    .unwrap_or_default(),
+            );
+            out
+        }
+        // A damaged block -- one marker only, or END before BEGIN (both
+        // reachable by hand-editing) -- is left alone rather than guessed at.
+        // Appending would give the file two BEGINs and make every later run
+        // ambiguous; rewriting could swallow the developer's own lines.
+        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => {
+            anyhow::bail!(
+                "{} contains only one of the governance-auth markers, or they are out of order; \
+                 refusing to guess where the managed block ends. Remove the stray marker and \
+                 re-run.",
+                path.display()
+            )
+        }
+        (None, None) => {
+            let mut out = existing;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(&block);
+            out.push('\n');
+            out
+        }
+    };
+
+    // Not `write_atomically`: an rc file's existing mode is the developer's
+    // business (and 0600 on a `.profile` would be a surprising side effect).
+    // This file carries no secret -- only a `source` line -- precisely so it
+    // doesn't need locking down.
+    let tmp = path.with_extension("governance-auth-tmp");
+    fs::write(&tmp, updated.as_bytes()).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 /// Every VS Code flavour whose user-settings directory this understands.
@@ -705,6 +875,122 @@ mod tests {
         let mut without = settings();
         without.token = None;
         assert_eq!(vscode_manual_env(&without), None);
+    }
+
+    #[test]
+    fn the_credential_goes_in_a_0600_file_not_into_bashrc() {
+        // The whole point of the sourced-file indirection: a developer's
+        // .bashrc is routinely 0644 and routinely committed to a dotfiles
+        // repo. A bearer token written there is a credential in git.
+        let home = tempdir();
+        fs::write(home.path().join(".bashrc"), "export EDITOR=vim\n").expect("seed bashrc");
+
+        configure_shell_env(home.path(), &settings()).expect("configure shell env");
+
+        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
+        assert!(
+            !bashrc.contains("ingest-token"),
+            "the token must NEVER be written into an rc file; got:\n{bashrc}"
+        );
+        assert!(
+            bashrc.contains("export EDITOR=vim"),
+            "existing rc content must survive"
+        );
+        assert!(bashrc.contains(BLOCK_BEGIN) && bashrc.contains(BLOCK_END));
+
+        let env_file = home.path().join(".config/governance-auth/otel.env");
+        let contents = fs::read_to_string(&env_file).expect("read env file");
+        assert!(contents.contains("ingest-token"), "secret lives here");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&env_file)
+                .expect("stat env file")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "the credential file must be 0600");
+        }
+    }
+
+    #[test]
+    fn rerunning_replaces_the_block_rather_than_stacking_copies() {
+        // Without marker-delimited replacement, every `login` would append
+        // another block and the rc file would grow without bound.
+        let home = tempdir();
+        fs::write(home.path().join(".zshrc"), "# mine\n").expect("seed zshrc");
+
+        for _ in 0..3 {
+            configure_shell_env(home.path(), &settings()).expect("configure");
+        }
+
+        let zshrc = fs::read_to_string(home.path().join(".zshrc")).expect("read zshrc");
+        assert_eq!(
+            zshrc.matches(BLOCK_BEGIN).count(),
+            1,
+            "exactly one managed block after repeated runs; got:\n{zshrc}"
+        );
+        assert!(
+            zshrc.contains("# mine"),
+            "the developer's own lines survive"
+        );
+    }
+
+    #[test]
+    fn a_half_present_marker_pair_is_refused_rather_than_guessed_at() {
+        let home = tempdir();
+        let rc = home.path().join(".bashrc");
+        let original = format!("# mine\n{BLOCK_BEGIN}\nsomething hand-edited\n");
+        fs::write(&rc, &original).expect("seed a damaged block");
+
+        let error = configure_shell_env(home.path(), &settings())
+            .expect_err("a half-present block must not be silently appended to");
+        assert!(format!("{error:#}").contains("only one of the governance-auth markers"));
+        assert_eq!(
+            fs::read_to_string(&rc).expect("read back"),
+            original,
+            "the damaged file must be left untouched"
+        );
+    }
+
+    #[test]
+    fn fish_gets_its_own_syntax_not_posix_export() {
+        // `export VAR=value` is a syntax error in fish; a shared file would
+        // break every new shell the developer opens.
+        let home = tempdir();
+        let fish_dir = home.path().join(".config/fish");
+        fs::create_dir_all(&fish_dir).expect("create fish config dir");
+        fs::write(fish_dir.join("config.fish"), "# fish\n").expect("seed config.fish");
+
+        configure_shell_env(home.path(), &settings()).expect("configure");
+
+        let fish_env = fs::read_to_string(home.path().join(".config/governance-auth/otel.fish"))
+            .expect("read fish env file");
+        assert!(fish_env.contains("set -gx OTEL_EXPORTER_OTLP_HEADERS"));
+        assert!(
+            !fish_env.contains("export "),
+            "fish must not get POSIX export"
+        );
+
+        let config = fs::read_to_string(fish_dir.join("config.fish")).expect("read config.fish");
+        assert!(config.contains("and source"), "fish sources, not dots");
+    }
+
+    #[test]
+    fn no_token_writes_no_shell_block_at_all() {
+        let home = tempdir();
+        fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed");
+        let mut without = settings();
+        without.token = None;
+
+        let outcomes = configure_shell_env(home.path(), &without).expect("configure");
+        assert!(outcomes.is_empty(), "nothing to export, so nothing written");
+        assert_eq!(
+            fs::read_to_string(home.path().join(".bashrc")).expect("read"),
+            "# mine\n",
+            "an rc block exporting nothing is just noise"
+        );
     }
 
     #[test]
