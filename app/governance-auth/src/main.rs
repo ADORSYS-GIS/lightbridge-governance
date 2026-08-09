@@ -16,9 +16,9 @@ mod oauth;
 mod redacted;
 mod security;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use config::OauthConfig;
+use config::OauthConfigArgs;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,7 +28,7 @@ use config::OauthConfig;
 )]
 struct Cli {
     #[command(flatten)]
-    oauth: OauthConfig,
+    oauth: OauthConfigArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -65,6 +65,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    // Clap can't enforce "issuer/client-id must be present" itself once
+    // they're `global` (see `OauthConfigArgs`'s doc comment) -- do it here,
+    // before anything else runs, so a missing flag/env var is reported the
+    // same way a clap parse error would be: immediately, on stderr, nonzero
+    // exit, no partial work.
+    let oauth = cli.oauth.resolve().map_err(|error| anyhow!(error))?;
     let http = reqwest::Client::builder()
         // `--issuer`/discovery already reject an insecure *initial* request
         // URL (config::parse_issuer, oauth::discovery::require_same_origin)
@@ -78,9 +84,9 @@ async fn main() -> Result<()> {
         .context("building the HTTP client")?;
 
     match cli.command {
-        Command::Login { device_code } => oauth::login(&http, &cli.oauth, device_code).await,
-        Command::Token => oauth::token(&http, &cli.oauth).await,
-        Command::Status => oauth::status(&cli.oauth),
-        Command::Logout => oauth::logout(&cli.oauth),
+        Command::Login { device_code } => oauth::login(&http, &oauth, device_code).await,
+        Command::Token => oauth::token(&http, &oauth).await,
+        Command::Status => oauth::status(&oauth),
+        Command::Logout => oauth::logout(&oauth),
     }
 }
