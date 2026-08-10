@@ -28,7 +28,9 @@
 use std::collections::{HashMap, HashSet};
 
 use cratestack::{cool_error_from_sqlx, sqlx};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
+
+use crate::Error;
 
 /// The result of resolving identity for a telemetry record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +51,7 @@ pub async fn get_integration_identity(
     pool: &PgPool,
     tenant_id: &str,
     integration_id: &str,
-) -> Result<Option<String>, crate::Error> {
+) -> Result<Option<String>, Error> {
     let row: Option<(Option<String>,)> = sqlx::query_as(
         "SELECT internal_user_id FROM integrations \
          WHERE id = $1 AND tenant_id = $2",
@@ -58,7 +60,7 @@ pub async fn get_integration_identity(
     .bind(tenant_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| crate::Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
 
     Ok(row.and_then(|r| r.0))
 }
@@ -146,4 +148,243 @@ pub async fn check_email_mismatches(
         mismatches,
         query_failed,
     )
+}
+
+/// One entry from the identity directory (Keycloak): a provider principal and
+/// the internal user (Keycloak sub) it belongs to.
+///
+/// `provider_user_id` is provider-specific -- for GitHub Copilot it is the
+/// user's email; for Microsoft Foundry it is the user's directory object id.
+/// `internal_user_id` is always the Keycloak sub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub provider_user_id: String,
+    pub internal_user_id: String,
+}
+
+/// The outcome of a directory sync, per entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdentitySyncReport {
+    /// Entries that had no active mapping and got one.
+    pub inserted: usize,
+    /// Entries whose active mapping pointed at a different user and was
+    /// re-pointed (old row closed, new row opened).
+    pub repointed: usize,
+    /// Entries already mapped to the right user -- no change.
+    pub unchanged: usize,
+}
+
+/// Syncs the identity directory into `identity_maps` (ADR-0001, RFC-0001).
+///
+/// Idempotent by construction: re-running the same directory changes no row
+/// counts. For each entry the *active* mapping (the one with `valid_to IS
+/// NULL`) is the source of truth:
+///
+/// - no active mapping -> insert one (`valid_from = now()`, `valid_to = NULL`);
+/// - active mapping already points at the right `internal_user_id` -> no-op;
+/// - active mapping points at a *different* user -> close it (`valid_to =
+///   now()`) and open a new one, so history is preserved and a record is
+///   attributed by the mapping that was valid at its own time, not today's.
+///
+/// When several rows are simultaneously active for the same
+/// `provider_user_id` (an OAuth-flow row plus a directory row), the one with
+/// the latest `valid_from` wins -- the same rule `check_email_mismatches` and
+/// `verify_attribution` apply. Active mappings are loaded in one batched
+/// query, not per entry.
+///
+/// `mapping_source` is stamped `key_directory` so directory-derived rows are
+/// distinguishable from OAuth-flow rows.
+///
+/// Runs in a single transaction: a partial failure rolls back the whole sync.
+pub async fn sync_identity_directory(
+    pool: &PgPool,
+    tenant_id: &str,
+    provider: &str,
+    entries: &[DirectoryEntry],
+) -> crate::Result<IdentitySyncReport> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+
+    // One query for the whole directory instead of one per entry.
+    // `ORDER BY valid_from DESC` then first-wins keeps the latest active
+    // mapping per provider_user_id, mirroring the live mismatch lookup.
+    let active_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT provider_user_id, internal_user_id FROM identity_maps \
+         WHERE tenant_id = $1 AND provider = $2 AND valid_to IS NULL \
+         ORDER BY valid_from DESC",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+
+    let mut active_by_provider_user_id: HashMap<String, String> = HashMap::new();
+    for (provider_user_id, internal_user_id) in active_rows {
+        active_by_provider_user_id
+            .entry(provider_user_id)
+            .or_insert(internal_user_id);
+    }
+
+    let mut report = IdentitySyncReport::default();
+    for entry in entries {
+        match active_by_provider_user_id.get(&entry.provider_user_id) {
+            None => {
+                insert_identity_map(&mut tx, tenant_id, provider, entry).await?;
+                report.inserted += 1;
+            }
+            Some(current) if *current == entry.internal_user_id => {
+                report.unchanged += 1;
+            }
+            Some(_) => {
+                close_active_identity_map(&mut tx, tenant_id, provider, &entry.provider_user_id)
+                    .await?;
+                insert_identity_map(&mut tx, tenant_id, provider, entry).await?;
+                report.repointed += 1;
+            }
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+
+    Ok(report)
+}
+
+async fn insert_identity_map(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    provider: &str,
+    entry: &DirectoryEntry,
+) -> crate::Result<()> {
+    sqlx::query(
+        "INSERT INTO identity_maps \
+         (id, tenant_id, provider, provider_user_id, internal_user_id, mapping_source) \
+         VALUES ($1, $2, $3, $4, $5, 'key_directory')",
+    )
+    .bind(format!("idmap-{}", cuid::cuid2()))
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(&entry.provider_user_id)
+    .bind(&entry.internal_user_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    Ok(())
+}
+
+async fn close_active_identity_map(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    provider: &str,
+    provider_user_id: &str,
+) -> crate::Result<()> {
+    sqlx::query(
+        "UPDATE identity_maps SET valid_to = now() \
+         WHERE tenant_id = $1 AND provider = $2 AND provider_user_id = $3 AND valid_to IS NULL",
+    )
+    .bind(tenant_id)
+    .bind(provider)
+    .bind(provider_user_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    Ok(())
+}
+
+/// Per-provider attribution counts for `verify` (RFC-0001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAttribution {
+    pub provider: String,
+    /// Executions attributed to an internal user (token-derived identity).
+    ///
+    /// `attributed` and `mismatched` are deliberately **not** mutually
+    /// exclusive: a mismatched execution was still attributed to *a* user
+    /// (the token's), it just contradicts the payload email. So a fully
+    /// consistent source shows `mismatched = 0`, and `attributed =
+    /// total - unattributed`.
+    pub attributed: i64,
+    /// Executions with no internal user -- telemetry that could not be
+    /// attributed to anyone.
+    pub unattributed: i64,
+    /// Executions whose payload email contradicted the token-derived identity.
+    pub mismatched: i64,
+}
+
+/// The attribution report `verify` prints and gates on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributionReport {
+    pub providers: Vec<ProviderAttribution>,
+}
+
+impl AttributionReport {
+    /// Any provider with unattributed executions. `verify` fails when this is
+    /// non-empty for a fully-deployed source (the caller decides what
+    /// "fully deployed" means for its own deployment).
+    pub fn has_unattributed(&self) -> bool {
+        self.providers.iter().any(|p| p.unattributed > 0)
+    }
+}
+
+/// Computes per-provider attribution counts from stored executions.
+///
+/// `attributed`/`unattributed` come straight off the `executions` row.
+/// `mismatched` re-derives the ingest-time mismatch check from stored data.
+///
+/// The mismatch rule here is the **same** rule `check_email_mismatches`
+/// applies live, evaluated against history: an execution is mismatched when
+/// the payload email's *most recent* mapping valid at the execution's own
+/// `started_at` resolves to a different internal user than the token-derived
+/// identity stored on the row. When several mappings overlap in time, the one
+/// with the latest `valid_from` wins -- exactly like the live lookup, which
+/// keeps only the latest active mapping per email. An email with no mapping at
+/// that time is **not** a mismatch (same as live).
+pub async fn verify_attribution(
+    pool: &PgPool,
+    tenant_id: &str,
+) -> crate::Result<AttributionReport> {
+    let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT e.provider,
+                COUNT(*) FILTER (WHERE e.internal_user_id IS NOT NULL) AS attributed,
+                COUNT(*) FILTER (WHERE e.internal_user_id IS NULL) AS unattributed,
+                COUNT(*) FILTER (
+                    WHERE e.user_email IS NOT NULL
+                      AND e.internal_user_id IS NOT NULL
+                      AND e.internal_user_id <> (
+                        SELECT m.internal_user_id FROM identity_maps m
+                        WHERE m.tenant_id = e.tenant_id
+                          AND m.provider = e.provider
+                          AND m.provider_user_id = e.user_email
+                          AND m.valid_from <= e.started_at
+                          AND (m.valid_to IS NULL OR m.valid_to > e.started_at)
+                        ORDER BY m.valid_from DESC
+                        LIMIT 1
+                      )
+                ) AS mismatched
+         FROM executions e
+         WHERE e.tenant_id = $1
+         GROUP BY e.provider
+         ORDER BY e.provider",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+
+    Ok(AttributionReport {
+        providers: rows
+            .into_iter()
+            .map(
+                |(provider, attributed, unattributed, mismatched)| ProviderAttribution {
+                    provider,
+                    attributed,
+                    unattributed,
+                    mismatched,
+                },
+            )
+            .collect(),
+    })
 }

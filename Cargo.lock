@@ -152,6 +152,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -989,18 +1011,23 @@ dependencies = [
 
 [[package]]
 name = "cratestack-axum"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98a7a31d365123beeaafeaedd9fce445fb795ff3095acc3640d81a89dafc9395"
+checksum = "c75e2d3da40e5244520b5e631de8194bd53f7a543aef4fc8207b9e0da8c875ee"
 dependencies = [
  "async-trait",
  "axum",
  "bytes",
  "cratestack-core",
+ "cratestack-sql",
+ "erased-serde",
+ "futures-util",
  "http 1.5.0",
+ "minicbor",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "tower",
  "tracing",
  "url",
@@ -1009,10 +1036,11 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client-rust"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aad0170939336d356b228fa7cab4cfc33b8f35d8cbb4f28736cdaccd1f06ce6"
+checksum = "832039b80ed22d029e2391f61a5aa64807a1afee7a78e842dd22a459c1e996d7"
 dependencies = [
+ "async-trait",
  "bytes",
  "chrono",
  "cratestack-codec-cbor",
@@ -1021,7 +1049,8 @@ dependencies = [
  "futures-util",
  "minicbor",
  "minicbor-serde",
- "reqwest 0.12.28",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1032,9 +1061,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-cbor"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a40dd8ab51a8262782e2a2de7bb36c701e7cc36a9718e895cff43bddc7f7987"
+checksum = "7f0cc9fb7abe9d954afac16ac3f0880c7fffe05d5956fb66f62d3aa3a6550ee8"
 dependencies = [
  "cratestack-core",
  "minicbor-serde",
@@ -1043,9 +1072,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-json"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "861bc22983e3d88698c88187820f25ff81f83ca32937074bb1b9d0d744613d97"
+checksum = "bef624bbaa64ed162dc7b8dc2d0eae935c07a55c1b3d7d5a9f570548ed93439b"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -1054,9 +1083,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-core"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "177e927a951ec848245db64f894577c7c07a3fbf5669f6b92f005882f77b2657"
+checksum = "61638dffe06fe7a9e0447e379baf3e5b1e9156db6b24e6a788d0212808b81958"
 dependencies = [
  "async-trait",
  "base64",
@@ -1076,9 +1105,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-macros"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0cdaa28a4e0571d665051771e42378200c1d0fad5d4d9c50b6a8cfcd714222"
+checksum = "df2e575093937d478426e074bc24bbf9187effa9ea4fb326c5739fd9967a69e6"
 dependencies = [
  "cratestack-core",
  "cratestack-parser",
@@ -1092,9 +1121,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-parser"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a52463ef473c68f0a7647a27f1c415450c86c4c9fee3116d7ceb9c6ede00b54"
+checksum = "597dee760b749bec43198905a77ed0f31613928f34a79d32fc7672e01484087e"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -1105,10 +1134,11 @@ dependencies = [
 
 [[package]]
 name = "cratestack-pg"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fa2d6c8867cf88b80ef6f435338e0c868c3f0e01cb5ec89872988c3efa2ad02"
+checksum = "f3338f5b9994e3035fb0b6263487f0530a1314ad5b2d6a1334a4291148a39aad"
 dependencies = [
+ "async-stream",
  "chrono",
  "cratestack-axum",
  "cratestack-client-rust",
@@ -1118,6 +1148,7 @@ dependencies = [
  "cratestack-policy",
  "cratestack-sql",
  "cratestack-sqlx",
+ "futures-util",
  "regex",
  "serde",
  "serde_json",
@@ -1127,9 +1158,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-policy"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8d0c3e58e3ca32f6439eae434b849d92ca6db792f4ed2088e66851da0171980"
+checksum = "a676ba0cb2b983f438da489196942f98ed66285c39ca22bd803f06d614ed5fbc"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -1137,9 +1168,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-proto"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d4692f206778626403b05c496c01538111c0f364b2970cc96c8505b6f007d8b"
+checksum = "0c6a484f7315bd71cbf5239f93f85dc958b169d78c02ce0b436c157273f7c848"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -1149,9 +1180,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-sql"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c82ea86bf8552aa2e38c696b6aa2c59e5ad692f639f2e4267b8f4328aff8f52"
+checksum = "9f0543b33ced071f64576b53768b20b22f3f9d5d4a8481d2114e70cc78ece672"
 dependencies = [
  "chrono",
  "cratestack-core",
@@ -1164,13 +1195,12 @@ dependencies = [
 
 [[package]]
 name = "cratestack-sqlx"
-version = "0.5.1"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8787613f2cf643462dbcb4181d0cd83c0406d7609f6694d2dfd681c5d0c9bf96"
+checksum = "c612fe8de348507d6a237ae9eecc33315560d2d8e6988961ba23d42123ad2cc5"
 dependencies = [
  "async-trait",
  "chrono",
- "cratestack-axum",
  "cratestack-core",
  "cratestack-policy",
  "cratestack-sql",
@@ -1457,6 +1487,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erased-serde"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2add8a07dd6a8d93ff627029c51de145e12686fbc36ecb298ac22e74cf02dec"
+dependencies = [
+ "serde",
+ "serde_core",
+ "typeid",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,11 +1744,12 @@ dependencies = [
  "clap",
  "getrandom 0.3.4",
  "hex",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "toml_edit 0.24.1+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -1717,11 +1759,13 @@ dependencies = [
 name = "governance-copilot"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "axum",
  "chrono",
  "cratestack-pg",
  "governance-core",
  "jsonwebtoken",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -1756,6 +1800,7 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-s3",
+ "axum",
  "chrono",
  "clap",
  "cratestack-axum",
@@ -1770,7 +1815,9 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "reqwest 0.13.4",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1782,7 +1829,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "governance-core",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2035,7 +2082,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -2377,6 +2423,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "cratestack-axum",
  "cratestack-codec-cbor",
@@ -2680,7 +2727,7 @@ dependencies = [
  "bytes",
  "http 1.5.0",
  "opentelemetry",
- "reqwest 0.13.4",
+ "reqwest",
 ]
 
 [[package]]
@@ -2695,7 +2742,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "reqwest 0.13.4",
+ "reqwest",
  "thiserror 2.0.19",
  "tokio",
  "tonic",
@@ -2919,7 +2966,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit",
+ "toml_edit 0.25.13+spec-1.1.0",
 ]
 
 [[package]]
@@ -3229,7 +3276,7 @@ dependencies = [
  "governance-redact",
  "mimalloc",
  "prometheus",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -3303,47 +3350,6 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64",
- "bytes",
- "futures-core",
- "futures-util",
- "http 1.5.0",
- "http-body 1.1.0",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tower",
- "tower-http 0.6.11",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
- "web-sys",
- "webpki-roots 1.0.9",
-]
-
-[[package]]
-name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
@@ -3383,7 +3389,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -3479,6 +3485,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3669,6 +3676,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -4243,6 +4251,19 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
+version = "0.24.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01f2eadbbc6b377a847be05f60791ef1058d9f696ecb51d2c07fe911d8569d8e"
+dependencies = [
+ "indexmap",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_edit"
 version = "0.25.13+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
@@ -4465,6 +4486,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"
@@ -4700,19 +4727,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
@@ -5006,6 +5020,9 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winnow"

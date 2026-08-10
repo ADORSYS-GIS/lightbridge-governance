@@ -14,7 +14,7 @@ use cratestack::{sqlx, sqlx::PgPool};
 
 use crate::{
     error::{CopilotError, Result},
-    model::{OrgDaily, RepoDaily, UserDaily, UserTeam},
+    model::{OrgDaily, RepoDaily, SeatSnapshot, UserDaily, UserTeam},
 };
 
 /// Upsert one day's org-aggregate report rows.
@@ -179,6 +179,53 @@ pub async fn upsert_user_team(
     Ok(n)
 }
 
+/// Upsert one snapshot's seat rows for `organization_id`. Unlike the daily
+/// reports, `seat_assigned_at`/`last_activity_at` bind as real
+/// `TIMESTAMPTZ` values (see `SeatSnapshot`'s doc comment), not a `CAST`'d
+/// date string -- `sqlx`'s `chrono` support round-trips `Option<DateTime<
+/// Utc>>` directly, including `NULL` for "unknown", never a fabricated
+/// zero time.
+pub async fn upsert_seat_snapshot(
+    pool: &PgPool,
+    tenant_id: &str,
+    organization_id: &str,
+    rows: &[SeatSnapshot],
+) -> Result<usize> {
+    let mut tx = pool.begin().await.map_err(CopilotError::Storage)?;
+    for r in rows {
+        let day = &r.snapshot_day;
+        sqlx::query(
+            "INSERT INTO copilot_seat_snapshots \
+             (id, tenant_id, organization_id, snapshot_day, provider_user_id, user_login, \
+              seat_assigned_at, last_activity_at, last_activity_editor, seat_state) \
+             VALUES ($1, $2, $3, CAST($4 AS date), $5, $6, $7, $8, $9, $10) \
+             ON CONFLICT (tenant_id, organization_id, snapshot_day, provider_user_id) \
+             DO UPDATE SET \
+               user_login = EXCLUDED.user_login, \
+               seat_assigned_at = EXCLUDED.seat_assigned_at, \
+               last_activity_at = EXCLUDED.last_activity_at, \
+               last_activity_editor = EXCLUDED.last_activity_editor, \
+               seat_state = EXCLUDED.seat_state",
+        )
+        .bind(row_id("seat", tenant_id, &r.provider_user_id, day))
+        .bind(tenant_id)
+        .bind(organization_id)
+        .bind(day)
+        .bind(&r.provider_user_id)
+        .bind(&r.user_login)
+        .bind(r.seat_assigned_at)
+        .bind(r.last_activity_at)
+        .bind(&r.last_activity_editor)
+        .bind(&r.seat_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(CopilotError::Storage)?;
+    }
+    let n = rows.len();
+    tx.commit().await.map_err(CopilotError::Storage)?;
+    Ok(n)
+}
+
 /// Record the outcome of ingesting one (report, day) for ADR-0007 metrics and
 /// the high-water-mark backfill.
 #[expect(
@@ -226,6 +273,15 @@ pub async fn upsert_manifest(
 }
 
 /// The most recent report day already ingested (for the high-water mark).
+///
+/// Deliberately excludes `SEATS_REPORT_TYPE`: the seat snapshot succeeds on
+/// every run and always writes `report_day = today` (see
+/// `crate::SEATS_REPORT_TYPE`'s doc comment), so including it here would
+/// advance the *daily reports'* high-water mark to "today" even while every
+/// daily report has been failing for a week -- silently disabling the
+/// gap-filling half of `app/governance-ctl/src/sync.rs`'s
+/// `backfill_window`. This query answers "how current are the day-based
+/// reports", not "did the connector do anything recently".
 pub async fn high_water_mark(
     pool: &PgPool,
     tenant_id: &str,
@@ -233,10 +289,11 @@ pub async fn high_water_mark(
 ) -> Result<Option<chrono::NaiveDate>> {
     let row: Option<(Option<chrono::NaiveDate>,)> = sqlx::query_as(
         "SELECT MAX(report_day::date) FROM ingest_manifests \
-         WHERE tenant_id = $1 AND provider = $2",
+         WHERE tenant_id = $1 AND provider = $2 AND report_type <> $3",
     )
     .bind(tenant_id)
     .bind(provider)
+    .bind(crate::SEATS_REPORT_TYPE)
     .fetch_optional(pool)
     .await
     .map_err(CopilotError::Storage)?;
@@ -344,6 +401,20 @@ async fn count_rows(
         "user-teams-1-day" => sqlx::query_as(
             "SELECT count(*) FROM copilot_user_teams \
              WHERE tenant_id = $1 AND organization_id = $2 AND report_day = CAST($3 AS date)",
+        )
+        .bind(tenant_id)
+        .bind(scope_id)
+        .bind(&day)
+        .fetch_one(pool)
+        .await
+        .map_err(CopilotError::Storage)?,
+        // The seat snapshot's manifest row carries `snapshot_day`, not a
+        // historical `report_day` -- same column position, different
+        // table/name, so it still reconciles through the identical
+        // `ManifestDrift` shape as the four day-based reports above.
+        crate::SEATS_REPORT_TYPE => sqlx::query_as(
+            "SELECT count(*) FROM copilot_seat_snapshots \
+             WHERE tenant_id = $1 AND organization_id = $2 AND snapshot_day = CAST($3 AS date)",
         )
         .bind(tenant_id)
         .bind(scope_id)

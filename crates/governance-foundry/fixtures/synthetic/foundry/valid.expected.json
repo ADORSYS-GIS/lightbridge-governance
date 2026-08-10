@@ -1,0 +1,30 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "fy-trace-0001",
+        "span_id": "fy-span-0001",
+        "user_email": "agent-owner@example.com",
+        "started_at": "2024-07-26T13:20:00Z",
+        "duration_ms": 9800,
+        "model_calls": [
+          {
+            "trace_id": "fy-trace-0001",
+            "span_id": "fy-span-0001:mc",
+            "model": "gpt-4o",
+            "input_tokens": 5400,
+            "output_tokens": 1120
+          }
+        ],
+        "tool_calls": [
+          {
+            "trace_id": "fy-trace-0001",
+            "span_id": "fy-span-0001:tc:0",
+            "tool_name": "bing_search",
+            "duration_ms": 980
+          }
+        ]
+      }
+    ]
+  }
+}

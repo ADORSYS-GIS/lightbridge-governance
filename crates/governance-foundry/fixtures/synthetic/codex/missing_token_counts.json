@@ -1,0 +1,33 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; codex.rs's module doc) -- NOT captured from a real Codex OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "neither token-count attribute name codex.rs checks (input_token_count/output_token_count, codex.turn.input_tokens/output_tokens) is present -- the interactive-mode case per codex.rs's module doc, since counts there live on metrics, not spans. Story #31 AC6: normalize() must succeed with input_tokens/output_tokens: null, never a fabricated 0"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "user.email", "value": { "stringValue": "dev@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cx-trace-0003",
+              "spanId": "cx-span-0003",
+              "startTimeUnixNano": "1712000000000000000",
+              "endTimeUnixNano": "1712000006500000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cx-session-03" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-5-codex" } }
+              ],
+              "events": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

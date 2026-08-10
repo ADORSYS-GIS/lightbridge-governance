@@ -64,6 +64,8 @@ pub struct IngestResult {
     pub tool_calls_upserted: i64,
     /// Whether identity mismatch detection query failed (best-effort).
     pub identity_mismatch_detection_failed: bool,
+    /// Executions whose payload email contradicted the token-derived identity.
+    pub identity_mismatches: i64,
 }
 
 /// Derives a deterministic id from `(trace_id, span_id)` so the same
@@ -192,6 +194,7 @@ async fn ingest_telemetry_inner(
         model_calls_upserted: 0,
         tool_calls_upserted: 0,
         identity_mismatch_detection_failed: false,
+        identity_mismatches: 0,
     };
 
     // Resolve the integration's bound identity once per batch (#35).
@@ -220,6 +223,7 @@ async fn ingest_telemetry_inner(
         let execution_id = deterministic_id("exec", &execution.trace_id, &execution.span_id);
 
         if *mismatch {
+            result.identity_mismatches += 1;
             // Log mismatch without PII: only log that a mismatch occurred, not the email itself.
             tracing::warn!(
                 tenant_id = %tenant_id,
@@ -505,6 +509,7 @@ mod tests {
             model_calls_upserted: 10,
             tool_calls_upserted: 3,
             identity_mismatch_detection_failed: false,
+            identity_mismatches: 0,
         };
 
         let json = serde_json::to_string(&result).expect("serialize");
@@ -512,6 +517,7 @@ mod tests {
         assert!(json.contains("\"model_calls_upserted\":10"));
         assert!(json.contains("\"tool_calls_upserted\":3"));
         assert!(json.contains("\"identity_mismatch_detection_failed\":false"));
+        assert!(json.contains("\"identity_mismatches\":0"));
     }
 
     fn valid_execution() -> ExecutionInput {

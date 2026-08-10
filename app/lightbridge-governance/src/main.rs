@@ -77,6 +77,64 @@ struct Args {
     /// Fixed window length for the `/internal/v1/ingest` rate limiter.
     #[arg(long, env = "INGEST_RATE_WINDOW_SECS", default_value_t = 60)]
     ingest_rate_window_secs: u64,
+
+    /// Single-tenant deployment (ADR-0001). Scopes the `governance_connector_*`
+    /// freshness query `/metrics` derives from `ingest_manifests` (ADR-0007) --
+    /// `tenant_id` belongs in the WHERE clause of every query, even in a
+    /// deployment that only ever has the one. No default: an empty tenant_id
+    /// has no safe meaning here, matching `governance-ctl`'s own `TENANT_ID`
+    /// (`app/governance-ctl/src/sync.rs`).
+    ///
+    /// `value_parser` rather than a bare `String`: clap treats a required arg
+    /// as satisfied by an EMPTY value, and the chart renders `TENANT_ID: ""`
+    /// by default, so `required` alone never caught the case that actually
+    /// happened in production -- a deployment running with no tenant identity
+    /// at all, scoping `governance_connector_*` to a tenant that owns no rows
+    /// and therefore reporting has_synced=0 forever.
+    #[arg(long, env = "TENANT_ID", value_parser = parse_tenant_id)]
+    tenant_id: String,
+
+    /// Upper bound on the `governance_connector_*` freshness query `/metrics`
+    /// runs against `ingest_manifests` on every scrape (ADR-0007).
+    /// Deliberately far below the ServiceMonitor's 30s scrape interval
+    /// (`charts/lightbridge-governance/values.yaml`'s `serviceMonitor.interval`),
+    /// same reasoning as `resolve_timeout_ms`: a dependency's own timeout must
+    /// be shorter than the caller's, not left at sqlx's 30s pool
+    /// `acquire_timeout` default.
+    #[arg(long, env = "CONNECTOR_METRICS_TIMEOUT_MS", default_value_t = 3_000)]
+    connector_metrics_timeout_ms: u64,
+
+    /// Upper bound (per query -- usage and seats are queried independently,
+    /// see `Metrics::refresh_org_kpis`) on the `governance_org_*` KPI
+    /// queries `/metrics` runs against `copilot_org_dailys`/
+    /// `copilot_seat_snapshots` on every scrape. Same reasoning as
+    /// `connector_metrics_timeout_ms`.
+    #[arg(long, env = "ORG_KPI_TIMEOUT_MS", default_value_t = 3_000)]
+    org_kpi_timeout_ms: u64,
+}
+
+/// Rejects an empty or whitespace-only tenant id at argument-parse time, so a
+/// misconfigured deployment fails immediately and loudly instead of running
+/// with no tenant identity.
+///
+/// This is a real failure that reached production, not a hypothetical: the
+/// chart's structural default is `TENANT_ID: ""`, clap counts a required arg
+/// as satisfied by an empty value, and `std::env::var` returns `Ok("")` for a
+/// set-but-empty variable -- so all three layers said "present" and the
+/// deployment ran with `tenant_id = ''`.
+fn parse_tenant_id(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "TENANT_ID is set but empty. It is this deployment's tenant identity \
+             (ADR-0001) and scopes the governance_connector_* freshness query \
+             /metrics derives from ingest_manifests (ADR-0007), so an empty value \
+             reports has_synced=0 forever regardless of how healthy the connector \
+             is. Set `copilot.tenantId` in the deployed values (ai-helm-values)."
+                .to_owned(),
+        );
+    }
+    Ok(trimmed.to_owned())
 }
 
 #[tokio::main]
@@ -100,6 +158,13 @@ async fn main() -> Result<()> {
     };
     let db = Cratestack::builder(pool.clone()).build();
     let metrics = Arc::new(metrics::Metrics::new());
+    // Cloned before `pool` moves into `ingest_state` below -- `PgPool` is
+    // Arc-backed, so this is a refcount bump, not a new connection pool.
+    let connector_metrics_pool = pool.clone();
+    let tenant_id: Arc<str> = Arc::from(args.tenant_id.as_str());
+    let connector_metrics_timeout =
+        std::time::Duration::from_millis(args.connector_metrics_timeout_ms);
+    let org_kpi_timeout = std::time::Duration::from_millis(args.org_kpi_timeout_ms);
     let ingest_state = ingest::IngestState {
         pool,
         internal_token: Arc::from(args.internal_ingest_token.as_str()),
@@ -136,7 +201,27 @@ async fn main() -> Result<()> {
                 "/metrics",
                 axum::routing::get(move || {
                     let metrics = Arc::clone(&metrics);
-                    async move { metrics.render() }
+                    let pool = connector_metrics_pool.clone();
+                    let tenant_id = Arc::clone(&tenant_id);
+                    async move {
+                        // Refresh-on-scrape, bounded by a timeout well under
+                        // the ServiceMonitor's own interval -- see
+                        // metrics.rs's module doc comment for the tradeoff.
+                        metrics
+                            .refresh_connector_freshness(
+                                &pool,
+                                &tenant_id,
+                                connector_metrics_timeout,
+                            )
+                            .await;
+                        // Org-level KPI gauges (ADR-0003's bounded exception)
+                        // -- same refresh-on-scrape shape, independent
+                        // timeout budget.
+                        metrics
+                            .refresh_org_kpis(&pool, &tenant_id, org_kpi_timeout)
+                            .await;
+                        metrics.render()
+                    }
                 }),
             ),
     );

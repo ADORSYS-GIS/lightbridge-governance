@@ -3,8 +3,8 @@
 The API server: read surface over the registry, `/internal/v1/resolve` for Authorino, and
 `/metrics`/`/livez`/`/readyz` for the ServiceMonitor and the Deployment's own probes. Also
 owns the connector operational metrics (ADR-0007) — a CronJob pod can't be scraped, so the
-collector records run outcomes in `ingest_manifest` and this always-running process derives
-`governance_connector_*` from them (not yet implemented — see the note on `/metrics` below).
+collector records run outcomes in `ingest_manifests` and this always-running process derives
+`governance_connector_*` from them on every `/metrics` scrape (see below).
 
 ## Routes
 
@@ -15,13 +15,15 @@ collector records run outcomes in `ingest_manifest` and this always-running proc
 | `GET /metrics` | Prometheus text | none | [`metrics.rs`](src/metrics.rs) |
 | `GET /livez`, `GET /readyz` | plain text | none | `main.rs` |
 
-## `/metrics` is currently empty
+## `/metrics`
 
-The registry (`prometheus::Registry`) has no counters registered yet. Deriving
-`governance_connector_*` from `ingest_manifest` is ADR-0007's own decision, not implemented
-— this exists so the endpoint is real (the `charts/lightbridge-governance` ServiceMonitor
-needs something to scrape) rather than a 404. Don't assume connector metrics are live just
-because the route exists.
+`governance_ingest_*` (the `/internal/v1/ingest` telemetry path) is a set of plain in-process
+counters. `governance_connector_*` (ADR-0007) is different: it is derived from
+`ingest_manifests` fresh on every scrape, bounded by `CONNECTOR_METRICS_TIMEOUT_MS`, and is
+absent (not zero) for a provider that has never synced or before the first successful refresh
+-- an unreachable database must never render as a healthy-looking reading. See `metrics.rs`'s
+module doc comment for exactly what each metric means, the refresh-on-scrape tradeoff, and
+what a DB outage looks like on this endpoint.
 
 ## `/internal/v1/resolve` is fail-closed by design
 
@@ -37,12 +39,17 @@ rationale, including why a database error must never resolve to "allow".
 just up && just migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lightbridge_governance \
 INTERNAL_RESOLVE_TOKEN=dev-token \
+INTERNAL_INGEST_TOKEN=dev-token \
+TENANT_ID=dev-tenant \
 cargo run --bin lightbridge-governance
 ```
 
-All four CLI args (`--listen-addr`/`LISTEN_ADDR`, `--database-url`/`DATABASE_URL`,
-`--internal-resolve-token`/`INTERNAL_RESOLVE_TOKEN`, `--resolve-timeout-ms`/`RESOLVE_TIMEOUT_MS`)
-are `env`-bindable — see `main.rs`'s `Args` struct for defaults.
+`TENANT_ID` has no default (ADR-0001: single-tenant per deployment, and `governance_connector_*`
+scopes its `ingest_manifests` query by it, per the house rule that `tenant_id` belongs in the
+WHERE clause of every query even here) — the process will not start without it, matching
+`INTERNAL_RESOLVE_TOKEN`/`INTERNAL_INGEST_TOKEN`. See `main.rs`'s `Args` struct for the full
+list of `env`-bindable CLI args and their defaults, including `CONNECTOR_METRICS_TIMEOUT_MS`
+(bounds the `governance_connector_*` query, see `metrics.rs`).
 
 ## Deploying
 

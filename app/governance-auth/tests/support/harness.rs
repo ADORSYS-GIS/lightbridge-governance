@@ -98,6 +98,35 @@ impl Harness {
         .context("run harness task panicked")?
     }
 
+    /// Like [`Self::run`], but the caller supplies the *entire* argument
+    /// list -- no automatic `--issuer <issuer> --client-id <client_id>`
+    /// prefix. Exists to test argument-position independence itself (e.g.
+    /// `token --issuer ... --client-id ...`, flags *after* the subcommand --
+    /// the exact shape a single `apiKeyHelper`/`auth.command` string
+    /// composes), which `run`'s fixed flags-first prefix can't exercise.
+    pub async fn run_raw(&self, args: &[&str]) -> Result<Output> {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_governance-auth"));
+        command
+            .env("HOME", &self.home.path)
+            .env_remove("XDG_CACHE_HOME")
+            .args(args);
+        tokio::task::spawn_blocking(move || {
+            command
+                .output()
+                .context("running governance-auth subprocess")
+        })
+        .await
+        .context("run_raw harness task panicked")?
+    }
+
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
     /// Runs `login` (the loopback browser flow), acting as "the browser" by
     /// hitting the printed redirect URI directly with a synthetic
     /// authorization code -- no real browser or `xdg-open`/`open` needed.

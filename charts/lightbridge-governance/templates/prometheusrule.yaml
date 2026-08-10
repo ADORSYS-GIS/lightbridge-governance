@@ -1,0 +1,211 @@
+{{- if .Values.prometheusRule.enabled }}
+# Alerting rules over the two ALERT-GRADE metric families this API derives from
+# Postgres on every scrape: `governance_connector_*` (ADR-0007) and
+# `governance_org_*`.
+#
+# Deliberately NOT over `governance_copilot_*`. ADR-0011 classes that family as
+# dashboard-grade only: it lives in the copilot-sync OTel collector's memory
+# (`replicas: 1`, no PDB), so a restart blanks every series for up to 6h. An
+# alert that goes silent after a pod reschedule is worse than no alert.
+#
+# ⚠️ SELECTION IS SILENT WHEN WRONG. Prometheus/Mimir picks rules up via a
+# `ruleSelector` label match. Get `additionalLabels` wrong and this resource
+# applies cleanly, `kubectl get prometheusrule` shows it, and NOTHING ever
+# evaluates it -- no error anywhere. This is the same failure shape as the
+# Grafana dashboard's `instanceSelector`, which cost a deploy cycle to find.
+# Copy the labels from a rule already evaluating on this cluster:
+#   kubectl get prometheusrule -A --show-labels
+#
+# ⚠️ Alloy discovers ServiceMonitor/PodMonitor and remote-writes to Mimir
+# (ADR-0007). It does NOT evaluate rules -- that is Mimir's ruler. If this
+# cluster loads ruler rules some other way (a Mimir bucket, a mimir-rules
+# ConfigMap), a PrometheusRule CR is inert here regardless of its labels, and
+# these expressions should be lifted into whatever that mechanism is. The
+# `alerting-not-verified` note in values.yaml tracks that.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Values.name }}
+  {{- with .Values.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    app: {{ .Values.name }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    # ---------------------------------------------------------------------
+    # Connector health. Sourced from `ingest_manifests` via the always-on API
+    # (ADR-0007), so these survive a collector restart, label drift and a
+    # NetworkPolicy mistake -- unlike anything in `governance_copilot_*`.
+    # ---------------------------------------------------------------------
+    - name: {{ .Values.name }}.connector
+      rules:
+        # The runbook's headline alert. `..._last_success_timestamp_seconds`
+        # is an absolute unix timestamp precisely so `time() - metric` works;
+        # it is not a pre-computed age, which would freeze at whatever value
+        # it held when refreshes started failing and understate the staleness.
+        - alert: CopilotSyncStale
+          expr: >-
+            time() - governance_connector_last_success_timestamp_seconds{provider="github_copilot"}
+            > {{ mul .Values.prometheusRule.thresholds.syncStaleHours 3600 }}
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Copilot sync has not ingested a new report day in {{ .Values.prometheusRule.thresholds.syncStaleHours }}h"
+            description: >-
+              Most recent successfully ingested report day for {{ "{{ $labels.provider }}" }} is
+              {{ "{{ $value | humanizeDuration }}" }} old. GitHub publishes daily and the
+              collector re-checks a trailing window every 6h, so this means the
+              CronJob is failing, its credential is dead, or GitHub is not
+              publishing. Runbook: docs/runbooks/copilot-sync-failed.md
+        - alert: CopilotSyncVeryStale
+          expr: >-
+            time() - governance_connector_last_success_timestamp_seconds{provider="github_copilot"}
+            > {{ mul .Values.prometheusRule.thresholds.syncVeryStaleHours 3600 }}
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Copilot sync stale for over {{ .Values.prometheusRule.thresholds.syncVeryStaleHours }}h"
+            description: >-
+              Data is now old enough that cost and adoption reporting is
+              materially wrong, not just lagging.
+              Runbook: docs/runbooks/copilot-sync-failed.md
+
+        # Never-synced is NOT a stale-timestamp case: with no successful run
+        # there is no timestamp at all, so `CopilotSyncStale` above cannot
+        # fire. A brand-new or totally broken deployment would otherwise be
+        # silent. This is the alert-side half of the absent-vs-zero design in
+        # `governance_connector_has_synced`.
+        - alert: CopilotNeverSynced
+          expr: governance_connector_has_synced{provider="github_copilot"} == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Copilot connector has never successfully synced"
+            description: >-
+              No `ok`/`empty` manifest row has ever been written for
+              {{ "{{ $labels.provider }}" }}. Expected briefly on a fresh deployment;
+              sustained means the collector has never completed a run.
+
+        # ⚠️ The one that catches TOTAL silence. Every other rule here compares
+        # a series -- and a series that is absent produces no result, so those
+        # comparisons quietly never fire. If the API is down, its
+        # ServiceMonitor is misselected, or the freshness query has never once
+        # succeeded, this is the ONLY rule that says anything at all.
+        - alert: CopilotFreshnessMetricAbsent
+          expr: absent(governance_connector_last_success_timestamp_seconds{provider="github_copilot"})
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "governance_connector_* is not being reported at all"
+            description: >-
+              The freshness gauge is absent, not stale. Either the governance
+              API is not being scraped (check its ServiceMonitor and `up`), or
+              its refresh has never succeeded. Absence is not health -- no
+              other rule in this group can fire while the series is missing.
+
+        - alert: GovernanceMetricsScrapeErrors
+          expr: increase(governance_connector_metrics_scrape_errors_total[15m]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Metric refresh against Postgres is failing ({{ "{{ $labels.reason }}" }})"
+            description: >-
+              The API cannot refresh its Postgres-derived gauges. Those gauges
+              deliberately FREEZE at their last good value rather than zeroing,
+              so every other alert here is reading stale data for as long as
+              this fires -- treat it as invalidating the rest of this group.
+
+    # ---------------------------------------------------------------------
+    # Org-level KPIs. Spend and licence waste.
+    # ---------------------------------------------------------------------
+    - name: {{ .Values.name }}.org
+      rules:
+        # `int64` is load-bearing: without it Helm renders a large threshold in
+        # float notation (5000000000 -> `5e+09`). PromQL accepts that, but it
+        # reads as a typo in review, and past 2^53 the float round-trip would
+        # silently move the threshold. Money is integer micro-USD end to end
+        # (ADR-0008) and should stay integer in the alert too.
+        - alert: CopilotMonthlySpendHigh
+          expr: governance_org_cost_month_to_date_micro_usd > {{ int64 .Values.prometheusRule.thresholds.monthlySpendMicroUsd }}
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Copilot month-to-date spend above budget for {{ "{{ $labels.organization_id }}" }}"
+            description: >-
+              Month-to-date spend is {{ "{{ $value }}" }} micro-USD. Divide by 1e6 for
+              USD -- the metric is integer micro-USD (ADR-0008) and PromQL does
+              the conversion, so no float ever touches the stored value.
+              Resets naturally at the month boundary.
+
+        # Compared against the SAME WEEKDAY, not yesterday. Copilot usage has
+        # strong weekday seasonality: a Saturday is legitimately ~70% below a
+        # Friday, so an `offset 1d` comparison would page every weekend and be
+        # muted within a fortnight. `offset 7d` compares like with like.
+        #
+        # No "percent dropped" metric exists or is needed -- this is a plain
+        # comparison over the gauge, which is why the metric set stays small.
+        - alert: CopilotActiveUsersDropped
+          # Continuation lines share the first line's indent on purpose: in a
+          # YAML folded scalar a MORE-indented line is kept literally, newline
+          # and all, so an innocent-looking hanging indent embeds a `\n` in the
+          # expression. PromQL happens to tolerate that, which is exactly why
+          # it would go unnoticed.
+          expr: >-
+            governance_org_active_users
+            < (governance_org_active_users offset {{ .Values.prometheusRule.thresholds.activeUsersCompareOffset }})
+            * {{ .Values.prometheusRule.thresholds.activeUsersDropRatio }}
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Copilot active users down sharply for {{ "{{ $labels.organization_id }}" }}"
+            description: >-
+              Active users on the latest available report day are below
+              {{ .Values.prometheusRule.thresholds.activeUsersDropRatio }}x the value
+              {{ .Values.prometheusRule.thresholds.activeUsersCompareOffset }} ago.
+              Check `CopilotSyncStale` first -- a partially ingested day looks
+              identical to a real drop from here.
+
+        # The licence-waste signal, and the question RFC-0001 was written
+        # around: seats paid for that nobody has ever touched.
+        - alert: CopilotSeatsNeverUsed
+          expr: governance_org_seats_never_used > {{ .Values.prometheusRule.thresholds.seatsNeverUsed }}
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ "{{ $value }}" }} Copilot seats have never been used ({{ "{{ $labels.organization_id }}" }})"
+            description: >-
+              Seats assigned with no recorded activity at all
+              (`last_activity_at IS NULL`) as of the latest snapshot. Long `for:`
+              because reclaiming a licence is a deliberate decision, not an
+              incident. Cross-check the Copilot dashboard's never-used table
+              for who they are.
+
+        # `has_data == 0` means "confirmed empty", which is different from the
+        # per-org gauges simply being absent before the first refresh. Without
+        # this, a tenant whose data vanished entirely would show no per-org
+        # series and therefore fire none of the comparison rules above.
+        - alert: CopilotUsageDataMissing
+          expr: governance_org_kpi_has_data{family="usage"} == 0
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "No Copilot usage rows exist at all for this tenant"
+            description: >-
+              `copilot_org_dailys` is empty for the configured tenant. Expected
+              on a fresh deployment before the first sync; otherwise suspect a
+              wrong TENANT_ID (an empty one used to write rows no scoped query
+              could find) or a connector that has never completed a run.
+{{- end }}

@@ -1,0 +1,30 @@
+{
+  "ok": {
+    "executions": [
+      {
+        "trace_id": "cc-trace-0001",
+        "span_id": "cc-span-0001",
+        "user_email": "dev@example.com",
+        "started_at": "2024-01-23T08:53:20Z",
+        "duration_ms": 4200,
+        "model_calls": [
+          {
+            "trace_id": "cc-trace-0001",
+            "span_id": "cc-span-0001:mc",
+            "model": "claude-3-7-sonnet",
+            "input_tokens": 2200,
+            "output_tokens": 640
+          }
+        ],
+        "tool_calls": [
+          {
+            "trace_id": "cc-trace-0001",
+            "span_id": "cc-span-0001:tc:0",
+            "tool_name": "edit_file",
+            "duration_ms": 310
+          }
+        ]
+      }
+    ]
+  }
+}

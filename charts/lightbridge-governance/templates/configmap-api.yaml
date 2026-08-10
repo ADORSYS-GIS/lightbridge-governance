@@ -1,0 +1,34 @@
+# The API's per-deployment values, rendered into a ConfigMap and wired via
+# envFrom rather than typed into app-template.controllers.api.containers.main
+# .env in values.yaml.
+#
+# app-template does run `tpl` over env values, but in the SUBCHART's context:
+# there `.Values` is this chart's `app-template:` key, so `.Values.copilot`
+# does not exist and the render fails with "nil pointer evaluating
+# interface {}.tenantId". `global.databaseUrl` is the exception only because
+# Helm propagates the `global` key into subcharts. A real template like this
+# one is evaluated in the PARENT's context and can read `.Values.copilot`,
+# which is why the same technique already backs TENANT_ID for the
+# copilot-sync CronJob (templates/configmap-copilot.yaml) and the OTLP
+# endpoint (templates/configmap-otlp.yaml).
+#
+# Unconditional, like configmap-copilot.yaml and unlike configmap-otlp.yaml:
+# TENANT_ID has no "off" state. `--tenant-id` on the API binary carries no
+# default (an empty tenant has no safe meaning in the WHERE clause of the
+# `ingest_manifests` freshness query behind ADR-0007's governance_connector_*
+# metrics), so if this ConfigMap stops rendering the pod CrashLoopBackOffs
+# during clap parsing.
+#
+# The structural default is the empty string, and that is the LOUD failure
+# rather than the silent one: the pod still starts, but the freshness query
+# matches no rows for tenant "", so governance_connector_has_synced reports 0
+# and the "no successful sync" alert fires instead of a healthy-looking gap.
+# ai-helm-values supplies the real value.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-api
+  labels:
+    app: {{ .Values.name }}
+data:
+  TENANT_ID: {{ .Values.copilot.tenantId | quote }}

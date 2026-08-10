@@ -20,6 +20,8 @@ governance-foundry.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 dotenvy.workspace = true
 mimalloc.workspace = true
 cratestack.workspace = true
@@ -36,3 +38,23 @@ aws-sdk-s3.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+
+[dev-dependencies]
+# This crate is `[[bin]]`-only (no `[lib]`), so `tests/*.rs` integration
+# tests cannot link against it -- unit tests live in each module's own
+# `#[cfg(test)] mod tests` instead (see `src/archive.rs`'s existing
+# precedent). `src/test_support.rs` is declared `#[cfg(test)]` in main.rs, so
+# this mock server is compiled only into test binaries and is unreachable
+# from any production build (AGENTS.md: "mocks must be unreachable from a
+# production path"). axum is already a pinned workspace dependency
+# (cratestack-axum pulls it in), so this adds no new crate to the supply
+# chain -- same precedent as governance-copilot's tests/support/mock_github.rs.
+axum.workspace = true
+serde_json.workspace = true
+# `testing` unlocks `opentelemetry_sdk::metrics::InMemoryMetricExporter`, used
+# by `metrics.rs`'s tests to inspect which instrument type (Gauge vs Sum) a
+# recording actually produced, without a network OTLP endpoint. Cargo's
+# resolver (workspace `resolver = "3"`) keeps this feature out of the
+# `[dependencies]`-only build graph, so it is compiled in for `cargo test`
+# only, never for the shipped binary.
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

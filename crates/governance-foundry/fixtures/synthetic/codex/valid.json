@@ -1,0 +1,43 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; codex.rs's module doc, itself sourced from codex-rs/otel/src/events/shared.rs per the comment there) -- NOT captured from a real Codex OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "happy path, exec-mode token attribute names (input_token_count/output_token_count -- verified for codex exec per issue #33668, the primary path codex.rs checks first)"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "user.email", "value": { "stringValue": "dev@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cx-trace-0001",
+              "spanId": "cx-span-0001",
+              "startTimeUnixNano": "1712000000000000000",
+              "endTimeUnixNano": "1712000006500000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cx-session-01" } },
+                { "key": "model.name", "value": { "stringValue": "gpt-5-codex" } },
+                { "key": "input_token_count", "value": { "intValue": "3100" } },
+                { "key": "output_token_count", "value": { "intValue": "780" } }
+              ],
+              "events": [
+                {
+                  "name": "tool.call",
+                  "attributes": [
+                    { "key": "tool.name", "value": { "stringValue": "shell" } },
+                    { "key": "duration.ms", "value": { "intValue": "420" } }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

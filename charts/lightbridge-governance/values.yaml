@@ -44,8 +44,29 @@ global:
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
 copilot:
-  # The deployment's single tenant (ADR-0001). Set in the deployed values.
-  tenantId: ""
+  # The deployment's single tenant (ADR-0001). Lands in every row and every
+  # WHERE clause across every table.
+  #
+  # ⚠️ This was `""` and the deployment ran that way, ingesting real Copilot
+  # data stamped `tenant_id = ''`. Nothing complained: `env::var` returns
+  # Ok("") for a set-but-empty variable and clap counts a required arg as
+  # satisfied by an empty value, so all the "required" markers said present.
+  # Both binaries now REFUSE an empty value at startup rather than write data
+  # addressed to nobody -- so leaving this empty is a loud CrashLoopBackOff,
+  # not silent bad data.
+  #
+  # Defaulted to the org rather than left empty so a deployment that forgets
+  # to override still runs coherently. Override in ai-helm-values if this
+  # deployment's tenant should be named something else.
+  #
+  # ⚠️ CHANGING IT LATER IS NOT FREE. `high_water_mark` is itself
+  # tenant-scoped, so a new tenant has no manifests, reads as a cold start,
+  # and re-backfills the full 28-day window under the new id. That is the
+  # good news for the `''` rows already written -- they do not need
+  # hand-migrating, the next run repopulates everything under the real tenant
+  # -- but it does mean the old rows linger as orphans no scoped query will
+  # ever return. Decide the value once.
+  tenantId: adorsys-gis
   org: adorsys-gis
   s3:
     # Raw report archive: the shared Hetzner Object Storage bucket, same
@@ -55,12 +76,19 @@ copilot:
     endpoint: https://nbg1.your-objectstorage.com
     region: us-east-1
     forcePathStyle: "true"
-  # OTLP metrics receiver (Alloy) for the push-based collector metrics (#12 AC
-  # "operational metrics"). Empty host = no env var and no egress; the push is
-  # skipped (and, when set, a failed push is a WARN, never a run failure).
-  # Redact-gateway's precedent uses the `observability` namespace; 4317 is the
-  # OTLP/gRPC receiver port. Confirm the service name against the deployed
-  # Alloy before enabling.
+  # OTLP metrics receiver for the push-based collector metrics (#12 AC
+  # "operational metrics"). 4317 is the OTLP/gRPC receiver port.
+  #
+  # This is now a MANUAL/EXTERNAL OVERRIDE, not the primary wiring: by
+  # default (copilotOtel.enabled: true, below) copilot-sync is pointed at
+  # the dedicated in-cluster collector automatically -- see
+  # templates/configmap-otlp.yaml, which computes the effective endpoint and
+  # only falls back to this host when copilotOtel.enabled is false. Leave
+  # this empty unless you specifically want to bypass the bundled collector
+  # and push straight to some other OTLP/gRPC receiver (e.g. a real Alloy
+  # endpoint reachable by FQDN). Empty host (with copilotOtel also disabled)
+  # = no env var and no egress; the push is skipped (and, when set, a failed
+  # push is a WARN, never a run failure).
   #
   # Wired to the copilot-sync container via envFrom on the local `otlp` ConfigMap
   # below (templates/configmap-otlp.yaml), not a plain templated env value:
@@ -73,16 +101,386 @@ copilot:
     host: ""
     port: "4317"
 
+# Dedicated push -> pull bridge for copilot-sync's operational OTLP metrics.
+#
+# ADR-0007 is explicit that metrics on this platform are pull-based: Alloy
+# discovers ServiceMonitor/PodMonitor CRDs cluster-wide and remote-writes to
+# Mimir, and "OTLP to Alloy carries traces, not first-party metrics" -- with
+# the ADR itself naming the reason why a CronJob can't just push and be done:
+# "a CronJob pod that exits cannot be scraped". copilot-sync does exactly
+# that (one force_flush, then the pod dies), so this OpenTelemetryCollector
+# CR sits in between and turns the one-shot push into something Alloy can
+# pull continuously, without contradicting ADR-0007's decision -- it doesn't
+# reintroduce a pushgateway or a second copy of `governance_connector_*` (the
+# API still owns those, derived from ingest_manifest); it only carries what
+# copilot-sync emits about its OWN run (duration, records processed, etc.):
+#
+#   copilot-sync --OTLP/gRPC:4317--> collector --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+#
+# Requires the OpenTelemetry Operator to be installed on the cluster
+# (confirmed present; not something this chart can verify at render time).
+copilotOtel:
+  enabled: true
+  replicas: 1
+  # Core `otelcol` distribution, NOT `-contrib`: verified against
+  # open-telemetry/opentelemetry-collector-releases'
+  # distributions/otelcol/manifest.yaml that otlpreceiver, resourceprocessor
+  # and prometheusexporter -- everything this pipeline's `config` uses below
+  # (templates/otelcollector.yaml) -- all ship in core. No need for the much
+  # larger contrib image just for this three-component pipeline.
+  image: "otel/opentelemetry-collector:0.158.0"
+  resources:
+    # A push->pull bridge for one CronJob's small burst of gauges/counters
+    # every 6h -- not a fleet-wide collector. Sized accordingly.
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  # Listen port for the prometheus exporter (templates/otelcollector.yaml);
+  # duplicated there and in templates/ciliumnetworkpolicy-copilot-otel.yaml
+  # since values.yaml can't be referenced from itself or from another
+  # values key -- both sites are commented at point of use.
+  prometheusPort: 8889
+  # THE STALENESS TRAP: the CronJob schedule (app-template.controllers.
+  # copilot-sync.cronjob.schedule, below) is `0 */6 * * *` -- every 6h -- and
+  # copilot-sync does one `force_flush` then the pod dies. The prometheus
+  # exporter's own default (metric_expiration: 5m) would make every series
+  # vanish from /metrics ~5 minutes after each run -- no stale marker, no
+  # zero, just gone -- so a dashboard would read empty ~99% of the time and a
+  # "no data for N minutes" freshness alert could never fire (no data is not
+  # the same signal as stale data).
+  #
+  # 30h = 5 x the 6h schedule interval: survives 4 FULLY missed runs back to
+  # back (24h -- e.g. a stuck ExternalSecret sync, a GitHub outage that fails
+  # every attempt, a node-drain window) plus one extra interval of slack for
+  # the CronJob's own `startingDeadlineSeconds: 900` skew, while still
+  # eventually expiring -- so a pipeline that's actually been dead for days
+  # reads as *missing* at /metrics, not as a silently-stale number from a
+  # week ago quietly passing as "fine".
+  metricExpiration: 30h
+
 serviceMonitor:
   enabled: true
   interval: 30s
 
+# Alerting rules over the two ALERT-GRADE metric families (templates/
+# prometheusrule.yaml). Deliberately none over `governance_copilot_*`, which
+# ADR-0011 classes as dashboard-grade -- it lives in the collector's memory and
+# a restart blanks it for up to 6h.
+prometheusRule:
+  enabled: true
+
+  # ⚠️ TWO WAYS THIS SILENTLY DOES NOTHING, both worth checking before
+  # trusting any alert below.
+  #
+  # 1. Prometheus/Mimir selects rules by LABEL (`ruleSelector`). Wrong labels
+  #    and the resource applies cleanly, shows up in `kubectl get
+  #    prometheusrule`, and is never evaluated -- no error anywhere. Exactly
+  #    how the Grafana dashboard's `instanceSelector` failed. Copy from a rule
+  #    already evaluating on this cluster:
+  #      kubectl get prometheusrule -A --show-labels
+  #
+  # 2. ADR-0007 says Alloy discovers ServiceMonitor/PodMonitor and
+  #    remote-writes to Mimir. Alloy does NOT evaluate rules -- Mimir's ruler
+  #    does. If this cluster feeds its ruler some other way (a Mimir bucket, a
+  #    mimir-rules ConfigMap), a PrometheusRule CR is inert here whatever its
+  #    labels, and these expressions need lifting into that mechanism instead.
+  #
+  # NOT VERIFIED against the deployed cluster -- no PrometheusRule existed
+  # anywhere in this repo before this, so there was no convention to copy.
+  additionalLabels: {}
+
+  # Empty = the release namespace, matching templates/servicemonitor.yaml.
+  # Set it if the ruler only watches a specific namespace.
+  namespace: ""
+
+  thresholds:
+    # Freshness. 36h/72h are the numbers docs/runbooks/copilot-sync-failed.md
+    # already names, so the alert and the runbook agree. Both are generous
+    # against the 6h schedule: several consecutive failed runs before anyone
+    # is woken.
+    syncStaleHours: 36
+    syncVeryStaleHours: 72
+
+    # Month-to-date spend ceiling, in INTEGER micro-USD (ADR-0008 -- no float
+    # ever touches a monetary value, and PromQL does the display division).
+    # 5_000_000_000 micro-USD = $5,000. Set this to something meaningful for
+    # the deployment; the default is a placeholder, not a considered budget.
+    monthlySpendMicroUsd: 5000000000
+
+    # Seats assigned that have never once been used. Tune to the seat count --
+    # 20 is meaningless for a 15-seat org. A ratio works better where seat
+    # counts vary:
+    #   governance_org_seats_never_used / governance_org_seats_assigned > 0.3
+    seatsNeverUsed: 20
+
+    # Active-user drop, compared against the SAME WEEKDAY rather than
+    # yesterday. Copilot usage is strongly weekday-seasonal: a Saturday is
+    # legitimately far below a Friday, so `offset 1d` would page every weekend
+    # and be muted within a fortnight. 0.7 = fire below 70% of the comparison
+    # point.
+    activeUsersDropRatio: 0.7
+    activeUsersCompareOffset: 7d
+
+# Ships dashboards/copilot-connector.json to Grafana as a GrafanaDashboard CR
+# (templates/grafanadashboard.yaml), per ADR-0003's precedent (ai-helm
+# ADR-0063's read-only-Postgres-datasource pattern for Grafana Operator
+# resources) -- not a sidecar-labelled ConfigMap. See that template's header
+# comment for the apiVersion/kind verification and the datasource-UID
+# substitution mechanism in full; this block only carries the values.
+grafanaDashboard:
+  enabled: true
+
+  # The namespace the GrafanaFolder/GrafanaDashboard CRs are created in --
+  # NOT the release namespace, deliberately.
+  #
+  # Observed convention on the deployed cluster (2026-08-07): every Grafana
+  # resource already lives alongside Grafana itself in `observability`, and
+  # every one of them reconciles cleanly --
+  #   $ kubectl get grafanafolder -A
+  #   NAMESPACE       NAME            NO MATCHING INSTANCES   LAST RESYNC
+  #   observability   ai-gateway                              2m17s
+  #   observability   applications                            2m17s
+  #   observability   collectors                              2m17s
+  #   observability   lightbridge                             8m25s
+  #   ... (7 folders, all in observability, none unmatched)
+  # `GrafanaFolder` defaults to same-namespace-only matching just as
+  # `GrafanaDashboard` does, so those folders reconciling at all proves the
+  # `Grafana` CR is in `observability` too.
+  #
+  # Co-locating is why the platform's existing resources never needed
+  # `allowCrossNamespaceImport`. Matching that convention rather than reaching
+  # across namespaces keeps this chart consistent with everything already
+  # deployed.
+  #
+  # ⚠️ Whatever applies this chart (ArgoCD) must be permitted to create
+  # resources in this namespace. Seven folders already live there via some
+  # mechanism, so that permission almost certainly exists -- but an apply
+  # failing on RBAC rather than on the manifest is the tell.
+  namespace: observability
+
+  # Lets the operator match a `Grafana` CR in ANOTHER namespace. Now defaults
+  # to FALSE (the operator's own default), because with `namespace` above
+  # putting these CRs in `observability` alongside Grafana, same-namespace
+  # matching is exactly what we want and cross-namespace import is not needed.
+  #
+  # Kept as an escape hatch for a deployment that puts these CRs somewhere
+  # else. If you set `namespace` to the release namespace, you almost
+  # certainly need this to be true.
+  #
+  # The failure mode when this is wrong is genuinely misleading, and was hit
+  # on this deployment on 2026-08-07 (CRs in the app namespace, Grafana in
+  # `observability`, flag absent so defaulting false):
+  #
+  # The failure mode when this is wrong is genuinely misleading, and was hit
+  # on this deployment on 2026-08-07:
+  #
+  #   status.NoMatchingInstances: true
+  #   reason: EmptyAPIReply
+  #   message: "None of the available Grafana instances matched the selector,
+  #             skipping reconciliation"
+  #
+  # It blames the *selector*, so the obvious move is to go hunting for a label
+  # typo -- but the operator emits exactly this when the labels are correct
+  # and the only matching Grafana simply lives elsewhere. `EmptyAPIReply`
+  # means zero candidate instances were even considered, not that one was
+  # considered and rejected.
+  #
+  # Set to true only if these CRs are deployed somewhere other than the
+  # namespace Grafana runs in.
+  allowCrossNamespaceImport: false
+
+  # A dedicated Grafana folder for the Copilot dashboards, matching the
+  # per-domain folders already on the cluster (ai-gateway, applications,
+  # collectors, lightbridge, model-serving, my-usage, platform).
+  #
+  # `metadata.name` must be k8s-safe; `spec.title` is what a human sees in
+  # Grafana's folder list, and defaults to metadata.name when omitted -- so it
+  # is set explicitly here rather than accepting a hyphenated slug as the
+  # display name.
+  #
+  # The dashboard is placed into it via `spec.folderRef`, which references a
+  # GrafanaFolder CR BY NAME and requires it to be in the SAME namespace as
+  # the dashboard -- both are created in `namespace` above, so that holds.
+  # (`folderRef` and `folderUID` are mutually exclusive, and either one makes
+  # the operator ignore the older plain-title `folder` field.)
+  folder:
+    enabled: true
+    # Suffix on the release name, so the CR is `<name>-copilot`.
+    nameSuffix: copilot
+    title: "Copilot"
+
+    # The Copilot folder is nested under a `Governance` parent, so all
+    # governance dashboards group together as this platform grows past the
+    # Copilot connector (Foundry, redaction, and the business/adoption panels
+    # ADR-0003 puts in SQL all belong under the same roof).
+    #
+    # Nesting uses `spec.parentFolderRef`, which references a GrafanaFolder CR
+    # BY NAME in the SAME namespace -- both are created in
+    # grafanaDashboard.namespace, so that holds. Only one of
+    # `parentFolderRef` / `parentFolderUID` may be set; this chart uses the ref
+    # so the parent is resolved by the operator rather than by pasting a UID
+    # that only exists after the parent has reconciled once.
+    parent:
+      # Whether THIS chart creates the parent folder.
+      #
+      # True today because no `governance` folder exists on the cluster yet --
+      # the deployed set is ai-gateway, applications, collectors, lightbridge,
+      # model-serving, my-usage, platform.
+      #
+      # ⚠️ Set this to false if another chart starts owning the same parent.
+      # Two releases both creating a GrafanaFolder with this `name` in this
+      # namespace is a genuine conflict -- whichever applies last wins, and on
+      # ArgoCD they will fight over it indefinitely. Referencing beats
+      # co-creating once more than one chart wants the folder.
+      create: true
+      # The parent CR's metadata.name. Short and domain-shaped, matching the
+      # existing folders' convention rather than the release name.
+      name: governance
+      title: "Governance"
+
+  # Grafana Operator v5 requires every GrafanaDashboard to carry an
+  # instanceSelector (a label selector) so it knows which deployed `Grafana`
+  # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a
+  # private repo THIS CHART CANNOT SEE OR VERIFY -- get this wrong and the
+  # GrafanaDashboard CR renders and applies cleanly, but the operator simply
+  # never selects it, so the dashboard never appears in Grafana. No error
+  # anywhere: `kubectl get grafanadashboard` shows the CR as applied, and
+  # there is nothing to grep in its status that says "no Grafana matched"
+  # unless you know to check `status.conditions` on the CR itself.
+  #
+  # ⚠️ `dashboards: "grafana-external"`, NOT the operator's documented
+  # quick-start default of `dashboards: "grafana"`. This chart shipped the
+  # quick-start value first and the dashboard silently never appeared.
+  #
+  # Read off a folder that is demonstrably reconciling on the deployed
+  # cluster, so this is copied rather than guessed:
+  #   $ kubectl get grafanafolder lightbridge -n observability \
+  #       -o jsonpath='{.spec.instanceSelector}'
+  #   {"matchLabels":{"dashboards":"grafana-external"}}
+  #
+  # Re-run that against any healthy folder if this ever stops matching -- it
+  # is the one selector known to work, and inventing a plausible-looking value
+  # instead is precisely how the first attempt failed.
+  #
+  # ⚠️ IMMUTABLE on both GrafanaDashboard and GrafanaFolder. Changing it means
+  # DELETING and recreating the CRs; `kubectl apply` of a changed selector is
+  # rejected. If the CRs are already deployed with the wrong selector, bumping
+  # this value alone will not fix them.
+  instanceSelector:
+    matchLabels:
+      dashboards: "grafana-external"
+
+  # Datasource UIDs the dashboard JSON references, substituted into
+  # dashboards/copilot-connector.json at `helm template` time (Helm-side
+  # string replace over literal placeholder tokens -- see
+  # templates/grafanadashboard.yaml for why this was chosen over the
+  # operator's own spec.datasources mapping field, and for what happens if a
+  # value here is wrong). Contract with the dashboard-JSON generator: the
+  # tokens are exactly `__DS_POSTGRES__` and `__DS_PROMETHEUS__`, used as the
+  # literal `uid` value of any Postgres/Prometheus datasource reference in
+  # that file.
+  datasources:
+    # ADR-0003, stated explicitly: "Expose the governance database to
+    # Grafana as a read-only Postgres GrafanaDatasource (uid: governance)".
+    # High confidence -- this is a pinned decision, not a guess.
+    postgresUid: governance
+    # NOT specified anywhere in this repo. Prometheus/Mimir datasource UIDs
+    # are assigned by whatever provisioned the GrafanaDatasource CR for
+    # Mimir in ai-helm (or by Grafana's own default-datasource
+    # provisioning), and this chart has no way to discover or verify it.
+    # "mimir" is a reasonable guess given this platform's metrics backend
+    # (ADR-0003/ADR-0007/ADR-0011 all name Mimir), NOT a confirmed value --
+    # CONFIRM AGAINST THE DEPLOYED GRAFANA before trusting any panel that
+    # reads governance_copilot_*/governance_connector_* series. A wrong UID
+    # here does not fail to render or fail loudly: it ships a dashboard
+    # whose time-series panels silently show "Datasource not found" or an
+    # empty graph -- indistinguishable at a glance from "no data yet",
+    # exactly the ambiguity ADR-0011 already warns about for
+    # governance_copilot_*'s own 30h expiration cliff.
+    prometheusUid: mimir
+
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
-# copilot-reports.github.com signed-download host (spike-0007) and the S3
-# archive. Scoped to the CronJob pods via the component label; the API
-# Deployment's egress is untouched.
+# copilot-reports.github.com signed-download host (spike-0007), the S3
+# archive and (when copilotOtel.enabled) the in-cluster OTLP collector.
+# Scoped to the CronJob pods via the component label; the API Deployment's
+# egress is untouched.
+#
+# `otlpNamespace` is the redact-gateway precedent
+# (charts/redact-gateway/templates/ciliumnetworkpolicy.yaml) for reaching
+# Alloy: same value, same `k8s:app.kubernetes.io/name: alloy` selector,
+# reused in templates/ciliumnetworkpolicy-copilot-otel.yaml for the
+# collector's own ingress-from-Alloy rule.
+# Public OTLP ingest for developer AI clients (Claude Code, Codex, GitHub
+# Copilot in VS Code), all pointed here by `governance-auth` (ADR-0010).
+# A SEPARATE collector from copilotOtel above -- see the header comment in
+# templates/otelcollector-ai-cli.yaml for the four measured reasons why
+# reusing that one doesn't work.
+aiCliOtel:
+  # Off by default: this opens a PUBLIC endpoint, so turning it on is an
+  # explicit act in the values repo, not something a chart bump does.
+  enabled: false
+  # Public ingest for a whole developer fleet, so unlike copilotOtel's single
+  # CronJob bridge this wants more than one replica -- a restart with one
+  # replica drops every in-flight export.
+  replicas: 2
+  # `-contrib`, NOT the core distribution copilotOtel uses: `oidcauthextension`
+  # ships only in contrib. Verified by running the rendered config under this
+  # exact image -- the oidc extension started against the real issuer, and
+  # unauthenticated and malformed-token POSTs both returned 401.
+  image: "otel/opentelemetry-collector-contrib:0.158.0"
+  # Init container that retry-loops OIDC discovery before the collector
+  # starts -- see the `initContainers` block in otelcollector-ai-cli.yaml for
+  # why this exists (a real prod incident: 0/2 replicas, 100% CrashLoopBackOff,
+  # ai-helm-values#216). Pinned by tag, same convention as `image` above --
+  # digest captured at the time this was written:
+  # curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+  initContainerImage: "curlimages/curl:8.11.1"
+  # memory_limiter runs first in every pipeline; these are its bounds.
+  memoryLimiterMib: 400
+  memorySpikeLimitMib: 100
+  # Alloy is this cluster's fan-out to Tempo/Loki/Mimir (ADR-0007), so this
+  # collector needs one exporter and no knowledge of the backends.
+  alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  oidc:
+    # The lightbridge-authz API-key issuer -- it already serves OIDC discovery
+    # and JWKS publicly (both confirmed 200), so the collector can validate
+    # callers itself with no Authorino involvement.
+    #
+    # These are long-lived (120d) revocable API keys deliberately, NOT Keycloak
+    # access tokens: every client reads its OTEL config once at process start
+    # and none has a credential-helper hook for OTLP headers, so a 300s token
+    # would export for five minutes then 401 silently. Keycloak stays on the
+    # inference path, where refresh actually works.
+    issuerUrl: "https://auth.ai.camer.digital"
+    # Must match the `aud` these API keys carry (authz's oauth2.signing.audience).
+    audience: "lightbridge-api-key"
+    # Same host as issuerUrl, minus the scheme -- the CiliumNetworkPolicy needs
+    # it as a bare FQDN for the egress rule that lets the oidc extension fetch
+    # discovery/JWKS. Kept as its own key rather than parsed out of the URL,
+    # since Helm string-munging a URL is its own source of bugs.
+    issuerHost: "auth.ai.camer.digital"
+  ingress:
+    enabled: true
+    # Traefik, not the Envoy core-gateway: otel.<domain> already resolves to
+    # the Traefik LB via the wildcard record, exactly as auth.<domain> does.
+    className: traefik
+    host: otel.ai.camer.digital
+    clusterIssuer: cert-home-cert-http
+    # Namespace Traefik runs in, for the CiliumNetworkPolicy ingress rule.
+    # Wrong value here = every push silently dropped by Cilium while the
+    # collector looks perfectly healthy.
+    traefikNamespace: traefik
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 networkPolicy:
   enabled: true
+  otlpNamespace: observability
 
 # ⚠️ Never `optional: true` on a secretKeyRef env: env vars bind once at pod start
 # and never refresh, so an optional ref lets a pod that beats ESO capture an EMPTY
@@ -242,6 +640,35 @@ app-template:
             # exposed here as ordinary, always-optional values.
             RESOLVE_CACHE_TTL_SECS: "60"
             RESOLVE_CACHE_MAX_CAPACITY: "10000"
+            # Bounds the /metrics freshness query, same reasoning as
+            # RESOLVE_TIMEOUT_MS. Safe default in the binary (3000ms).
+            CONNECTOR_METRICS_TIMEOUT_MS: "3000"
+          # TENANT_ID arrives via ConfigMap, not as a literal above.
+          #
+          # ⚠️ It is REQUIRED by the binary -- `--tenant-id` carries no
+          # default, because an empty tenant has no safe meaning in the WHERE
+          # clause of the `ingest_manifests` freshness query /metrics derives
+          # from (ADR-0007). Drop this envFrom and the pod CrashLoopBackOffs
+          # on every start during clap parsing, which is exactly how
+          # INTERNAL_INGEST_TOKEN was broken before it was wired.
+          #
+          # It cannot be a `{{ .Values.copilot.tenantId }}` literal in this
+          # block: app-template does run `tpl` on env values, but in the
+          # SUBCHART's context, where `.Values` is this `app-template:` key
+          # and `.Values.copilot` does not exist (it fails with "nil pointer
+          # evaluating interface {}.tenantId"). `global.databaseUrl` above
+          # works only because Helm propagates `global` into subcharts. A
+          # real template can read the parent's values, hence the ConfigMap
+          # -- the same technique templates/configmap-copilot.yaml uses.
+          #
+          # Sourced from `copilot.tenantId` rather than a second top-level
+          # key: the API and the copilot-sync CronJob are one single-tenant
+          # deployment (ADR-0001), and two knobs for one tenant is a drift
+          # bug waiting to happen -- set one, forget the other, and /metrics
+          # reports on a tenant that has no rows.
+          envFrom:
+            - configMapRef:
+                name: lightbridge-governance-api
           # `/livez` and `/readyz` are unauthenticated and check only that the
           # process is up -- they do not touch the database (ADR-0006's
           # resolve endpoint is the one place a DB check belongs, and even

@@ -13,7 +13,7 @@ use governance_core::ingest::{ExecutionInput, ModelCallInput, ToolCallInput};
 
 use super::{
     Normalizer, NormalizerError, TelemetryPayload,
-    otlp::{attr_i64, attr_string, span_i64, span_string},
+    otlp::{attr_i64, attr_string, duration_ms, events, span_i64, span_string},
 };
 
 pub struct ClaudeCodeNormalizer;
@@ -66,8 +66,13 @@ fn normalize_span(
         .ok_or_else(|| NormalizerError::MissingField("spanId".to_owned()))?;
 
     // `session.id` is intentionally not persisted (no execution-grouping
-    // feature uses it yet), but it is still validated so a malformed value is
-    // a hard rejection rather than silently ignored telemetry.
+    // feature uses it yet). Reading it here only rejects a *structurally*
+    // invalid attribute entry (e.g. a `value` that isn't even an object) --
+    // `attr_string` treats a present-but-wrong-kind value (say,
+    // `{"intValue": "42"}` where `{"stringValue": ...}` was expected) as
+    // `Ok(None)`, indistinguishable from absent. That is deliberate, general
+    // behavior of the helper (see `wrong_value_kind_is_none_not_an_error` in
+    // otlp.rs), not a hard rejection specific to this field.
     attr_string(span, "session.id", "span")?;
     let model_name = attr_string(span, "model.name", "span")?
         .ok_or_else(|| NormalizerError::MissingField("model.name".to_owned()))?;
@@ -80,7 +85,7 @@ fn normalize_span(
     let end_time_unix_nano = span_i64(span, "endTimeUnixNano")?;
 
     let started_at = DateTime::<Utc>::from_timestamp_nanos(start_time_unix_nano);
-    let duration_ms = (end_time_unix_nano - start_time_unix_nano) / 1_000_000;
+    let duration_ms = duration_ms(start_time_unix_nano, end_time_unix_nano)?;
 
     // The model call and each tool call need their own (trace_id, span_id) --
     // the idempotency key is unique per row. Child ids are derived from the
@@ -96,22 +101,20 @@ fn normalize_span(
 
     let mut tool_calls = Vec::new();
 
-    if let Some(events) = span.get("events").and_then(|v| v.as_array()) {
-        for (idx, event) in events.iter().enumerate() {
-            let event_name = span_string(event, "name")?;
-            if event_name.as_deref() == Some("tool.call") {
-                let tool_name = attr_string(event, "tool.name", "event")?
-                    .ok_or_else(|| NormalizerError::MissingField("tool.name".to_owned()))?;
-                let tool_duration_ms = attr_i64(event, "duration.ms", "event")?
-                    .ok_or_else(|| NormalizerError::MissingField("duration.ms".to_owned()))?;
+    for (idx, event) in events(span, "span")?.iter().enumerate() {
+        let event_name = span_string(event, "name")?;
+        if event_name.as_deref() == Some("tool.call") {
+            let tool_name = attr_string(event, "tool.name", "event")?
+                .ok_or_else(|| NormalizerError::MissingField("tool.name".to_owned()))?;
+            let tool_duration_ms = attr_i64(event, "duration.ms", "event")?
+                .ok_or_else(|| NormalizerError::MissingField("duration.ms".to_owned()))?;
 
-                tool_calls.push(ToolCallInput {
-                    trace_id: trace_id.clone(),
-                    span_id: format!("{span_id}:tc:{idx}"),
-                    tool_name,
-                    duration_ms: tool_duration_ms,
-                });
-            }
+            tool_calls.push(ToolCallInput {
+                trace_id: trace_id.clone(),
+                span_id: format!("{span_id}:tc:{idx}"),
+                tool_name,
+                duration_ms: tool_duration_ms,
+            });
         }
     }
 
@@ -253,5 +256,59 @@ mod tests {
         let normalizer = ClaudeCodeNormalizer;
         let result = normalizer.normalize(&payload);
         assert!(matches!(result, Err(NormalizerError::MissingField(_))));
+    }
+
+    #[test]
+    fn events_present_but_wrong_type_rejects_rather_than_dropping_tool_calls() {
+        // A malformed `events` field (a string instead of an array) must
+        // reject, not be silently treated as "zero tool calls" -- that is
+        // structurally indistinguishable from a span that legitimately
+        // called no tools, and a silently-dropped tool call is invisible
+        // downstream forever.
+        let mut payload = valid_payload();
+        payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["events"] = json!("not-an-array");
+
+        let normalizer = ClaudeCodeNormalizer;
+        let result = normalizer.normalize(&payload);
+        assert!(
+            matches!(result, Err(NormalizerError::InvalidFieldType { .. })),
+            "expected InvalidFieldType, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn duration_overflow_rejects_rather_than_wrapping() {
+        // Both timestamps come from `span_i64`, which accepts any parseable
+        // i64 with no bounds check, including negatives (proto3 JSON
+        // int64-as-string carries no sign restriction). A naive subtraction
+        // panics under overflow-checks (debug/test) and silently wraps under
+        // `[profile.prod]` (overflow-checks off, inherited from `release`) --
+        // neither is an acceptable outcome for a cost-ledger input.
+        let mut payload = valid_payload();
+        let span = &mut payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        span["startTimeUnixNano"] = json!("-9223372036854775808");
+        span["endTimeUnixNano"] = json!("9223372036854775807");
+
+        let normalizer = ClaudeCodeNormalizer;
+        let result = normalizer.normalize(&payload);
+        assert!(
+            matches!(result, Err(NormalizerError::InvalidDuration { .. })),
+            "expected InvalidDuration, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn end_before_start_rejects_rather_than_a_negative_duration() {
+        let mut payload = valid_payload();
+        let span = &mut payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        span["startTimeUnixNano"] = json!("1700000005000000000");
+        span["endTimeUnixNano"] = json!("1700000000000000000");
+
+        let normalizer = ClaudeCodeNormalizer;
+        let result = normalizer.normalize(&payload);
+        assert!(
+            matches!(result, Err(NormalizerError::InvalidDuration { .. })),
+            "expected InvalidDuration, got {result:?}"
+        );
     }
 }

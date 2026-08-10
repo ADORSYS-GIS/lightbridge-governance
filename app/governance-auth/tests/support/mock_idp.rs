@@ -11,11 +11,14 @@
 //! `.unwrap()`/`.expect()`, which would show up as an untraceable panic in
 //! a background task rather than a clean test failure anyway.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Form, Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
@@ -58,6 +61,14 @@ struct Inner {
     behavior: TokenBehavior,
     token_calls: u32,
     discovery_overrides: DiscoveryOverrides,
+    device_calls: u32,
+    // What the client actually sent, captured verbatim rather than just a
+    // presence bool -- a test asserting the device flow implements PKCE
+    // correctly (not just "sends *a* param named code_challenge") needs the
+    // real values to recompute S256(verifier) and compare.
+    last_device_code_challenge: Option<String>,
+    last_device_code_challenge_method: Option<String>,
+    last_token_code_verifier: Option<String>,
 }
 
 #[derive(Clone)]
@@ -88,11 +99,16 @@ impl MockIdp {
             behavior,
             token_calls: 0,
             discovery_overrides,
+            device_calls: 0,
+            last_device_code_challenge: None,
+            last_device_code_challenge_method: None,
+            last_token_code_verifier: None,
         }));
 
         let router = Router::new()
             .route("/.well-known/openid-configuration", get(discovery))
             .route("/token", post(token))
+            .route("/device", post(device_authorization))
             .with_state(state.clone());
 
         tokio::spawn(async move {
@@ -108,6 +124,27 @@ impl MockIdp {
 
     pub fn token_call_count(&self) -> Result<u32> {
         Ok(lock(&self.state)?.token_calls)
+    }
+
+    pub fn device_call_count(&self) -> Result<u32> {
+        Ok(lock(&self.state)?.device_calls)
+    }
+
+    /// What the client sent as `code_challenge` on the device-authorization
+    /// request, if anything -- `None` distinguishes "no PKCE params at all"
+    /// from "sent an empty string", which a plain `String` default wouldn't.
+    pub fn last_device_code_challenge(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_device_code_challenge.clone())
+    }
+
+    pub fn last_device_code_challenge_method(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_device_code_challenge_method.clone())
+    }
+
+    /// What the client sent as `code_verifier` on its most recent poll of
+    /// the token endpoint.
+    pub fn last_token_code_verifier(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_token_code_verifier.clone())
     }
 }
 
@@ -136,11 +173,53 @@ async fn discovery(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse 
     .into_response()
 }
 
-async fn token(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse {
+/// Real device-authorization endpoints (Keycloak's included) reject a
+/// request with no `code_challenge_method` once PKCE is required on the
+/// client -- this mock only needs to hand back a device/user code pair, but
+/// it captures what the client sent so a test can assert the client
+/// actually included PKCE, not just that it survived a mock that doesn't
+/// enforce anything.
+async fn device_authorization(
+    State(state): State<Arc<Mutex<Inner>>>,
+    Form(form): Form<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Ok(mut guard) = lock(&state) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "mock idp lock poisoned").into_response();
+    };
+    guard.device_calls += 1;
+    guard.last_device_code_challenge = form.get("code_challenge").cloned();
+    guard.last_device_code_challenge_method = form.get("code_challenge_method").cloned();
+
+    let base_url = guard.base_url.clone();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "device_code": "mock-device-code",
+            "user_code": "MOCK-CODE",
+            "verification_uri": format!("{base_url}/device/verify"),
+            "verification_uri_complete": format!("{base_url}/device/verify?user_code=MOCK-CODE"),
+            // 0 collapses to `interval.max(1)` == 1s in the client's poll
+            // loop (device.rs) -- fast enough for a test, never zero-wait.
+            "expires_in": 60,
+            "interval": 0,
+        })),
+    )
+        .into_response()
+}
+
+async fn token(
+    State(state): State<Arc<Mutex<Inner>>>,
+    Form(form): Form<HashMap<String, String>>,
+) -> impl IntoResponse {
     let Ok(mut guard) = lock(&state) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "mock idp lock poisoned").into_response();
     };
     guard.token_calls += 1;
+    if form.get("grant_type").map(String::as_str)
+        == Some("urn:ietf:params:oauth:grant-type:device_code")
+    {
+        guard.last_token_code_verifier = form.get("code_verifier").cloned();
+    }
 
     match &guard.behavior {
         TokenBehavior::Succeed {

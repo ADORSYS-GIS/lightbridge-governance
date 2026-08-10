@@ -1,0 +1,36 @@
+{
+  "_fixture_meta": {
+    "label": "synthetic",
+    "provenance": "hand-authored from the documented attribute contract (RFC-0002; claude_code.rs's module doc) -- NOT captured from a real Claude Code OTLP export. Encodes our ASSUMPTIONS about the wire format, not verified reality. See fixtures/README.md.",
+    "pins": "endTimeUnixNano is before startTimeUnixNano -- malformed input, must reject (InvalidDuration), never clamp to a zero or negative duration"
+  },
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } },
+          { "key": "user.email", "value": { "stringValue": "dev@example.com" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "cc-trace-0006",
+              "spanId": "cc-span-0006",
+              "startTimeUnixNano": "1706000004200000000",
+              "endTimeUnixNano": "1706000000000000000",
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "cc-session-06" } },
+                { "key": "model.name", "value": { "stringValue": "claude-3-7-sonnet" } },
+                { "key": "tokens.input", "value": { "intValue": "1000" } },
+                { "key": "tokens.output", "value": { "intValue": "300" } }
+              ],
+              "events": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

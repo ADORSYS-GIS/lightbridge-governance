@@ -2,8 +2,19 @@
 //!
 //! There is deliberately NO separate backfill Job: a one-shot k8s Job is immutable
 //! and re-running it means deleting the object out-of-band, which ArgoCD selfHeal
-//! fights. `sync` reads the high-water mark from the DB and backfills up to 28 days
-//! when it is behind -- which also gives late-report recovery for free (ADR-0006).
+//! fights. `sync` always re-fetches a trailing lookback window (RFC-0001: D-1,
+//! D-2, D-3) and separately fills any gap after the high-water mark, bounded so a
+//! cold start cannot walk back forever (`sync::backfill_window`) -- which also
+//! gives late-report recovery for free (ADR-0006).
+//!
+//! `Command::Sync` exits non-zero when the computed window was non-empty but
+//! EVERY day in it failed (`covered == 0`) -- that is a totally broken run (dead
+//! credential, GitHub unreachable), and the CronJob's `backoffLimit`/alerting
+//! must engage rather than silently exiting 0 (pre-go-live review, BLOCKER 1). A
+//! partial failure (some days ok, some not) still exits 0: it is logged loudly,
+//! counted, and the failed days are re-attempted by the next run's trailing
+//! window (BLOCKER 2) -- failing the whole job for a partial failure would only
+//! be noise.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,6 +22,8 @@ use clap::{Parser, Subcommand};
 mod archive;
 mod metrics;
 mod sync;
+#[cfg(test)]
+mod test_support;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -30,7 +43,8 @@ struct Args {
 /// Subcommands. One image, several verbs.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Ingest the most recent days, backfilling to the high-water mark if behind.
+    /// Ingest the trailing lookback window, plus any gap after the
+    /// high-water mark if behind (see `sync::backfill_window`).
     Sync,
     /// Ingest one specific report day (YYYY-MM-DD). Idempotent.
     SyncDay {
@@ -46,6 +60,23 @@ enum Command {
     },
     /// Reconcile stored row counts against the manifests and report drift.
     Verify,
+    /// Report per-provider identity attribution (attributed/unattributed/
+    /// mismatched) and fail if any provider has unattributed executions.
+    VerifyAttribution,
+    /// Sync the identity directory (Keycloak) into `identity_maps`.
+    IdentitySync {
+        /// Tenant whose identity maps are synced (ADR-0001).
+        #[arg(long)]
+        tenant: String,
+        /// Provider namespace, e.g. `github_copilot`.
+        #[arg(long)]
+        provider: String,
+        /// Path to the directory file: a single JSON array of
+        /// `{provider_user_id, internal_user_id}` objects, or one such array
+        /// (or object) per line. Blank lines are ignored.
+        #[arg(long)]
+        file: String,
+    },
     /// Print connector status: last success, report age, unmapped users.
     Status,
     /// Apply the schema migrations cratestack derives from
@@ -76,10 +107,21 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let (outcomes, covered) = sync::run_backfill(&client, &pool, &cfg).await?;
+            let result = sync::run_backfill(&client, &pool, &cfg).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
-                metrics::push_run_metrics(&endpoint, "sync", &outcomes, covered as u64).await;
+                metrics::push_run_metrics(
+                    &endpoint,
+                    "sync",
+                    &result.outcomes,
+                    result.covered as u64,
+                )
+                .await;
             }
+            // BLOCKER 1: a non-empty window where every day failed must exit
+            // non-zero so the CronJob's backoffLimit/alerting engage instead
+            // of a silently-successful process. See the module doc comment
+            // above and `BackfillOutcome::exit_result`'s own doc comment.
+            result.exit_result()?;
         }
         Command::SyncDay { day } => {
             let cfg = sync::Config::from_env().await?;
@@ -103,14 +145,184 @@ async fn main() -> Result<()> {
                 metrics::push_verify_metrics(&endpoint, mismatch).await;
             }
         }
+        Command::VerifyAttribution => {
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let tenant = resolve_single_tenant(&pool).await?;
+            let report = governance_core::identity::verify_attribution(&pool, &tenant).await?;
+            for provider in &report.providers {
+                tracing::info!(
+                    provider = %provider.provider,
+                    attributed = provider.attributed,
+                    unattributed = provider.unattributed,
+                    mismatched = provider.mismatched,
+                    "verify-attribution: attribution"
+                );
+            }
+            if report.has_unattributed() {
+                anyhow::bail!(
+                    "verify-attribution: unattributed executions present; attribution is incomplete"
+                );
+            }
+        }
+        Command::IdentitySync {
+            tenant,
+            provider,
+            file,
+        } => {
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let entries = read_directory(&file)?;
+            let report = governance_core::identity::sync_identity_directory(
+                &pool, &tenant, &provider, &entries,
+            )
+            .await?;
+            tracing::info!(
+                inserted = report.inserted,
+                repointed = report.repointed,
+                unchanged = report.unchanged,
+                "identity-sync: complete"
+            );
+        }
         Command::Status => {
             let cfg = sync::Config::from_env().await?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let (age, unmapped) = sync::run_status(&pool, &cfg).await?;
+            let status = sync::run_status(&pool, &cfg).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
-                metrics::push_status_metrics(&endpoint, age, unmapped).await;
+                metrics::push_status_metrics(&endpoint, status).await;
             }
         }
     }
     Ok(())
+}
+
+/// The single tenant this deployment serves (ADR-0001). `verify` reads the
+/// tenant from the `tenants` table rather than trusting a caller-supplied id.
+async fn resolve_single_tenant(pool: &cratestack::sqlx::PgPool) -> Result<String> {
+    let tenants: Vec<(String,)> = cratestack::sqlx::query_as("SELECT id FROM tenants ORDER BY id")
+        .fetch_all(pool)
+        .await?;
+    match tenants.as_slice() {
+        [(id,)] => Ok(id.clone()),
+        [] => anyhow::bail!("verify: no tenant provisioned (ADR-0001 requires exactly one)"),
+        _ => anyhow::bail!(
+            "verify: {} tenants found; ADR-0001 is single-tenant per deployment",
+            tenants.len()
+        ),
+    }
+}
+
+/// Parses the directory file: a single JSON array of `{provider_user_id,
+/// internal_user_id}` objects, or one such array (or object) per line.
+/// Blank lines are ignored.
+fn read_directory(file: &str) -> Result<Vec<governance_core::identity::DirectoryEntry>> {
+    let raw = std::fs::read_to_string(file)?;
+    parse_directory(&raw)
+}
+
+/// Parses directory content. Accepts either a single top-level JSON array of
+/// entries, or one JSON array (or single object) per line -- so an operator
+/// can hand over a pretty-printed array or an NDJSON-style stream. Blank
+/// lines are skipped. A line that is neither a valid array nor a valid
+/// object fails the whole parse (fail-closed, not best-effort).
+fn parse_directory(raw: &str) -> Result<Vec<governance_core::identity::DirectoryEntry>> {
+    if let Ok(entries) = serde_json::from_str::<Vec<DirectoryEntryJson>>(raw) {
+        return Ok(to_directory_entries(entries));
+    }
+
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entries) = serde_json::from_str::<Vec<DirectoryEntryJson>>(line) {
+            out.extend(to_directory_entries(entries));
+        } else {
+            let entry: DirectoryEntryJson = serde_json::from_str(line)?;
+            out.push(governance_core::identity::DirectoryEntry {
+                provider_user_id: entry.provider_user_id,
+                internal_user_id: entry.internal_user_id,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn to_directory_entries(
+    entries: Vec<DirectoryEntryJson>,
+) -> Vec<governance_core::identity::DirectoryEntry> {
+    entries
+        .into_iter()
+        .map(|e| governance_core::identity::DirectoryEntry {
+            provider_user_id: e.provider_user_id,
+            internal_user_id: e.internal_user_id,
+        })
+        .collect()
+}
+
+#[derive(serde::Deserialize)]
+struct DirectoryEntryJson {
+    provider_user_id: String,
+    internal_user_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_single_array() {
+        let parsed =
+            parse_directory(r#"[{"provider_user_id":"a@x.com","internal_user_id":"sub-a"}]"#)
+                .unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].provider_user_id, "a@x.com");
+        assert_eq!(parsed[0].internal_user_id, "sub-a");
+    }
+
+    #[test]
+    fn parses_a_pretty_printed_single_array() {
+        let parsed = parse_directory(
+            "[\n  {\"provider_user_id\":\"a@x.com\",\"internal_user_id\":\"sub-a\"},\n  \
+             {\"provider_user_id\":\"b@x.com\",\"internal_user_id\":\"sub-b\"}\n]\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].provider_user_id, "b@x.com");
+    }
+
+    #[test]
+    fn parses_one_array_per_line() {
+        let parsed = parse_directory(
+            "[{\"provider_user_id\":\"a@x.com\",\"internal_user_id\":\"sub-a\"}]\n\
+             [{\"provider_user_id\":\"b@x.com\",\"internal_user_id\":\"sub-b\"}]\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].provider_user_id, "b@x.com");
+    }
+
+    #[test]
+    fn parses_one_object_per_line() {
+        let parsed = parse_directory(
+            "{\"provider_user_id\":\"a@x.com\",\"internal_user_id\":\"sub-a\"}\n\
+             {\"provider_user_id\":\"b@x.com\",\"internal_user_id\":\"sub-b\"}\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn ignores_blank_lines() {
+        let parsed = parse_directory(
+            "\n\n{\"provider_user_id\":\"a@x.com\",\"internal_user_id\":\"sub-a\"}\n\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 1);
+    }
+
+    #[test]
+    fn rejects_a_malformed_line() {
+        let result = parse_directory("{\"provider_user_id\":\"a@x.com\"\n");
+        assert!(result.is_err());
+    }
 }

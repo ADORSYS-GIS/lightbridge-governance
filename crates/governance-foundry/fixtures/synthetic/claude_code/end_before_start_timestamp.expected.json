@@ -1,0 +1,3 @@
+{
+  "err": "invalid span duration: end 1706000000000000000 is not after start 1706000004200000000 (or the subtraction overflowed)"
+}

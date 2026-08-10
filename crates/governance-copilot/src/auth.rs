@@ -65,20 +65,26 @@ impl<'c> AppAuth<'c> {
     async fn get(&self, url: &str, bearer: &RawSecret) -> Result<(u16, serde_json::Value)> {
         let resp = self
             .client
-            .inner()
-            .get(url)
-            .bearer_auth(bearer.as_ref())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", crate::API_VERSION)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?;
+            .send_with_retry(|| {
+                self.client
+                    .inner()
+                    .get(url)
+                    .bearer_auth(bearer.as_ref())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", crate::API_VERSION)
+            })
+            .await?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(CopilotError::Transport)?;
-        // Surface the real failure instead of a parse error when GitHub (or a
-        // proxy) answers 4xx/5xx with a non-JSON body -- e.g. the plain-text
-        // 403 "Request forbidden... User-Agent" page. Losing the body behind
-        // "expected value at line 2 column 1" made a config bug unreadable.
+        // `CopilotError::transport`, never the `Transport` variant directly:
+        // reqwest's `Error` Display embeds the request URL, which on the
+        // download path is the short-lived SIGNED URL (AGENTS.md: never log a
+        // signed URL). The constructor strips it via `without_url()`.
+        let text = resp.text().await.map_err(CopilotError::transport)?;
+        // A 200 whose body is not JSON is a genuinely unexpected shape. A
+        // 4xx/5xx with a non-JSON body (e.g. GitHub's plain-text "Request
+        // forbidden... User-Agent" page) is reported by status only -- never
+        // echo a response body into an error (AGENTS.md: never log a request/
+        // response body; `CopilotError::github` is built to take no body).
         match serde_json::from_str(&text) {
             Ok(json) => Ok((status, json)),
             Err(e) if status == 200 => {
@@ -87,7 +93,7 @@ impl<'c> AppAuth<'c> {
             Err(_) => Err(CopilotError::github(
                 kind_for(url),
                 status,
-                text.trim().chars().take(300).collect::<String>(),
+                "unparseable (non-JSON) error body".to_owned(),
             )),
         }
     }
@@ -96,9 +102,8 @@ impl<'c> AppAuth<'c> {
     /// GitHub treats org logins).
     async fn installation_id(&self, org: &str) -> Result<String> {
         let jwt = RawSecret::new(self.app_jwt()?);
-        let (status, json) = self
-            .get("https://api.github.com/app/installations", &jwt)
-            .await?;
+        let url = format!("{}/app/installations", self.client.api_base());
+        let (status, json) = self.get(&url, &jwt).await?;
         if status != 200 {
             return Err(CopilotError::github(
                 "app/installations",
@@ -130,20 +135,23 @@ impl<'c> AppAuth<'c> {
     pub async fn token_for_org(&self, org: &str) -> Result<RawSecret> {
         let id = self.installation_id(org).await?;
         let jwt = RawSecret::new(self.app_jwt()?);
+        let url = format!(
+            "{}/app/installations/{id}/access_tokens",
+            self.client.api_base()
+        );
         let resp = self
             .client
-            .inner()
-            .post(format!(
-                "https://api.github.com/app/installations/{id}/access_tokens"
-            ))
-            .bearer_auth(jwt.as_ref())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", crate::API_VERSION)
-            .send()
-            .await
-            .map_err(CopilotError::Transport)?;
+            .send_with_retry(|| {
+                self.client
+                    .inner()
+                    .post(&url)
+                    .bearer_auth(jwt.as_ref())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", crate::API_VERSION)
+            })
+            .await?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(CopilotError::Transport)?;
+        let text = resp.text().await.map_err(CopilotError::transport)?;
         let json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| CopilotError::Token(format!("token response: {e}")))?;
         if status != 201 {

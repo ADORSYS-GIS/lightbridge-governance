@@ -88,6 +88,80 @@ identical — Kubernetes defaults `optional` to `false` (required) when it's abs
 you're adding a fourth `secretKeyRef`, leave the field out; don't add `optional: false` and
 break `helm lint`.
 
+## `copilotOtel`: a dedicated OpenTelemetryCollector, and what's unverified about it
+
+`copilotOtel.enabled` (default `true`) renders an `opentelemetry.io/v1beta1` `OpenTelemetryCollector`
+CR (`templates/otelcollector.yaml`) that turns copilot-sync's one-shot OTLP push into something
+Alloy can scrape — ADR-0007 is explicit that "a CronJob pod that exits cannot be scraped", so this
+collector receives the push on `:4317` and re-exposes it via a prometheus exporter that a
+`ServiceMonitor` (`templates/servicemonitor-copilot-otel.yaml`) points Alloy at. It requires the
+OpenTelemetry Operator on the cluster; this chart cannot verify that at render time.
+
+Two things here are **not** verified against a live cluster (neither this session nor the one that
+wrote this chart has one):
+
+- **The generated Service's name and labels.** The `ServiceMonitor`'s selector was built by reading
+  the OpenTelemetry Operator's own source (`internal/naming`, `internal/manifests/collector/service.go`,
+  `internal/manifests/manifestutils/labels.go`) rather than guessed — see the long comment at the top
+  of `templates/servicemonitor-copilot-otel.yaml` for the exact functions read and the reasoning.
+  Confidence is high (this is source, not a blog post, and the naming scheme has been stable in the
+  operator for a long time) but not confirmed against whichever operator version is actually
+  installed here.
+- **`readOnlyRootFilesystem: true` / `runAsNonRoot: true` on the collector pod**
+  (`templates/otelcollector.yaml`) assume the `otlp receiver -> resource processor -> prometheus
+  exporter` pipeline needs no writable path and that the upstream `otel/opentelemetry-collector`
+  image bakes in a non-root user. Confirm against a real pod before relying on it.
+
+Toggle it off and the collector, its `ServiceMonitor` and its `CiliumNetworkPolicy`
+(`templates/ciliumnetworkpolicy-copilot-otel.yaml`) all disappear together, and
+`templates/configmap-otlp.yaml` falls back to the manual `copilot.otlp.host` override (empty by
+default) instead of continuing to point at a Service that no longer exists:
+
+```bash
+helm template charts/lightbridge-governance --set copilotOtel.enabled=false
+```
+
+## `grafanaDashboard`: a `GrafanaDashboard` CR, and what's unverified about it
+
+`grafanaDashboard.enabled` (default `true`) renders a `grafana.integreatly.org/v1beta1`
+`GrafanaDashboard` CR (`templates/grafanadashboard.yaml`) embedding
+`dashboards/copilot-connector.json` — the Grafana Operator's own resource for shipping a
+dashboard, matching ADR-0003's precedent (ai-helm ADR-0063's read-only Postgres
+`GrafanaDatasource`) rather than a sidecar-labelled ConfigMap.
+
+Two datasource UIDs (`grafanaDashboard.datasources.postgresUid`/`prometheusUid`) are
+substituted into the dashboard JSON's `__DS_POSTGRES__`/`__DS_PROMETHEUS__` placeholder
+tokens at `helm template` time — see that template's header comment for why this was
+chosen over the operator's own `spec.datasources` mapping field, and for the two distinct
+"wrong value" vs. "wrong token" failure modes. The template `fail`s the render (rather
+than shipping silently) if either contracted token, or anything shaped like an
+unrecognized `__DS_..._..__` token, survives substitution — both guards were verified by
+deliberately breaking the substitution and confirming the render fails for the reason
+predicted, then restoring it.
+
+Two things here are **not** verified against a live cluster:
+
+- **The `apiVersion`/`kind`/`spec.json` shape.** Confirmed via context7 (`/grafana/grafana-operator`)
+  against the operator's own docs and its `grafanadashboards` CRD directly — high confidence on the
+  schema, not confirmed against whichever operator version is actually installed here.
+- **`instanceSelector` (`dashboards: "grafana"` by default).** Must match the labels on the
+  deployed `Grafana` CR, which lives in ai-helm and which this chart cannot see. Wrong labels
+  don't error — the CR applies cleanly and the operator simply never selects it.
+- **`grafanaDashboard.datasources.prometheusUid` (`mimir` by default).** Not recorded anywhere
+  in this repo, unlike the Postgres UID (`governance`, pinned by ADR-0003). A wrong value doesn't
+  fail to render either — every Prometheus-backed panel silently shows "no data", indistinguishable
+  from a real outage.
+
+Toggle it off and the resource disappears cleanly:
+
+```bash
+helm template charts/lightbridge-governance --set grafanaDashboard.enabled=false
+```
+
+`dashboards/copilot-connector.json` in this chart is currently a **placeholder** (a minimal
+valid dashboard exercising both substitution tokens) written so this template has something
+real to render and verify against — it must be overwritten with the actual dashboard.
+
 ## `/metrics`, `/livez`, `/readyz` are real but `/metrics` is empty
 
 The API server's `/metrics` endpoint exists (added alongside this chart, since a

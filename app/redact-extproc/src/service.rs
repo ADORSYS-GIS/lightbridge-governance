@@ -135,6 +135,14 @@ struct ResponseState {
     /// used in [`ResponseBodyMode::Sse`].
     utf8_carry: Vec<u8>,
     mode: ResponseBodyMode,
+    /// Header VALUES only (never a body), captured purely for diagnostics on
+    /// a `handle_buffered_response_chunk` JSON-parse failure -- see that
+    /// function's own comment on why a body snippet must never be logged
+    /// (AGENTS.md: never log a request/response body) even though these two
+    /// headers alone are usually enough to tell "this was compressed" from
+    /// "this genuinely isn't JSON" apart.
+    content_type: Option<String>,
+    content_encoding: Option<String>,
 }
 
 impl ResponseState {
@@ -146,6 +154,8 @@ impl ResponseState {
             // Safe default until (or unless) the response headers say
             // otherwise — see the module doc's "Buffered" bullet.
             mode: ResponseBodyMode::Buffered(Vec::new()),
+            content_type: None,
+            content_encoding: None,
         }
     }
 
@@ -153,23 +163,41 @@ impl ResponseState {
     /// explicit `text/event-stream` `Content-Type` selects
     /// [`ResponseBodyMode::Sse`]; a missing header, or any other value,
     /// leaves the [`ResponseBodyMode::Buffered`] default from [`Self::new`]
-    /// in place.
+    /// in place. Also captures `Content-Type`/`Content-Encoding` verbatim
+    /// into [`Self::content_type`]/[`Self::content_encoding`] regardless of
+    /// which mode is selected -- see those fields' own doc.
     ///
     /// Header keys arrive lower-cased already (Envoy's guarantee, see
     /// `HttpHeaders::headers`'s doc), but the value is matched
     /// case-insensitively and by prefix (`; charset=utf-8` and similar
     /// parameters are common) rather than relying on that.
     fn set_mode_from_headers(&mut self, headers: &HttpHeaders) {
-        let is_sse = headers.headers.as_ref().is_some_and(|hm| {
-            hm.headers.iter().any(|h| {
-                h.key.eq_ignore_ascii_case("content-type")
-                    && h.value
-                        .to_ascii_lowercase()
-                        .starts_with("text/event-stream")
-            })
+        let Some(hm) = headers.headers.as_ref() else {
+            return;
+        };
+        let hdr_val = |h: &HeaderValue| -> String {
+            if !h.value.is_empty() {
+                h.value.clone()
+            } else {
+                String::from_utf8_lossy(&h.raw_value).into_owned()
+            }
+        };
+        let is_sse = hm.headers.iter().any(|h| {
+            h.key.eq_ignore_ascii_case("content-type")
+                && hdr_val(h)
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
         });
         if is_sse {
             self.mode = ResponseBodyMode::Sse;
+        }
+        for h in &hm.headers {
+            let val = hdr_val(h);
+            if h.key.eq_ignore_ascii_case("content-type") {
+                self.content_type = Some(val);
+            } else if h.key.eq_ignore_ascii_case("content-encoding") {
+                self.content_encoding = Some(val);
+            }
         }
     }
 }
@@ -250,6 +278,22 @@ fn dispatch(
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
             }
+            // DIAGNOSTIC: log response headers to verify Envoy sends them.
+            // HeaderValue can carry value in `value` (string) or `raw_value`
+            // (bytes). EG-generated envoy_grpc config populates both. Check
+            // both to be safe across Envoy versions.
+            if let Some(hm) = &headers.headers {
+                for h in &hm.headers {
+                    let val = if !h.value.is_empty() {
+                        &h.value
+                    } else {
+                        std::str::from_utf8(&h.raw_value).unwrap_or("(empty)")
+                    };
+                    tracing::info!(key = %h.key, value = %val, "ResponseHeader");
+                }
+            } else {
+                tracing::info!("ResponseHeaders received but headers field is None");
+            }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
             // `ResponseState::set_mode_from_headers`. Reachable for both the
@@ -329,6 +373,7 @@ fn continue_headers(dir: Direction) -> ProcessingResponse {
 
 /// Scans the whole (buffered) request body and decides what to tell Envoy.
 fn handle_request_body(engine: &Engine, metrics: &Metrics, raw: &[u8]) -> ProcessingResponse {
+    let original_length = raw.len();
     let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(raw) else {
         return refuse_or_block(
             Direction::Request,
@@ -360,9 +405,12 @@ fn handle_request_body(engine: &Engine, metrics: &Metrics, raw: &[u8]) -> Proces
                     "request body had no recognised text fields; forwarding uninspected"
                 );
             }
-            body_response(
+            // Pass original_length so body_response can update Content-Length
+            // if the body was redacted (length changed).
+            body_response_with_original_length(
                 Direction::Request,
                 serde_json::to_vec(&json).unwrap_or_else(|_| raw.to_vec()),
+                Some(original_length),
             )
         }
         Err(e) => refuse_or_block(
@@ -435,7 +483,15 @@ fn handle_response_chunk(
     end_of_stream: bool,
 ) -> ProcessingResponse {
     if let ResponseBodyMode::Buffered(buf) = &mut state.mode {
-        return handle_buffered_response_chunk(engine, metrics, buf, chunk, end_of_stream);
+        return handle_buffered_response_chunk(
+            engine,
+            metrics,
+            buf,
+            chunk,
+            end_of_stream,
+            state.content_type.as_deref(),
+            state.content_encoding.as_deref(),
+        );
     }
 
     let ResponseState {
@@ -561,6 +617,8 @@ fn handle_buffered_response_chunk(
     buf: &mut Vec<u8>,
     chunk: &[u8],
     end_of_stream: bool,
+    content_type: Option<&str>,
+    content_encoding: Option<&str>,
 ) -> ProcessingResponse {
     if buf.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
         tracing::warn!(
@@ -581,13 +639,36 @@ fn handle_buffered_response_chunk(
         return body_response(Direction::Response, Vec::new());
     }
 
-    let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(buf) else {
-        return refuse_or_block(
-            Direction::Response,
-            engine,
-            metrics,
-            "response body is not JSON",
-        );
+    let mut json = match serde_json::from_slice::<serde_json::Value>(buf) {
+        Ok(json) => json,
+        Err(e) => {
+            // Diagnostics only, deliberately narrow: header VALUES, byte
+            // count, a gzip-magic-byte check, and serde_json's own error
+            // (position/expected-token, never the offending bytes) -- never
+            // the body itself, or even a snippet of it. AGENTS.md is
+            // explicit that a request/response body is never logged, and
+            // this is exactly the component that exists to keep PII/secrets
+            // in a response from leaking anywhere they shouldn't -- logging
+            // a "sample" of the very body this filter couldn't clear would
+            // defeat its own purpose. This is deliberately enough to
+            // distinguish "the response was compressed and we're trying to
+            // parse ciphertext-looking bytes as JSON" from "the response
+            // genuinely isn't JSON" without ever needing the content itself.
+            tracing::error!(
+                content_type,
+                content_encoding,
+                body_len = buf.len(),
+                looks_gzip = buf.starts_with(&[0x1f, 0x8b]),
+                parse_error = %e,
+                "buffered response body did not parse as JSON"
+            );
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                "response body is not JSON",
+            );
+        }
     };
 
     match scan_response(engine, &mut json) {
@@ -606,9 +687,10 @@ fn handle_buffered_response_chunk(
                     ),
                 );
             }
-            body_response(
+            body_response_with_original_length(
                 Direction::Response,
                 serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone()),
+                Some(buf.len()),
             )
         }
         Err(e) => refuse_or_block(
@@ -694,8 +776,43 @@ fn immediate_response(
 }
 
 fn body_response(dir: Direction, bytes: Vec<u8>) -> ProcessingResponse {
+    body_response_with_original_length(dir, bytes, None)
+}
+
+/// Builds a body response with optional Content-Length header mutation.
+///
+/// When `original_length` is `Some(old_len)` and `bytes.len()` (the new length)
+/// differs from `old_len`, this includes a HeaderMutation that **removes** the
+/// Content-Length header. Envoy v1.32 strips Content-Length to an empty value
+/// when a body mutation changes the length, and an empty Content-Length causes
+/// HTTP/2 upstreams to RST_STREAM with PROTOCOL_ERROR and HTTP/1.1 upstreams to
+/// misframe the body. Removing the header entirely lets Envoy frame the
+/// mutated body correctly: chunked transfer encoding over HTTP/1.1, DATA frames
+/// over HTTP/2 — neither of which needs Content-Length.
+///
+/// Setting Content-Length to the new value (via `OverwriteIfExistsOrAdd`) was
+/// the first attempt, but Envoy v1.32's ext_proc filter empties it *after*
+/// applying the header mutation, so the overwrite never reaches the wire. The
+/// `allow_content_length_header` config field that would prevent this was
+/// added in Envoy v1.33+ and does not exist in v1.32.
+fn body_response_with_original_length(
+    dir: Direction,
+    bytes: Vec<u8>,
+    original_length: Option<usize>,
+) -> ProcessingResponse {
+    let header_mutation = original_length.and_then(|old_len| {
+        if bytes.len() == old_len {
+            return None;
+        }
+        Some(HeaderMutation {
+            set_headers: Vec::new(),
+            remove_headers: vec!["content-length".into()],
+        })
+    });
+
     let common = CommonResponse {
         status: ResponseStatus::Continue as i32,
+        header_mutation,
         body_mutation: Some(BodyMutation {
             mutation: Some(body_mutation::Mutation::Body(bytes)),
         }),
@@ -1057,6 +1174,73 @@ mod tests {
         assert!(
             matches!(state.mode, ResponseBodyMode::Sse),
             "an SSE Content-Type on the bodyless path must still resolve Sse mode, not silently default to Buffered"
+        );
+    }
+
+    /// When a body mutation changes the body length, the Content-Length header
+    /// must be REMOVED, not overwritten. Envoy v1.32 strips Content-Length to
+    /// an empty value after applying a header mutation that sets it, and an
+    /// empty Content-Length causes HTTP/2 upstreams to RST_STREAM with
+    /// PROTOCOL_ERROR (reproduced live 2026-08-07: a request body redacted
+    /// 92 -> 86 bytes reached the upstream with Content-Length: "" and was
+    /// reset). Removing the header entirely lets Envoy frame the mutated body
+    /// via chunked encoding (HTTP/1.1) or DATA frames (HTTP/2), neither of
+    /// which requires Content-Length. The `allow_content_length_header` field
+    /// that would preserve a set Content-Length was added in Envoy v1.33+ and
+    /// does not exist in v1.32.
+    #[test]
+    fn content_length_removed_not_overwritten_when_length_changes() {
+        // A mutation that shrinks the body 90 -> 84 bytes (as redaction does).
+        let mut bytes = vec![b'x'; 84];
+        bytes.extend_from_slice(b"tail");
+        let resp = body_response_with_original_length(Direction::Request, bytes, Some(90));
+
+        let Some(Resp::RequestBody(BodyResponse {
+            response:
+                Some(CommonResponse {
+                    header_mutation:
+                        Some(HeaderMutation {
+                            remove_headers,
+                            set_headers,
+                            ..
+                        }),
+                    ..
+                }),
+        })) = &resp.response
+        else {
+            panic!("expected a RequestBody response with a header mutation, got {resp:?}");
+        };
+
+        assert!(
+            remove_headers
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case("content-length")),
+            "Content-Length must be in remove_headers when the body length changed: {remove_headers:?}"
+        );
+        assert!(
+            set_headers.is_empty(),
+            "no headers should be set when the body length changed (removal only): {set_headers:?}"
+        );
+    }
+
+    /// When the body length does NOT change, no Content-Length mutation is
+    /// needed — the original header is still correct.
+    #[test]
+    fn no_content_length_mutation_when_length_unchanged() {
+        let bytes = vec![b'x'; 90];
+        let resp = body_response_with_original_length(Direction::Request, bytes, Some(90));
+
+        let Some(Resp::RequestBody(BodyResponse {
+            response: Some(CommonResponse {
+                header_mutation, ..
+            }),
+        })) = &resp.response
+        else {
+            panic!("expected a RequestBody response, got {resp:?}");
+        };
+        assert!(
+            header_mutation.is_none(),
+            "no header mutation expected when body length is unchanged"
         );
     }
 }
