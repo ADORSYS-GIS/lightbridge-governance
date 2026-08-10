@@ -279,7 +279,27 @@ fn dispatch(
     window: usize,
 ) -> Option<ProcessingResponse> {
     match (req, &mut *phase) {
-        (Req::RequestHeaders(_), _) => Some(continue_headers(Direction::Request)),
+        (Req::RequestHeaders(_), _) => {
+            // Remove Accept-Encoding so the upstream returns uncompressed
+            // responses (no gzip). This lets us stream and redact the response
+            // body without needing to decompress/re-compress it. The client's
+            // own Accept-Encoding is handled by Envoy's external-to-internal
+            // split: the downstream client gets its compressed stream, but the
+            // upstream sees our stripped header.
+            Some(ProcessingResponse {
+                response: Some(Resp::RequestHeaders(HeadersResponse {
+                    response: Some(CommonResponse {
+                        status: ResponseStatus::Continue as i32,
+                        header_mutation: Some(HeaderMutation {
+                            remove_headers: vec!["accept-encoding".into()],
+                            set_headers: Vec::new(),
+                        }),
+                        ..Default::default()
+                    }),
+                })),
+                ..Default::default()
+            })
+        }
 
         (Req::ResponseHeaders(headers), phase) => {
             // A bodyless request (GET, health checks, ...) never gets a
