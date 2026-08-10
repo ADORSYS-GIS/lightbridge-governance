@@ -51,29 +51,19 @@ spec:
   # (extensions/extensions.go has no retry), so any egress gap here is fatal,
   # not degraded.
   #
-  # CORRECTION (lightbridge-governance#88): the first fix (#85) diagnosed
-  # this as a pod-startup race in Cilium's FQDN/DNS-proxy wiring. That
-  # diagnosis was WRONG -- reproduced the same 100% failure on a second node
-  # with the endpoint already `ready` and 33+ minutes old, `cilium bpf policy
-  # get` showing the egress rule correctly compiled, and 0 bytes/0 packets
-  # EVER recorded against it despite dozens of real attempts.
-  #
-  # SECOND CORRECTION: #88's `toCIDR` replacement (egress straight to the
-  # issuer's external LoadBalancer IP) looked right -- same evidence,
-  # cleanly compiled, correctly enforced -- and ALSO didn't work, still 100%
-  # timeout after merging and rolling out. The common factor across both
-  # failed rules: both were egress to an EXTERNAL destination. An
-  # in-cluster `toEndpoints` rule (Alloy, on this same policy) worked
-  # instantly for the identical CNP-restricted endpoint at the same time.
-  # See ciliumnetworkpolicy-ai-cli-otel.yaml for the full writeup -- the
-  # actual fix routes to Traefik's in-cluster ClusterIP instead of external
-  # egress at all, via the `hostAliases` entry below plus a `toEndpoints`
-  # rule matching Traefik's pods.
+  # Four separate egress-rule fixes were tried here and all four failed
+  # identically in production -- see ciliumnetworkpolicy-ai-cli-otel.yaml
+  # for the full writeup. The actual, live-proven fix lives in that file:
+  # this collector's CiliumNetworkPolicy has no `egress:` section at all.
+  # Nothing here needs to route around a specific destination (no
+  # `hostAliases`, no Traefik-ClusterIP indirection) because the problem was
+  # never the destination -- it was any Cilium egress rule being present.
   #
   # This init container stays anyway, as defense-in-depth: it turns
   # "collector silently crash-loops forever" into a clear "OIDC discovery
   # still unreachable" log line before the main container ever gets a
-  # single-shot, no-retry attempt, for whatever future cause.
+  # single-shot, no-retry attempt, for whatever future cause (a real
+  # transient DNS hiccup, Traefik being briefly down, etc.).
   initContainers:
     - name: wait-for-oidc-issuer
       image: {{ .Values.aiCliOtel.initContainerImage | quote }}
@@ -105,18 +95,6 @@ spec:
         runAsGroup: 101
         capabilities:
           drop: [ALL]
-  # Resolves the OIDC issuer hostname to Traefik's in-cluster ClusterIP
-  # instead of its external LoadBalancer IP -- see the CiliumNetworkPolicy's
-  # comment for why (external egress from this policy-enabled endpoint is
-  # empirically broken on this cluster; in-cluster Service egress isn't).
-  # Applies pod-wide, so the init container's own OIDC-discovery check above
-  # takes the same path as the collector's -- both succeed or fail together,
-  # rather than the init container passing against one destination while the
-  # collector's own attempt goes to another.
-  hostAliases:
-    - ip: {{ .Values.aiCliOtel.oidc.traefikClusterIP | quote }}
-      hostnames:
-        - {{ .Values.aiCliOtel.oidc.issuerHost | quote }}
   ports:
     - name: otlp-http
       port: 4318
