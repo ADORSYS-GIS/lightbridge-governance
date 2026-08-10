@@ -286,6 +286,7 @@ fn dispatch(
             // own Accept-Encoding is handled by Envoy's external-to-internal
             // split: the downstream client gets its compressed stream, but the
             // upstream sees our stripped header.
+            tracing::debug!("stripped Accept-Encoding from upstream request");
             Some(ProcessingResponse {
                 response: Some(Resp::RequestHeaders(HeadersResponse {
                     response: Some(CommonResponse {
@@ -314,21 +315,29 @@ fn dispatch(
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
             }
-            // DIAGNOSTIC: log response headers to verify Envoy sends them.
-            // HeaderValue can carry value in `value` (string) or `raw_value`
-            // (bytes). EG-generated envoy_grpc config populates both. Check
-            // both to be safe across Envoy versions.
+            // Log the response Content-Type and Content-Encoding for
+            // debugging the upstream response format. HeaderValue can carry
+            // the value in `value` (string) or `raw_value` (bytes); check
+            // both.
             if let Some(hm) = &headers.headers {
-                for h in &hm.headers {
-                    let val = if !h.value.is_empty() {
-                        &h.value
-                    } else {
-                        std::str::from_utf8(&h.raw_value).unwrap_or("(empty)")
-                    };
-                    tracing::info!(key = %h.key, value = %val, "ResponseHeader");
-                }
-            } else {
-                tracing::info!("ResponseHeaders received but headers field is None");
+                let hdr_val = |k: &str| -> String {
+                    hm.headers
+                        .iter()
+                        .find(|h| h.key.eq_ignore_ascii_case(k))
+                        .map(|h| {
+                            if !h.value.is_empty() {
+                                h.value.clone()
+                            } else {
+                                String::from_utf8_lossy(&h.raw_value).into_owned()
+                            }
+                        })
+                        .unwrap_or_default()
+                };
+                tracing::info!(
+                    content_type = %hdr_val("content-type"),
+                    content_encoding = %hdr_val("content-encoding"),
+                    "upstream response headers"
+                );
             }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
