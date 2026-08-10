@@ -80,14 +80,21 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         // them -- the same reasoning as the `apiKeyHelper` line).
         headers_helper: Some(format!(
             "{} --issuer {} --client-id {} otel-headers",
-            std::env::current_exe()
-                .ok()
-                .and_then(|path| path.to_str().map(str::to_owned))
-                .unwrap_or_else(|| "governance-auth".to_owned()),
+            otel::binary_path(),
             config.issuer,
             config.client_id,
         )),
         headers_helper_debounce_ms: config.otel_headers_debounce_ms,
+        // Same absolute-path rule as the helper above, and for a sharper
+        // reason: Codex spawns this one WITHOUT a shell, so a bare name
+        // cannot resolve at all. See `otel::OtelSettings::token_command`.
+        token_command: format!(
+            "{} --issuer {} --client-id {} token",
+            otel::binary_path(),
+            config.issuer,
+            config.client_id,
+        ),
+        gateway_url: config.gateway_url.clone(),
     };
 
     let outcomes = otel::configure_all(&home, &settings)?;

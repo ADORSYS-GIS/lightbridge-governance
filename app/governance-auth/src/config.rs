@@ -78,6 +78,18 @@ pub struct OauthConfigArgs {
     #[arg(long, env = "GOVERNANCE_AUTH_OTEL_TOKEN", global = true)]
     otel_token: Option<String>,
 
+    /// Base URL of the AI gateway, e.g. `https://api.ai.camer.digital`. When
+    /// given, `configure` also writes the INFERENCE wiring (Claude Code's
+    /// `ANTHROPIC_BASE_URL` + `apiKeyHelper`, Codex's provider block) rather
+    /// than telemetry alone -- the "no bash script required" half of ADR-0010.
+    /// Left unset, `configure` touches telemetry only, exactly as before.
+    ///
+    /// The per-client paths underneath it are this gateway's (Envoy AI
+    /// Gateway) layout, both verified live: `<gateway>/anthropic/v1/messages`
+    /// and `<gateway>/v1/chat/completions` each return 200.
+    #[arg(long, env = "GOVERNANCE_AUTH_GATEWAY_URL", value_parser = parse_issuer, global = true)]
+    gateway_url: Option<String>,
+
     /// How often Claude Code re-runs `otel-headers` for fresh OTLP headers.
     /// Default 240s, deliberately under Keycloak's 300s access-token
     /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
@@ -109,6 +121,7 @@ impl OauthConfigArgs {
             audience: self.audience,
             otel_endpoint: self.otel_endpoint,
             otel_token: self.otel_token,
+            gateway_url: self.gateway_url,
             otel_headers_debounce_ms: self.otel_headers_debounce_ms,
         })
     }
@@ -128,6 +141,7 @@ pub struct OauthConfig {
     pub audience: Option<String>,
     pub otel_endpoint: Option<String>,
     pub otel_token: Option<String>,
+    pub gateway_url: Option<String>,
     pub otel_headers_debounce_ms: u64,
 }
 

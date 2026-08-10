@@ -5,8 +5,9 @@ Every "no" here was **measured against the real client or the real
 endpoint**, not inferred from documentation — several of them contradict what
 the docs imply.
 
-Last verified: 2026-08-10, against Claude Code 2.1.223, codex-cli 0.146.1,
-and `api.ai.camer.digital`. The opencode column is read from the org's own
+Last verified: 2026-08-11, against Claude Code 2.1.223, codex-cli 0.146.1,
+and `api.ai.camer.digital`, re-run end-to-end inside the `lgb-claude` /
+`lgb-codex` multipass VMs. The opencode column is read from the org's own
 working configuration (`ai-helm` `charts/librechat-opencode-wellknown/
 values.yaml`), not from opencode's docs — it is already in production use
 against this gateway.
@@ -16,7 +17,8 @@ against this gateway.
 | Capability | Claude Code | Codex CLI | opencode | GitHub Copilot (VS Code) |
 |---|---|---|---|---|
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
-| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ✅ `auth.command`, `refresh_interval_ms` | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
+| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
+| **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url` (block is inert) | ❌ not configured here | ⚠️ telemetry only |
 | **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ `github.copilot.chat.otel.otlpEndpoint` |
 | **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ❌ static only |
 | **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | ⚠️ env var only — no setting exists |
@@ -27,17 +29,53 @@ against this gateway.
 
 ## The caveats, in order of how much they bite
 
+### A command written into a config must be an ABSOLUTE path
+
+Codex spawns `[model_providers.*.auth] command` **itself, not through a
+shell**, so it never inherits the login shell's `PATH`. With
+`governance-auth` installed to `~/.local/bin` (the documented location), a
+bare command name fails:
+
+```
+ERROR codex_login::auth::manager: Failed to resolve external auth: provider auth
+command `governance-auth --issuer … token` failed to start:
+No such file or directory (os error 2)
+```
+
+Codex then proceeds **unauthenticated** rather than stopping, so this reads
+as a confusing downstream API error, not as "the helper never ran."
+
+Claude Code resolves a bare name fine — it goes through a shell — so this
+trap is completely invisible if you only test that client. `governance-auth`
+now builds every command it writes from `otel::binary_path()`
+(`std::env::current_exe()`), pinned by two tests: one on the writer, one on
+`binary_path` itself, because the writer test alone still passes if
+`binary_path` regresses to its bare-name fallback.
+
 ### Codex cannot reach this gateway at all
 
 Not an auth or config problem. codex-cli 0.146.1 **requires**
 `wire_api = "responses"` and no longer accepts `"chat"` — it refuses to load
-a config containing it. This gateway (Envoy AI Gateway) implements
-`/v1/chat/completions` and `/anthropic/v1/messages`; `/v1/responses` is a
-confirmed 404, and the Responses API is not well supported upstream.
+a config containing it.
 
-So the provider block is written but **inert**. Nothing in `governance-auth`
-can fix this; it needs either gateway support for `/v1/responses` or a Codex
-version that accepts chat-completions again.
+Measured 2026-08-11, and the failure is split across two layers:
+
+| Request | Result |
+|---|---|
+| `POST /v1/chat/completions` | **200** |
+| `POST /v1/responses` (well-formed) | **404** `{"detail":"Not Found"}` — from **upstream** |
+| `POST /v1/responses` (Codex's own body) | **400** `malformed request: … unknown tool type` — from **Envoy** |
+
+So Envoy AI Gateway *does* route `/v1/responses` and tries to translate it
+(hence its own 400 on the tool schema), but the **upstream model backend
+doesn't implement it** and 404s. Earlier notes here said "the gateway 404s
+it"; that's imprecise — the gateway routes it, the upstream refuses it. The
+practical outcome is unchanged: Codex inference is blocked.
+
+So the provider block is written but **inert**, and `governance-auth` marks
+it as such with an inline comment when it writes one. Nothing in
+`governance-auth` can fix this; it needs either upstream support for
+`/v1/responses` or a Codex version that accepts chat-completions again.
 
 ### Codex's `otel.exporter` is a tagged enum, and getting it wrong bricks Codex
 
@@ -52,6 +90,27 @@ endpoint = "https://otel.ai.camer.digital"
 ```
 
 Pinned by a unit test (`codex_exporter_is_a_struct_variant_not_a_bare_string`).
+
+### `otelHeadersHelper` beats `OTEL_EXPORTER_OTLP_HEADERS` — the env var is ignored
+
+Measured 2026-08-11 in `lgb-claude`: with `otelHeadersHelper` present in
+`settings.json`, running Claude Code with `OTEL_EXPORTER_OTLP_HEADERS` set
+to a **valid** lightbridge-authz key still exported using the **helper's**
+credential — the collector logged
+`issuer: https://auth.verif.fyi/realms/camer-digital` for that run, i.e. the
+Keycloak token, and rejected it.
+
+Consequences, both load-bearing:
+
+- The static-token workaround **cannot** rescue Claude Code telemetry while
+  the helper is configured. The helper must be *removed* from
+  `settings.json` for a static key to take effect — an env var alone does
+  nothing. This constrains how [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+  can be fixed.
+- `governance-auth`'s existing "delete the static header when a helper is
+  set" behaviour is aligned with the client's real precedence, not merely
+  tidy — leaving both would be genuinely misleading, since the one you can
+  see in `env` is the one being ignored.
 
 ### VS Code Copilot has no setting for OTLP auth headers
 
@@ -77,9 +136,25 @@ is *larger* than reality, so auto-compact would let a session run past what
 the model actually accepts.
 
 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` does **not** fix this —
-verified live, the warning still prints. Discovery populates the `/model`
-picker; the window comes from `modelOverrides` or
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+verified live again 2026-08-11, the warning still prints. Discovery
+populates the `/model` picker; the window comes from `modelOverrides` or
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Claude Code 2.1.223 also suggests a
+`[1m]` model-name suffix and
+`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` in the warning
+itself; neither is written here, for the same reason as before — the real
+window belongs to the gateway, not hard-coded into a binary.
+
+⚠️ **You must pass `--model` explicitly.** Claude Code's built-in default
+(`claude-opus-5[1m]`) does not exist on this gateway, and the failure is a
+hard stop, not a fallback:
+
+```
+There's an issue with the selected model (claude-opus-5[1m]).
+It may not exist or you may not have access to it.
+```
+
+`claude --model adorsys-coder -p "…"` works. Wiring `modelOverrides` from
+`GET /v1/models/info` would fix both this and the window assumption at once.
 
 ### opencode is the most complete client, and it is not configured here
 
@@ -147,12 +222,25 @@ binary where they would silently rot as models change.
 
 ## What each client is actually usable for today
 
-- **Claude Code — complete.** Inference and telemetry both work, both
-  credentials refresh, verified end-to-end against the live gateway.
+- **Claude Code — inference complete, telemetry blocked.** Re-verified
+  2026-08-11 in `lgb-claude`: an expired (22h old) session refreshed
+  silently, `claude -p` returned a real answer through the gateway, and a
+  direct `POST /anthropic/v1/messages` returned 200. **Telemetry 401s** —
+  `otel-headers` mints a Keycloak token while the collector validates
+  against lightbridge-authz
+  ([#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84),
+  now confirmed live rather than predicted; the collector logs the wrong
+  issuer by name). The collector itself is healthy: the same push with a
+  lightbridge-authz key returns 200 and reaches Alloy.
 - **opencode — inference complete, telemetry impossible.** Already in
   production with its own OAuth2 device-code refresh and its own
   `/v1/models/info` consumption; OTEL would need a plugin.
-- **Codex — telemetry config only.** Inference blocked on `/v1/responses`.
+- **Codex — telemetry config only.** Inference blocked upstream on
+  `/v1/responses`. Its telemetry path is static-token, so unlike Claude
+  Code it is *not* blocked by
+  [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) —
+  a lightbridge-authz key in `otel.exporter.otlp-http.headers` is accepted
+  by the collector today (verified: 200, span reached Alloy).
 - **VS Code Copilot — telemetry only**, and its auth needs a shell env var.
 
 The two clients that solved model metadata (opencode) and telemetry auth
