@@ -48,24 +48,24 @@ spec:
   # collector shipped it broken -- 0/2 replicas, 100% CrashLoopBackOff, every
   # single restart. The `oidc` extension makes exactly ONE OIDC-discovery
   # attempt on startup and crashes the whole process if it fails
-  # (extensions/extensions.go has no retry). Root-caused live, not guessed:
-  # a plain debug pod given only the labels this CR's CiliumNetworkPolicy
-  # selects timed out reaching the issuer on the SAME node where an
-  # unlabelled debug pod succeeded instantly -- so a freshly created pod's
-  # Cilium endpoint (the BPF program + FQDN/DNS-proxy wiring the `toFQDNs`
-  # egress rule below depends on) is not always fully realized the instant
-  # the container starts. `cilium endpoint get` on the real collector's
-  # endpoint showed the realized policy WAS already correct, and
-  # `cilium monitor` logged no explicit deny for this flow -- consistent
-  # with a startup race, not a wrong or missing rule. Because CrashLoopBackOff
-  # recreates the pod (a new Cilium endpoint) on every restart, the race
-  # re-triggers every single time -- a 100% failure rate, not an
-  # intermittent one.
+  # (extensions/extensions.go has no retry), so any egress gap here is fatal,
+  # not degraded.
   #
-  # Fix: block the collector from starting until something in the SAME pod
-  # network namespace has proven OIDC discovery is reachable, with retries.
-  # Cilium enforces at the endpoint (pod), not the container, so once this
-  # succeeds even once the collector's own single-shot attempt will too.
+  # CORRECTION (lightbridge-governance#88): the first fix (#85) diagnosed
+  # this as a pod-startup race in Cilium's FQDN/DNS-proxy wiring. That
+  # diagnosis was WRONG -- reproduced the same 100% failure on a second node
+  # with the endpoint already `ready` and 33+ minutes old, `cilium bpf policy
+  # get` showing the egress rule correctly compiled, and 0 bytes/0 packets
+  # EVER recorded against it despite dozens of real attempts. The actual
+  # cause was the CiliumNetworkPolicy's `toFQDNs` rule itself not working in
+  # this cluster -- see that policy's own template
+  # (ciliumnetworkpolicy-ai-cli-otel.yaml) for the full evidence and the
+  # `toCIDR` replacement, which is the real fix.
+  #
+  # This init container stays anyway, now as defense-in-depth rather than
+  # the fix: it turns "collector silently crash-loops forever" into a clear
+  # "OIDC discovery still unreachable" log line before the main container
+  # ever gets a single-shot, no-retry attempt, for whatever future cause.
   initContainers:
     - name: wait-for-oidc-issuer
       image: {{ .Values.aiCliOtel.initContainerImage | quote }}

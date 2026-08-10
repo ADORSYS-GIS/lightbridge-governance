@@ -76,12 +76,51 @@ spec:
               - matchPattern: "*"
     # ⚠️ The oidc extension fetches OIDC discovery + JWKS from the PUBLIC
     # issuer URL at startup and refreshes keys thereafter. Without egress to
-    # the world on 443 the extension fails to start and the collector never
-    # becomes Ready -- which presents as a broken collector, not as a network
-    # policy problem. `toFQDNs` keeps this narrow rather than opening egress
-    # generally; it requires the DNS rule above to be in place to work.
-    - toFQDNs:
-        - matchName: {{ .Values.aiCliOtel.oidc.issuerHost | quote }}
+    # it on 443 the extension fails to start and the collector never becomes
+    # Ready -- which presents as a broken collector, not as a network policy
+    # problem.
+    #
+    # ⚠️ NOT `toFQDNs`. That was the original shape here and it is EMPIRICALLY
+    # BROKEN in this cluster (lightbridge-governance#85/#87/#88 incident,
+    # 2026-08-10) -- root-caused live, not assumed: `cilium bpf policy get`
+    # showed the rule correctly compiled against the right per-node identity,
+    # `cilium fqdn cache list` showed DNS resolving correctly through the
+    # proxy, the DNS egress rule above (the same toEndpoints mechanism)
+    # demonstrably works, and every single connection attempt still timed
+    # out with ZERO bytes/packets ever recorded against that rule --
+    # reproduced on two different nodes, dozens of attempts, no drop verdict
+    # ever logged by `cilium monitor`. Whatever the underlying mechanism,
+    # `toFQDNs` enforcement does not work for this destination on this
+    # cluster's Cilium version/config today. Don't convert this back to
+    # `toFQDNs` without re-testing that root cause first -- it will silently
+    # reintroduce a 100%-reproducible outage, not a flaky one.
+    #
+    # `toCIDR` is a different, simpler Cilium primitive: a static CIDR-to-
+    # identity mapping compiled once, not the DNS-proxy-interception +
+    # per-response dynamic-identity machinery `toFQDNs` depends on -- and it
+    # works.
+    #
+    # Deliberately a plain static value, NOT a Helm `lookup` against
+    # Traefik's LoadBalancer Service for the "current" IP -- that was tried
+    # and reverted. `lookup` returns nil under a plain `helm template`
+    # even with a fully live, valid kubeconfig (verified directly against
+    # this cluster while writing this), and ArgoCD's Helm rendering has the
+    # same well-documented limitation, for the same reason ArgoCD needs a
+    # reproducible render: a chart that queries live cluster state at
+    # render time can't be diffed or cached deterministically. A `lookup`
+    # here would silently never fire and always fall through to whatever
+    # static default backed it -- strictly worse than just being honest
+    # that this is static, since it would look self-updating while never
+    # actually being self-updating.
+    #
+    # So: if `auth.ai.camer.digital` / `otel.ai.camer.digital`'s LoadBalancer
+    # IP ever changes (confirmed live 2026-08-10 via
+    # `kubectl get svc -n {{ .Values.aiCliOtel.ingress.traefikNamespace }} traefik`
+    # -- both hostnames resolve to the same Traefik LB), this value has to
+    # be updated by hand, in the same change that would already be touching
+    # DNS/ingress config for that IP move.
+    - toCIDR:
+        - {{ .Values.aiCliOtel.oidc.issuerCIDR | quote }}
       toPorts:
         - ports:
             - port: "443"

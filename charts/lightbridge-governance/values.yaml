@@ -453,11 +453,22 @@ aiCliOtel:
     issuerUrl: "https://auth.ai.camer.digital"
     # Must match the `aud` these API keys carry (authz's oauth2.signing.audience).
     audience: "lightbridge-api-key"
-    # Same host as issuerUrl, minus the scheme -- the CiliumNetworkPolicy needs
-    # it as a bare FQDN for the egress rule that lets the oidc extension fetch
-    # discovery/JWKS. Kept as its own key rather than parsed out of the URL,
-    # since Helm string-munging a URL is its own source of bugs.
-    issuerHost: "auth.ai.camer.digital"
+    # The CiliumNetworkPolicy's egress-to-the-issuer rule. Deliberately a
+    # static `toCIDR`, NOT `toFQDNs` -- see that template's comment
+    # (ciliumnetworkpolicy-ai-cli-otel.yaml) for the full incident writeup:
+    # `toFQDNs` is empirically broken for this destination in this cluster,
+    # and a Helm `lookup`-based "self-updating" CIDR was tried and reverted
+    # because `lookup` doesn't actually fire under this chart's real
+    # rendering path (plain `helm template`, and ArgoCD's Helm render has
+    # the same limitation) -- it would look dynamic while silently never
+    # being dynamic.
+    #
+    # So this is a plain static IP, confirmed live 2026-08-10 via
+    # `kubectl get svc -n traefik traefik`: the LoadBalancer's IPv4 VIP,
+    # the same one auth.ai.camer.digital and otel.ai.camer.digital both
+    # resolve to. If that LB IP ever changes, this needs updating by hand
+    # in the same change.
+    issuerCIDR: "46.225.40.134/32"
   ingress:
     enabled: true
     # Traefik, not the Envoy core-gateway: otel.<domain> already resolves to
