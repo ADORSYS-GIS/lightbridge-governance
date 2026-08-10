@@ -1,0 +1,105 @@
+name: Release governance-auth binaries
+
+# `governance-auth` is distributed to developer laptops, NOT bundled into the
+# server image (ADR-0010) -- so it needs its own asset build. `self-update`
+# consumes exactly what this publishes: a RAW binary per platform plus a
+# sibling `.sha256`. Both names are load-bearing; `app/governance-auth/src/
+# update.rs::asset_name` must stay in lockstep with the matrix below, or
+# self-update reports "no asset for your platform".
+on:
+  release:
+    types: [published]
+  # Manual runs let a release that was cut before this workflow existed (or
+  # one whose upload failed) be backfilled without re-tagging.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach assets to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Only this binary. The workspace also contains the server and the
+      # collector CLI, which are shipped as a container image instead --
+      # building them here would triple the job for artefacts nobody
+      # downloads from a release.
+      - name: Build
+        run: cargo build --release --locked --bin governance-auth --target ${{ matrix.target }}
+
+      - name: Stage asset and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="governance-auth-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/governance-auth" "$name"
+          # sha256sum's own format (`<hex>  <filename>`), which is what
+          # update.rs parses -- and what a developer can check by hand with
+          # `sha256sum -c`.
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$name" > "$name.sha256"
+          else
+            # macOS runners ship shasum, not sha256sum.
+            shasum -a 256 "$name" > "$name.sha256"
+          fi
+          # Refuse to upload a checksum that doesn't describe the binary next
+          # to it -- a mismatched pair would make every self-update fail
+          # closed, which is safe but wastes a release cycle to discover.
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c "$name.sha256"
+          else
+            shasum -a 256 -c "$name.sha256"
+          fi
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Routed through an env var and validated before use, rather than
+          # interpolated straight into the shell via `${{ }}` -- the
+          # workflow_dispatch `tag` input is supplied by whoever triggers the
+          # run, and a value containing shell metacharacters interpolated
+          # directly into `run:` is GitHub Actions' well-known script-
+          # injection class. `github.event.release.tag_name` doesn't need
+          # this (a release's own tag is already `refs/tags/`-safe), but one
+          # code path and one check covers both without a second exception.
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *[!A-Za-z0-9._-]*)
+              echo "refusing unsafe tag: $TAG" >&2
+              exit 1
+              ;;
+          esac
+          gh release upload "$TAG" \
+            "governance-auth-${{ matrix.target }}" \
+            "governance-auth-${{ matrix.target }}.sha256" \
+            --clobber --repo "${{ github.repository }}"

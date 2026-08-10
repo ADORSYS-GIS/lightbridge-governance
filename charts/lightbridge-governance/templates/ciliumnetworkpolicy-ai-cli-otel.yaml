@@ -1,0 +1,89 @@
+{{- if and .Values.aiCliOtel.enabled .Values.networkPolicy.enabled }}
+{{- /*
+Ingress/egress for the public AI-CLI OTLP collector in
+templates/otelcollector-ai-cli.yaml.
+
+Exactly one ingress caller: Traefik, which terminates TLS for
+otel.<domain> and proxies to this collector's :4318. Unlike the copilot
+collector, this one has a real egress need -- it forwards all three signals
+to Alloy -- so egress is DNS *plus* Alloy, not DNS alone.
+
+⚠️ Any CiliumNetworkPolicy with an `ingress:` block makes the selected pods
+deny-by-default for ingress, INCLUDING kubelet's liveness/readiness probes,
+which arrive with host/remote-node identity rather than a pod identity.
+Without `fromEntities: [host, remote-node, health]` this collector never goes
+Ready and reads exactly like a crash loop rather than a network policy
+problem -- the trap charts/redact-gateway's CNP documents and that was
+verified live there.
+
+The endpointSelector pins `app.kubernetes.io/instance` to THIS collector.
+The copilot collector's policy does the same for its own, so the two never
+overlap despite sharing the operator's managed-by/component labels -- if that
+instance key were dropped, each policy would apply to both collectors and
+Traefik's traffic would be denied by the copilot policy.
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "lightbridge-governance.aiCliOtelName" . }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  description: >-
+    The AI-CLI OTLP collector accepts OTLP/HTTP from Traefik on 4318 and
+    forwards traces, metrics and logs to Alloy. Nothing else reaches it.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: opentelemetry-operator
+      app.kubernetes.io/component: opentelemetry-collector
+      app.kubernetes.io/instance: {{ printf "%s.%s" .Release.Namespace (include "lightbridge-governance.aiCliOtelName" .) }}
+  ingress:
+    # Traefik's proxied OTLP/HTTP. Cross-namespace, so every key is
+    # `k8s:`-prefixed, matching this chart's existing Alloy rules.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.aiCliOtel.ingress.traefikNamespace }}
+      toPorts:
+        - ports:
+            - port: "4318"
+              protocol: TCP
+    # Kubelet probes -- see the trap called out above this policy.
+    - fromEntities: [host, remote-node, health]
+  egress:
+    # Alloy, the fan-out point for all three signals. The copilot collector
+    # needs no equivalent rule because its prometheus exporter is pull-only;
+    # this one genuinely pushes, so without this every export is dropped and
+    # the collector looks healthy while delivering nothing.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.otlpNamespace }}
+            k8s:app.kubernetes.io/name: alloy
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+    # DNS, needed to resolve both Alloy and the OIDC issuer.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+    # ⚠️ The oidc extension fetches OIDC discovery + JWKS from the PUBLIC
+    # issuer URL at startup and refreshes keys thereafter. Without egress to
+    # the world on 443 the extension fails to start and the collector never
+    # becomes Ready -- which presents as a broken collector, not as a network
+    # policy problem. `toFQDNs` keeps this narrow rather than opening egress
+    # generally; it requires the DNS rule above to be in place to work.
+    - toFQDNs:
+        - matchName: {{ .Values.aiCliOtel.oidc.issuerHost | quote }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}

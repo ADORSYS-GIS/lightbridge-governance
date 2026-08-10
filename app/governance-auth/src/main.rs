@@ -13,8 +13,10 @@ mod browser;
 mod cache;
 mod config;
 mod oauth;
+mod otel;
 mod redacted;
 mod security;
+mod update;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -51,10 +53,33 @@ enum Command {
     /// `auth.command`. Fails closed and non-interactively if there's no
     /// valid session.
     Token,
+    /// Print OTLP export headers as a JSON object -- the format Claude
+    /// Code's `otelHeadersHelper` requires. Same refresh-or-fail-closed
+    /// behaviour as `token`; this is that token wrapped in the shape the
+    /// hook expects, so telemetry auth refreshes automatically instead of
+    /// depending on anyone rotating a long-lived key by hand.
+    OtelHeaders,
+    /// Re-apply the OpenTelemetry configuration to Claude Code and Codex
+    /// without re-running the interactive login. `login` already does this;
+    /// this is for an existing session whose endpoint or ingest token
+    /// changed, and it's the command to re-run after installing one of the
+    /// two tools for the first time.
+    Configure,
     /// Print whether a cached session exists and its freshness.
     Status,
     /// Remove the cached session.
     Logout,
+    /// Replace this binary with the latest GitHub release for this platform.
+    ///
+    /// The download is checksummed against the release's own `.sha256`, which
+    /// catches corruption but is NOT a signature -- see `crate::update`'s
+    /// module doc for the trust model and why it says "checksummed", not
+    /// "verified".
+    SelfUpdate {
+        /// Report whether an update exists and exit, changing nothing.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[tokio::main]
@@ -86,7 +111,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Login { device_code } => oauth::login(&http, &oauth, device_code).await,
         Command::Token => oauth::token(&http, &oauth).await,
+        Command::OtelHeaders => oauth::otel_headers(&http, &oauth).await,
+        Command::Configure => oauth::configure(&oauth),
         Command::Status => oauth::status(&oauth),
         Command::Logout => oauth::logout(&oauth),
+        Command::SelfUpdate { check } => update::run(&http, check).await,
     }
 }

@@ -8,3 +8,15 @@ is never templated -- it CAN read `.Values.name` and stay in sync with it.
 {{- define "lightbridge-governance.otelCollectorName" -}}
 {{ .Values.name }}-copilot-otel
 {{- end -}}
+
+{{- /*
+Same, for the public AI-CLI OTLP collector (otelcollector-ai-cli.yaml,
+ciliumnetworkpolicy-ai-cli-otel.yaml, ingress-ai-cli-otel.yaml). A distinct
+name from the copilot collector above is load-bearing, not cosmetic: both
+CiliumNetworkPolicies select on `app.kubernetes.io/instance`, which the
+operator derives from the CR name, and that is the only thing keeping each
+policy scoped to its own collector.
+*/}}
+{{- define "lightbridge-governance.aiCliOtelName" -}}
+{{ .Values.name }}-ai-cli-otel
+{{- end -}}

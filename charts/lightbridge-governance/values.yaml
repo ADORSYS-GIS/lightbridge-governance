@@ -409,6 +409,68 @@ grafanaDashboard:
 # Alloy: same value, same `k8s:app.kubernetes.io/name: alloy` selector,
 # reused in templates/ciliumnetworkpolicy-copilot-otel.yaml for the
 # collector's own ingress-from-Alloy rule.
+# Public OTLP ingest for developer AI clients (Claude Code, Codex, GitHub
+# Copilot in VS Code), all pointed here by `governance-auth` (ADR-0010).
+# A SEPARATE collector from copilotOtel above -- see the header comment in
+# templates/otelcollector-ai-cli.yaml for the four measured reasons why
+# reusing that one doesn't work.
+aiCliOtel:
+  # Off by default: this opens a PUBLIC endpoint, so turning it on is an
+  # explicit act in the values repo, not something a chart bump does.
+  enabled: false
+  # Public ingest for a whole developer fleet, so unlike copilotOtel's single
+  # CronJob bridge this wants more than one replica -- a restart with one
+  # replica drops every in-flight export.
+  replicas: 2
+  # `-contrib`, NOT the core distribution copilotOtel uses: `oidcauthextension`
+  # ships only in contrib. Verified by running the rendered config under this
+  # exact image -- the oidc extension started against the real issuer, and
+  # unauthenticated and malformed-token POSTs both returned 401.
+  image: "otel/opentelemetry-collector-contrib:0.158.0"
+  # memory_limiter runs first in every pipeline; these are its bounds.
+  memoryLimiterMib: 400
+  memorySpikeLimitMib: 100
+  # Alloy is this cluster's fan-out to Tempo/Loki/Mimir (ADR-0007), so this
+  # collector needs one exporter and no knowledge of the backends.
+  alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  oidc:
+    # The lightbridge-authz API-key issuer -- it already serves OIDC discovery
+    # and JWKS publicly (both confirmed 200), so the collector can validate
+    # callers itself with no Authorino involvement.
+    #
+    # These are long-lived (120d) revocable API keys deliberately, NOT Keycloak
+    # access tokens: every client reads its OTEL config once at process start
+    # and none has a credential-helper hook for OTLP headers, so a 300s token
+    # would export for five minutes then 401 silently. Keycloak stays on the
+    # inference path, where refresh actually works.
+    issuerUrl: "https://auth.ai.camer.digital"
+    # Must match the `aud` these API keys carry (authz's oauth2.signing.audience).
+    audience: "lightbridge-api-key"
+    # Same host as issuerUrl, minus the scheme -- the CiliumNetworkPolicy needs
+    # it as a bare FQDN for the egress rule that lets the oidc extension fetch
+    # discovery/JWKS. Kept as its own key rather than parsed out of the URL,
+    # since Helm string-munging a URL is its own source of bugs.
+    issuerHost: "auth.ai.camer.digital"
+  ingress:
+    enabled: true
+    # Traefik, not the Envoy core-gateway: otel.<domain> already resolves to
+    # the Traefik LB via the wildcard record, exactly as auth.<domain> does.
+    className: traefik
+    host: otel.ai.camer.digital
+    clusterIssuer: cert-home-cert-http
+    # Namespace Traefik runs in, for the CiliumNetworkPolicy ingress rule.
+    # Wrong value here = every push silently dropped by Cilium while the
+    # collector looks perfectly healthy.
+    traefikNamespace: traefik
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 networkPolicy:
   enabled: true
   otlpNamespace: observability

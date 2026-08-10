@@ -59,6 +59,37 @@ pub struct OauthConfigArgs {
     /// needs one to scope the issued token to the gateway.
     #[arg(long, env = "GOVERNANCE_AUTH_AUDIENCE", global = true)]
     audience: Option<String>,
+
+    /// OTLP collector base URL written into Claude Code's and Codex's config
+    /// on `login`. Signal suffixes (`/v1/metrics`, ...) are appended by those
+    /// tools' own SDKs -- pass the base, not a per-signal path. Same
+    /// HTTPS-or-loopback rule as `--issuer`: telemetry carries prompts and
+    /// tool detail, so it must not go out in plaintext by typo.
+    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_ENDPOINT", value_parser = parse_issuer, global = true)]
+    otel_endpoint: Option<String>,
+
+    /// Long-lived OTLP ingest credential. Written verbatim into both tools'
+    /// config as an `Authorization: Bearer` header.
+    ///
+    /// Deliberately NOT the Keycloak access token: neither tool re-reads its
+    /// config mid-session and neither has a credential-helper hook for OTLP
+    /// headers, so a 300s token would export for five minutes and then fail
+    /// silently. See `crate::otel`'s module doc.
+    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_TOKEN", global = true)]
+    otel_token: Option<String>,
+
+    /// How often Claude Code re-runs `otel-headers` for fresh OTLP headers.
+    /// Default 240s, deliberately under Keycloak's 300s access-token
+    /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
+    /// exporting with an expired token for most of every half hour, and
+    /// failing silently while doing it.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS",
+        default_value_t = 240_000,
+        global = true
+    )]
+    otel_headers_debounce_ms: u64,
 }
 
 impl OauthConfigArgs {
@@ -76,6 +107,9 @@ impl OauthConfigArgs {
                 .ok_or("--client-id (or GOVERNANCE_AUTH_CLIENT_ID) is required")?,
             scopes: self.scopes,
             audience: self.audience,
+            otel_endpoint: self.otel_endpoint,
+            otel_token: self.otel_token,
+            otel_headers_debounce_ms: self.otel_headers_debounce_ms,
         })
     }
 }
@@ -92,6 +126,9 @@ pub struct OauthConfig {
     pub client_id: String,
     pub scopes: String,
     pub audience: Option<String>,
+    pub otel_endpoint: Option<String>,
+    pub otel_token: Option<String>,
+    pub otel_headers_debounce_ms: u64,
 }
 
 /// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER`: rejects an
