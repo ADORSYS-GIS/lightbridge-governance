@@ -453,22 +453,29 @@ aiCliOtel:
     issuerUrl: "https://auth.ai.camer.digital"
     # Must match the `aud` these API keys carry (authz's oauth2.signing.audience).
     audience: "lightbridge-api-key"
-    # The CiliumNetworkPolicy's egress-to-the-issuer rule. Deliberately a
-    # static `toCIDR`, NOT `toFQDNs` -- see that template's comment
-    # (ciliumnetworkpolicy-ai-cli-otel.yaml) for the full incident writeup:
-    # `toFQDNs` is empirically broken for this destination in this cluster,
-    # and a Helm `lookup`-based "self-updating" CIDR was tried and reverted
-    # because `lookup` doesn't actually fire under this chart's real
-    # rendering path (plain `helm template`, and ArgoCD's Helm render has
-    # the same limitation) -- it would look dynamic while silently never
-    # being dynamic.
-    #
-    # So this is a plain static IP, confirmed live 2026-08-10 via
-    # `kubectl get svc -n traefik traefik`: the LoadBalancer's IPv4 VIP,
-    # the same one auth.ai.camer.digital and otel.ai.camer.digital both
-    # resolve to. If that LB IP ever changes, this needs updating by hand
-    # in the same change.
-    issuerCIDR: "46.225.40.134/32"
+    # Same host as issuerUrl, minus the scheme. Used by otelcollector-ai-cli.yaml's
+    # `hostAliases` entry -- see that file and the CiliumNetworkPolicy's
+    # comment for why this collector resolves the issuer to Traefik's
+    # in-cluster ClusterIP rather than its external LoadBalancer IP
+    # (external egress from a policy-enabled endpoint is empirically broken
+    # on this cluster; in-cluster Service egress isn't). Kept as its own key
+    # rather than parsed out of the URL, since Helm string-munging a URL is
+    # its own source of bugs.
+    issuerHost: "auth.ai.camer.digital"
+    # Traefik's ClusterIP -- what `issuerHost` resolves to inside this
+    # collector's pod (via `hostAliases`), and what the CiliumNetworkPolicy's
+    # `toEndpoints` rule for Traefik's pods actually routes to. A plain
+    # static value, not a Helm `lookup` -- `lookup` returns nil under this
+    # chart's real rendering paths (plain `helm template`, and ArgoCD's Helm
+    # render has the same limitation), confirmed directly against this
+    # cluster while writing this fix. Unlike the external LB IP this
+    # replaced, a Service's ClusterIP is assigned once at creation and does
+    # not change for the life of the Service object, so this is materially
+    # more stable than the value it replaced -- but it isn't *never*-changes;
+    # if Traefik's Service is ever deleted and recreated, this needs
+    # updating. Confirmed live 2026-08-10: `kubectl get svc -n traefik
+    # traefik` reports this as its ClusterIP.
+    traefikClusterIP: "10.43.253.70"
   ingress:
     enabled: true
     # Traefik, not the Envoy core-gateway: otel.<domain> already resolves to

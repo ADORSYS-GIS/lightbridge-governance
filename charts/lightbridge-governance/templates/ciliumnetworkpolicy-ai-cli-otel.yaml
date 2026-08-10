@@ -76,51 +76,48 @@ spec:
               - matchPattern: "*"
     # ⚠️ The oidc extension fetches OIDC discovery + JWKS from the PUBLIC
     # issuer URL at startup and refreshes keys thereafter. Without egress to
-    # it on 443 the extension fails to start and the collector never becomes
-    # Ready -- which presents as a broken collector, not as a network policy
+    # it the extension fails to start and the collector never becomes Ready
+    # -- which presents as a broken collector, not as a network policy
     # problem.
     #
-    # ⚠️ NOT `toFQDNs`. That was the original shape here and it is EMPIRICALLY
-    # BROKEN in this cluster (lightbridge-governance#85/#87/#88 incident,
-    # 2026-08-10) -- root-caused live, not assumed: `cilium bpf policy get`
-    # showed the rule correctly compiled against the right per-node identity,
-    # `cilium fqdn cache list` showed DNS resolving correctly through the
-    # proxy, the DNS egress rule above (the same toEndpoints mechanism)
-    # demonstrably works, and every single connection attempt still timed
-    # out with ZERO bytes/packets ever recorded against that rule --
-    # reproduced on two different nodes, dozens of attempts, no drop verdict
-    # ever logged by `cilium monitor`. Whatever the underlying mechanism,
-    # `toFQDNs` enforcement does not work for this destination on this
-    # cluster's Cilium version/config today. Don't convert this back to
-    # `toFQDNs` without re-testing that root cause first -- it will silently
-    # reintroduce a 100%-reproducible outage, not a flaky one.
+    # ⚠️ THIS IS NOT EGRESS TO THE EXTERNAL ISSUER IP, on purpose. Two
+    # earlier attempts here were both wrong, in the same specific way
+    # (lightbridge-governance#85/#87/#88 incident, 2026-08-10):
     #
-    # `toCIDR` is a different, simpler Cilium primitive: a static CIDR-to-
-    # identity mapping compiled once, not the DNS-proxy-interception +
-    # per-response dynamic-identity machinery `toFQDNs` depends on -- and it
-    # works.
+    #   1. `toFQDNs: matchName: auth.ai.camer.digital` -- looked correctly
+    #      compiled (`cilium bpf policy get` showed the right rule, right
+    #      identity, DNS resolving fine through the proxy) and still 100%
+    #      timed out, on two different nodes, with zero drop verdicts ever
+    #      logged.
+    #   2. `toCIDR: 46.225.40.134/32` (the LB's own IP) -- same result.
+    #      Also 100% timeout, also zero bytes/packets ever recorded against
+    #      a rule Cilium's own tooling reported as freshly compiled and
+    #      correctly enforced.
     #
-    # Deliberately a plain static value, NOT a Helm `lookup` against
-    # Traefik's LoadBalancer Service for the "current" IP -- that was tried
-    # and reverted. `lookup` returns nil under a plain `helm template`
-    # even with a fully live, valid kubeconfig (verified directly against
-    # this cluster while writing this), and ArgoCD's Helm rendering has the
-    # same well-documented limitation, for the same reason ArgoCD needs a
-    # reproducible render: a chart that queries live cluster state at
-    # render time can't be diffed or cached deterministically. A `lookup`
-    # here would silently never fire and always fall through to whatever
-    # static default backed it -- strictly worse than just being honest
-    # that this is static, since it would look self-updating while never
-    # actually being self-updating.
+    # The common factor across both failures: BOTH were egress to an
+    # EXTERNAL (non-cluster-CIDR) destination. A `toEndpoints` rule to
+    # Alloy -- also on this policy, in-cluster -- worked instantly for the
+    # exact same CNP-restricted endpoint, on the exact same node, at the
+    # exact same time the external rule was failing. That isolates the
+    # actual problem to external egress specifically from a policy-enabled
+    # endpoint on this cluster (masquerade/SNAT not applying correctly is
+    # the leading theory, but that's a Cilium/node-level question, not
+    # something this chart's own resources can fix or fully diagnose).
     #
-    # So: if `auth.ai.camer.digital` / `otel.ai.camer.digital`'s LoadBalancer
-    # IP ever changes (confirmed live 2026-08-10 via
-    # `kubectl get svc -n {{ .Values.aiCliOtel.ingress.traefikNamespace }} traefik`
-    # -- both hostnames resolve to the same Traefik LB), this value has to
-    # be updated by hand, in the same change that would already be touching
-    # DNS/ingress config for that IP move.
-    - toCIDR:
-        - {{ .Values.aiCliOtel.oidc.issuerCIDR | quote }}
+    # So instead of external egress at all: this rule reaches Traefik's own
+    # pods IN-CLUSTER -- the same `toEndpoints` mechanism already proven to
+    # work above -- and `otelcollector-ai-cli.yaml` adds a `hostAliases`
+    # entry so the issuer hostname resolves to Traefik's ClusterIP instead
+    # of its external LoadBalancer IP. Traefik terminates TLS identically
+    # either way (same pods, same cert, same SNI routing -- confirmed live:
+    # a request with `Host: auth.ai.camer.digital` sent straight to
+    # Traefik's ClusterIP returns the same 200 as going in through the
+    # public LB), so this changes the path, not the destination identity or
+    # certificate trust.
+    - toEndpoints:
+        - matchLabels:
+            k8s:app.kubernetes.io/name: traefik
+            k8s:io.kubernetes.pod.namespace: {{ .Values.aiCliOtel.ingress.traefikNamespace }}
       toPorts:
         - ports:
             - port: "443"
