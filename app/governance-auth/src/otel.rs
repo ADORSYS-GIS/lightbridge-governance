@@ -530,6 +530,29 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
 fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     let mut entries = vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_owned()),
+        // `apiKeyHelper` output is cached for FIVE MINUTES by default -- the
+        // exact lifetime of a Keycloak access token here, so the cache can
+        // hand Claude Code a token that expired moments ago and the request
+        // 401s. Claude Code re-runs the helper on a 401, so this self-heals,
+        // but only after a failed request; keeping the TTL under the token
+        // lifetime avoids the failure instead of recovering from it.
+        (
+            "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+            settings.headers_helper_debounce_ms.to_string(),
+        ),
+        // This gateway serves model names Claude Code doesn't ship in its
+        // built-in list (adorsys-coder, minimax-m3, ...), so without
+        // discovery they never appear in the `/model` picker at all.
+        //
+        // It does NOT silence the "not a model this version recognizes"
+        // warning -- checked live, the warning still prints with discovery
+        // on, because that one is about the assumed 200k context window and
+        // is only fixed by `modelOverrides` or CLAUDE_CODE_MAX_CONTEXT_TOKENS.
+        // Setting either would mean hard-coding each gateway model's real
+        // window here, which this binary has no way to know and which would
+        // silently rot as models change. Left to the values repo, where the
+        // model list already lives.
+        ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1".to_owned()),
         ("OTEL_METRICS_EXPORTER", "otlp".to_owned()),
         ("OTEL_LOGS_EXPORTER", "otlp".to_owned()),
         ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()),
