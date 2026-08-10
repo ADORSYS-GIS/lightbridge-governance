@@ -44,6 +44,50 @@ spec:
   # 401 "failed to parse the token". Fail-closed confirmed before this
   # template was written, not after.
   image: {{ .Values.aiCliOtel.image | quote }}
+  # ⚠️ PRODUCTION INCIDENT, ai-helm-values#216 (2026-08-10): enabling this
+  # collector shipped it broken -- 0/2 replicas, 100% CrashLoopBackOff, every
+  # single restart. The `oidc` extension makes exactly ONE OIDC-discovery
+  # attempt on startup and crashes the whole process if it fails
+  # (extensions/extensions.go has no retry). Root-caused live, not guessed:
+  # a plain debug pod given only the labels this CR's CiliumNetworkPolicy
+  # selects timed out reaching the issuer on the SAME node where an
+  # unlabelled debug pod succeeded instantly -- so a freshly created pod's
+  # Cilium endpoint (the BPF program + FQDN/DNS-proxy wiring the `toFQDNs`
+  # egress rule below depends on) is not always fully realized the instant
+  # the container starts. `cilium endpoint get` on the real collector's
+  # endpoint showed the realized policy WAS already correct, and
+  # `cilium monitor` logged no explicit deny for this flow -- consistent
+  # with a startup race, not a wrong or missing rule. Because CrashLoopBackOff
+  # recreates the pod (a new Cilium endpoint) on every restart, the race
+  # re-triggers every single time -- a 100% failure rate, not an
+  # intermittent one.
+  #
+  # Fix: block the collector from starting until something in the SAME pod
+  # network namespace has proven OIDC discovery is reachable, with retries.
+  # Cilium enforces at the endpoint (pod), not the container, so once this
+  # succeeds even once the collector's own single-shot attempt will too.
+  initContainers:
+    - name: wait-for-oidc-issuer
+      image: {{ .Values.aiCliOtel.initContainerImage | quote }}
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 3 {{ printf "%s/.well-known/openid-configuration" .Values.aiCliOtel.oidc.issuerUrl | quote }} >/dev/null 2>&1; then
+              echo "OIDC discovery reachable after $i attempt(s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "OIDC discovery still unreachable after 30 attempts; giving up" >&2
+          exit 1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        capabilities:
+          drop: [ALL]
   ports:
     - name: otlp-http
       port: 4318
