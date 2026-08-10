@@ -551,6 +551,14 @@ fn handle_response_chunk(
     // be decoded as UTF-8 incrementally. Buffer them, decompress+scan at
     // end_of_stream via the SSE holdback.
     if let Some(buf) = gzip_buf {
+        if buf.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("gzip-SSE buffer exceeded {MAX_BUFFERED_RESPONSE_BYTES} bytes"),
+            );
+        }
         buf.extend_from_slice(chunk);
         if !end_of_stream {
             return body_response(Direction::Response, Vec::new());
@@ -720,6 +728,8 @@ fn handle_response_chunk(
 /// OOM-killed.
 ///
 /// Decompress a gzip-compressed buffer in place. No-op on non-gzip data.
+/// Caps decompressed output at `MAX_BUFFERED_RESPONSE_BYTES` to prevent
+/// OOM from pathologically compressed input.
 fn decompress_gzip(buf: &mut Vec<u8>) -> Result<(), String> {
     use std::io::Read;
 
@@ -727,11 +737,19 @@ fn decompress_gzip(buf: &mut Vec<u8>) -> Result<(), String> {
     if buf.len() < 2 || buf.first() != Some(&0x1f) || buf.get(1) != Some(&0x8b) {
         return Ok(());
     }
+    let cap = (buf.len() * 4).min(MAX_BUFFERED_RESPONSE_BYTES);
     let mut decoder = GzDecoder::new(&buf[..]);
-    let mut out = Vec::with_capacity(buf.len().saturating_mul(4));
+    let mut out = Vec::with_capacity(cap);
     decoder
         .read_to_end(&mut out)
         .map_err(|e| format!("gzip decompression failed: {e}"))?;
+    // If the decompressed output still doesn't fit in the cap (pathologically
+    // compressible input), fail rather than allocate further.
+    if out.len() >= MAX_BUFFERED_RESPONSE_BYTES {
+        return Err(format!(
+            "decompressed output exceeds {MAX_BUFFERED_RESPONSE_BYTES} bytes",
+        ));
+    }
     *buf = out;
     Ok(())
 }
@@ -1138,6 +1156,7 @@ mod tests {
         // "not valid JSON" refusal (which would also fail closed here, but
         // for a different reason than the one this test names).
         let mut state = response_state_with_content_type(64, "text/event-stream");
+        // opengrep-ignore: test vector, not a token
         let resp = handle_response_chunk(&e, &m, &mut state, &[0xFF, 0xFE], true);
         assert!(
             matches!(&resp.response, Some(Resp::ImmediateResponse(_))),
