@@ -143,6 +143,11 @@ struct ResponseState {
     /// "this genuinely isn't JSON" apart.
     content_type: Option<String>,
     content_encoding: Option<String>,
+    /// Accumulates gzip-compressed SSE chunks. When `Content-Encoding: gzip`
+    /// and the mode is `Sse`, compressed chunks cannot be decoded incrementally
+    /// — they are buffered here instead. At `end_of_stream` the buffer is
+    /// decompressed and fed through the SSE holdback for scanning.
+    gzip_buf: Option<Vec<u8>>,
 }
 
 impl ResponseState {
@@ -156,6 +161,7 @@ impl ResponseState {
             mode: ResponseBodyMode::Buffered(Vec::new()),
             content_type: None,
             content_encoding: None,
+            gzip_buf: None,
         }
     }
 
@@ -182,23 +188,33 @@ impl ResponseState {
                 String::from_utf8_lossy(&h.raw_value).into_owned()
             }
         };
-        let is_sse = hm.headers.iter().any(|h| {
-            h.key.eq_ignore_ascii_case("content-type")
-                && hdr_val(h)
-                    .to_ascii_lowercase()
-                    .starts_with("text/event-stream")
-        });
-        if is_sse {
-            self.mode = ResponseBodyMode::Sse;
-        }
+        let mut content_type: Option<String> = None;
+        let mut content_encoding: Option<String> = None;
         for h in &hm.headers {
             let val = hdr_val(h);
             if h.key.eq_ignore_ascii_case("content-type") {
-                self.content_type = Some(val);
+                content_type = Some(val);
             } else if h.key.eq_ignore_ascii_case("content-encoding") {
-                self.content_encoding = Some(val);
+                content_encoding = Some(val);
             }
         }
+        let is_sse = content_type
+            .as_deref()
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"));
+        let is_gzip = content_encoding
+            .as_deref()
+            .is_some_and(|ce: &str| ce.eq_ignore_ascii_case("gzip"));
+        if is_sse {
+            self.mode = ResponseBodyMode::Sse;
+        }
+        // For gzip-compressed SSE, chunks arrive as binary ciphertext and
+        // cannot be decoded as UTF-8 incrementally. Buffer them here and
+        // decompress+scan at end_of_stream.
+        if is_sse && is_gzip {
+            self.gzip_buf = Some(Vec::new());
+        }
+        self.content_type = content_type;
+        self.content_encoding = content_encoding;
     }
 }
 
@@ -263,7 +279,28 @@ fn dispatch(
     window: usize,
 ) -> Option<ProcessingResponse> {
     match (req, &mut *phase) {
-        (Req::RequestHeaders(_), _) => Some(continue_headers(Direction::Request)),
+        (Req::RequestHeaders(_), _) => {
+            // Remove Accept-Encoding so the upstream returns uncompressed
+            // responses (no gzip). This lets us stream and redact the response
+            // body without needing to decompress/re-compress it. The client's
+            // own Accept-Encoding is handled by Envoy's external-to-internal
+            // split: the downstream client gets its compressed stream, but the
+            // upstream sees our stripped header.
+            tracing::debug!("stripped Accept-Encoding from upstream request");
+            Some(ProcessingResponse {
+                response: Some(Resp::RequestHeaders(HeadersResponse {
+                    response: Some(CommonResponse {
+                        status: ResponseStatus::Continue as i32,
+                        header_mutation: Some(HeaderMutation {
+                            remove_headers: vec!["accept-encoding".into()],
+                            set_headers: Vec::new(),
+                        }),
+                        ..Default::default()
+                    }),
+                })),
+                ..Default::default()
+            })
+        }
 
         (Req::ResponseHeaders(headers), phase) => {
             // A bodyless request (GET, health checks, ...) never gets a
@@ -278,21 +315,29 @@ fn dispatch(
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
             }
-            // DIAGNOSTIC: log response headers to verify Envoy sends them.
-            // HeaderValue can carry value in `value` (string) or `raw_value`
-            // (bytes). EG-generated envoy_grpc config populates both. Check
-            // both to be safe across Envoy versions.
+            // Log the response Content-Type and Content-Encoding for
+            // debugging the upstream response format. HeaderValue can carry
+            // the value in `value` (string) or `raw_value` (bytes); check
+            // both.
             if let Some(hm) = &headers.headers {
-                for h in &hm.headers {
-                    let val = if !h.value.is_empty() {
-                        &h.value
-                    } else {
-                        std::str::from_utf8(&h.raw_value).unwrap_or("(empty)")
-                    };
-                    tracing::info!(key = %h.key, value = %val, "ResponseHeader");
-                }
-            } else {
-                tracing::info!("ResponseHeaders received but headers field is None");
+                let hdr_val = |k: &str| -> String {
+                    hm.headers
+                        .iter()
+                        .find(|h| h.key.eq_ignore_ascii_case(k))
+                        .map(|h| {
+                            if !h.value.is_empty() {
+                                h.value.clone()
+                            } else {
+                                String::from_utf8_lossy(&h.raw_value).into_owned()
+                            }
+                        })
+                        .unwrap_or_default()
+                };
+                tracing::info!(
+                    content_type = %hdr_val("content-type"),
+                    content_encoding = %hdr_val("content-encoding"),
+                    "upstream response headers"
+                );
             }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
@@ -498,8 +543,100 @@ fn handle_response_chunk(
         hold,
         last_redactions,
         utf8_carry,
+        gzip_buf,
+        content_encoding,
         ..
     } = state;
+
+    // For gzip-compressed SSE, chunks arrive as binary ciphertext that cannot
+    // be decoded as UTF-8 incrementally. Buffer them, decompress+scan at
+    // end_of_stream via the SSE holdback.
+    if let Some(buf) = gzip_buf {
+        if buf.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("gzip-SSE buffer exceeded {MAX_BUFFERED_RESPONSE_BYTES} bytes"),
+            );
+        }
+        buf.extend_from_slice(chunk);
+        if !end_of_stream {
+            return body_response(Direction::Response, Vec::new());
+        }
+        if let Err(e) = decompress_gzip(buf) {
+            tracing::error!(error = %e, "SSE gzip decompression failed");
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("SSE gzip decompression failed: {e}"),
+            );
+        }
+        let Ok(text) = std::str::from_utf8(buf) else {
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                "decompressed SSE bytes are not valid UTF-8",
+            );
+        };
+        let emit = hold.push(engine, text).and_then(|first| {
+            let first = match first {
+                SseEmit::Blocked(entities) => return Ok(SseEmit::Blocked(entities)),
+                other => other,
+            };
+            let last = hold.flush(engine)?;
+            Ok(match (first, last) {
+                (SseEmit::Release(mut a), SseEmit::Release(b)) => {
+                    a.push_str(&b);
+                    SseEmit::Release(a)
+                }
+                (SseEmit::Release(a), SseEmit::Nothing) => SseEmit::Release(a),
+                (SseEmit::Nothing, other) => other,
+                (SseEmit::Blocked(_), _) => unreachable!(),
+                (SseEmit::Release(_), SseEmit::Blocked(_)) => unreachable!(),
+            })
+        });
+        let delta = hold.redactions().saturating_sub(*last_redactions);
+        if delta > 0 {
+            metrics.redactions_total.inc_by(delta as u64);
+            *last_redactions = hold.redactions();
+        }
+        return match emit {
+            Ok(SseEmit::Nothing) => body_response(Direction::Response, Vec::new()),
+            Ok(SseEmit::Release(out)) => {
+                // We decompressed the upstream gzip stream to scan it, but the
+                // exchange still carries `Content-Encoding: gzip`. Re-compress
+                // the scanned (possibly redacted) SSE text so the delivered
+                // body matches the header — a gzip-decoding client must not
+                // receive identity-encoded bytes stamped as gzip.
+                let bytes = out.into_bytes();
+                let emitted =
+                    compress_as_gzip(&bytes, content_encoding.as_deref()).unwrap_or(bytes);
+                body_response(Direction::Response, emitted)
+            }
+            Ok(SseEmit::Blocked(entities)) => {
+                metrics.blocked_total.inc();
+                tracing::warn!(?entities, "blocked response: prohibited content");
+                immediate_response(
+                    Direction::Response,
+                    StatusCode::UnprocessableEntity,
+                    "content_blocked",
+                    &format!(
+                        "response blocked: content matched a prohibited category ({})",
+                        entities.join(", ")
+                    ),
+                )
+            }
+            Err(e) => refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("response scan failed: {e}"),
+            ),
+        };
+    }
 
     let Ok(text) = decode_chunk_with_carry(utf8_carry, chunk) else {
         return refuse_or_block(
@@ -600,6 +737,52 @@ fn handle_response_chunk(
 /// ceiling a provider that never sets `Content-Type: text/event-stream` but
 /// streams without stopping would grow this buffer until the pod is
 /// OOM-killed.
+///
+/// Decompress a gzip-compressed buffer in place. No-op on non-gzip data.
+/// Caps decompressed output at `MAX_BUFFERED_RESPONSE_BYTES` to prevent
+/// OOM from pathologically compressed input.
+fn decompress_gzip(buf: &mut Vec<u8>) -> Result<(), String> {
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
+    if buf.len() < 2 || buf.first() != Some(&0x1f) || buf.get(1) != Some(&0x8b) {
+        return Ok(());
+    }
+    let cap = (buf.len() * 4).min(MAX_BUFFERED_RESPONSE_BYTES);
+    let decoder = GzDecoder::new(&buf[..]);
+    let mut out = Vec::with_capacity(cap);
+    // Read through a bounded reader so allocation cannot balloon past the cap:
+    // `take(MAX+1)` stops the stream once we've read one byte more than the
+    // limit, so a compression bomb bails while decompressing rather than
+    // allocating gigabytes and then failing after the fact.
+    decoder
+        .take((MAX_BUFFERED_RESPONSE_BYTES as u64) + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("gzip decompression failed: {e}"))?;
+    // If the decompressed output exceeds the cap (pathologically compressible
+    // input), fail rather than return a partial/oversized body.
+    if out.len() > MAX_BUFFERED_RESPONSE_BYTES {
+        return Err(format!(
+            "decompressed output exceeds {MAX_BUFFERED_RESPONSE_BYTES} bytes",
+        ));
+    }
+    *buf = out;
+    Ok(())
+}
+
+/// Re-compress as gzip only if `content_encoding` is `"gzip"`.
+fn compress_as_gzip(data: &[u8], content_encoding: Option<&str>) -> Option<Vec<u8>> {
+    if !content_encoding.is_some_and(|ce| ce.eq_ignore_ascii_case("gzip")) {
+        return None;
+    }
+    use std::io::Write;
+
+    use flate2::{Compression, write::GzEncoder};
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(data).ok()?;
+    enc.finish().ok()
+}
+
 const MAX_BUFFERED_RESPONSE_BYTES: usize = 33_554_432;
 
 /// Accumulates a non-SSE response body — a plain JSON completion or
@@ -637,6 +820,26 @@ fn handle_buffered_response_chunk(
     if !end_of_stream {
         // Nothing is safe to release until the whole body has been scanned.
         return body_response(Direction::Response, Vec::new());
+    }
+
+    // The upstream may return gzip-compressed JSON. Decompress before JSON
+    // parsing so that serde_json sees uncompressed text, not binary gzip.
+    let original_encoding = content_encoding;
+    let compressed_len = buf.len();
+    if let Err(e) = decompress_gzip(buf) {
+        tracing::error!(
+            content_type,
+            content_encoding,
+            body_len = buf.len(),
+            error = %e,
+            "buffered response body gzip decompression failed"
+        );
+        return refuse_or_block(
+            Direction::Response,
+            engine,
+            metrics,
+            &format!("response body decompression failed: {e}"),
+        );
     }
 
     let mut json = match serde_json::from_slice::<serde_json::Value>(buf) {
@@ -687,11 +890,9 @@ fn handle_buffered_response_chunk(
                     ),
                 );
             }
-            body_response_with_original_length(
-                Direction::Response,
-                serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone()),
-                Some(buf.len()),
-            )
+            let redacted = serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone());
+            let output = compress_as_gzip(&redacted, original_encoding).unwrap_or(redacted);
+            body_response_with_original_length(Direction::Response, output, Some(compressed_len))
         }
         Err(e) => refuse_or_block(
             Direction::Response,
@@ -868,6 +1069,35 @@ mod tests {
         state
     }
 
+    /// Like `response_state_with_content_type`, but also sets Content-Encoding
+    /// so the `is_sse && is_gzip` branch of `set_mode_from_headers` engages.
+    fn response_state_with_content_type_and_encoding(
+        window: usize,
+        content_type: &str,
+        content_encoding: &str,
+    ) -> ResponseState {
+        let mut state = ResponseState::new(window);
+        state.set_mode_from_headers(&HttpHeaders {
+            headers: Some(HeaderMap {
+                headers: vec![
+                    HeaderValue {
+                        key: "content-type".to_string(),
+                        value: content_type.to_string(),
+                        raw_value: Vec::new(),
+                    },
+                    HeaderValue {
+                        key: "content-encoding".to_string(),
+                        value: content_encoding.to_string(),
+                        raw_value: Vec::new(),
+                    },
+                ],
+            }),
+            attributes: std::collections::HashMap::new(),
+            end_of_stream: false,
+        });
+        state
+    }
+
     fn extract_body(resp: &ProcessingResponse) -> Option<Vec<u8>> {
         let Some(Resp::ResponseBody(BodyResponse {
             response:
@@ -971,6 +1201,7 @@ mod tests {
         // "not valid JSON" refusal (which would also fail closed here, but
         // for a different reason than the one this test names).
         let mut state = response_state_with_content_type(64, "text/event-stream");
+        // opengrep-ignore: test vector, not a token
         let resp = handle_response_chunk(&e, &m, &mut state, &[0xFF, 0xFE], true);
         assert!(
             matches!(&resp.response, Some(Resp::ImmediateResponse(_))),
@@ -1174,6 +1405,85 @@ mod tests {
         assert!(
             matches!(state.mode, ResponseBodyMode::Sse),
             "an SSE Content-Type on the bodyless path must still resolve Sse mode, not silently default to Buffered"
+        );
+    }
+
+    /// The gzip-SSE branch buffers compressed chunks, decompresses at
+    /// end_of_stream, scans through the SSE holdback, and re-compresses the
+    /// emitted output so the delivered body matches the still-present
+    /// `Content-Encoding: gzip` header. Without the re-compress step a
+    /// gzip-decoding client would receive identity bytes stamped as gzip.
+    #[test]
+    fn gzip_sse_is_decompressed_scanned_and_recompressed() {
+        let e = engine();
+        let m = metrics();
+        let mut state =
+            response_state_with_content_type_and_encoding(64, "text/event-stream", "gzip");
+
+        // Assert the gzip-SSE mode actually engaged (gzip_buf armed).
+        assert!(
+            state.gzip_buf.is_some(),
+            "SSE+gzip headers must arm the gzip buffer"
+        );
+
+        // Build gzip-compressed SSE: "data: hello from upstream\n\n".
+        use std::io::Write;
+
+        use flate2::{Compression, write::GzEncoder};
+        let plaintext = b"data: hello from upstream\n\n";
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plaintext).expect("write");
+        let compressed = enc.finish().expect("finish");
+
+        let resp = handle_response_chunk(&e, &m, &mut state, &compressed, true);
+        let body = extract_body(&resp).expect("SSE gzip must emit a scanned body");
+
+        // The emitted body must still be gzip-encoded (magic bytes) to match the
+        // Content-Encoding: gzip header, NOT plaintext.
+        assert!(
+            body.starts_with(&[0x1f, 0x8b]),
+            "gzip-SSE output must be re-compressed, got plaintext: {:?}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // Decompress it back and confirm the SSE line survived the round-trip.
+        use std::io::Read;
+
+        use flate2::read::GzDecoder;
+        let mut dec = GzDecoder::new(&body[..]);
+        let mut roundtrip = String::new();
+        dec.read_to_string(&mut roundtrip).expect("decompress");
+        assert_eq!(roundtrip, "data: hello from upstream\n\n");
+    }
+
+    /// A gzip decompression bomb (small compressed input that expands to far
+    /// more than `MAX_BUFFERED_RESPONSE_BYTES`) must be refused while
+    /// decompressing, not allocate gigabytes and only fail after the fact.
+    #[test]
+    fn gzip_decompression_bomb_is_refused_rather_than_oom() {
+        use std::io::Write;
+
+        use flate2::{Compression, write::GzEncoder};
+
+        // Highly compressible input: >MAX bytes of 'x' compresses to far less
+        // than MAX, but decompresses to a size that exceeds MAX_BUFFERED_RESPONSE_BYTES.
+        const BOMB_SRC: usize = MAX_BUFFERED_RESPONSE_BYTES + (16 * 1024 * 1024);
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(9));
+        enc.write_all(&vec![b'x'; BOMB_SRC]).expect("write");
+        let bomb = enc.finish().expect("finish");
+        // Sanity: the compressed bomb must be much smaller than its intent
+        // (otherwise the test isn't exercising the decompression cap).
+        assert!(
+            bomb.len() < MAX_BUFFERED_RESPONSE_BYTES,
+            "bomb did not compress enough: {}",
+            bomb.len()
+        );
+
+        let mut buf = bomb;
+        let err = decompress_gzip(&mut buf).expect_err("decompression bomb must be refused");
+        assert!(
+            err.contains("exceeds"),
+            "expected an 'exceeds' refusal, got: {err}"
         );
     }
 
