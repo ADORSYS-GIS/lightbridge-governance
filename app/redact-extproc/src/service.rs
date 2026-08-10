@@ -143,6 +143,11 @@ struct ResponseState {
     /// "this genuinely isn't JSON" apart.
     content_type: Option<String>,
     content_encoding: Option<String>,
+    /// Accumulates gzip-compressed SSE chunks. When `Content-Encoding: gzip`
+    /// and the mode is `Sse`, compressed chunks cannot be decoded incrementally
+    /// — they are buffered here instead. At `end_of_stream` the buffer is
+    /// decompressed and fed through the SSE holdback for scanning.
+    gzip_buf: Option<Vec<u8>>,
 }
 
 impl ResponseState {
@@ -156,6 +161,7 @@ impl ResponseState {
             mode: ResponseBodyMode::Buffered(Vec::new()),
             content_type: None,
             content_encoding: None,
+            gzip_buf: None,
         }
     }
 
@@ -182,23 +188,33 @@ impl ResponseState {
                 String::from_utf8_lossy(&h.raw_value).into_owned()
             }
         };
-        let is_sse = hm.headers.iter().any(|h| {
-            h.key.eq_ignore_ascii_case("content-type")
-                && hdr_val(h)
-                    .to_ascii_lowercase()
-                    .starts_with("text/event-stream")
-        });
-        if is_sse {
-            self.mode = ResponseBodyMode::Sse;
-        }
+        let mut content_type: Option<String> = None;
+        let mut content_encoding: Option<String> = None;
         for h in &hm.headers {
             let val = hdr_val(h);
             if h.key.eq_ignore_ascii_case("content-type") {
-                self.content_type = Some(val);
+                content_type = Some(val);
             } else if h.key.eq_ignore_ascii_case("content-encoding") {
-                self.content_encoding = Some(val);
+                content_encoding = Some(val);
             }
         }
+        let is_sse = content_type
+            .as_deref()
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"));
+        let is_gzip = content_encoding
+            .as_deref()
+            .is_some_and(|ce: &str| ce.eq_ignore_ascii_case("gzip"));
+        if is_sse {
+            self.mode = ResponseBodyMode::Sse;
+        }
+        // For gzip-compressed SSE, chunks arrive as binary ciphertext and
+        // cannot be decoded as UTF-8 incrementally. Buffer them here and
+        // decompress+scan at end_of_stream.
+        if is_sse && is_gzip {
+            self.gzip_buf = Some(Vec::new());
+        }
+        self.content_type = content_type;
+        self.content_encoding = content_encoding;
     }
 }
 
@@ -498,8 +514,81 @@ fn handle_response_chunk(
         hold,
         last_redactions,
         utf8_carry,
+        gzip_buf,
         ..
     } = state;
+
+    // For gzip-compressed SSE, chunks arrive as binary ciphertext that cannot
+    // be decoded as UTF-8 incrementally. Buffer them, decompress+scan at
+    // end_of_stream via the SSE holdback.
+    if let Some(buf) = gzip_buf {
+        buf.extend_from_slice(chunk);
+        if !end_of_stream {
+            return body_response(Direction::Response, Vec::new());
+        }
+        if let Err(e) = decompress_gzip(buf) {
+            tracing::error!(error = %e, "SSE gzip decompression failed");
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("SSE gzip decompression failed: {e}"),
+            );
+        }
+        let Ok(text) = std::str::from_utf8(buf) else {
+            return refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                "decompressed SSE bytes are not valid UTF-8",
+            );
+        };
+        let emit = hold.push(engine, text).and_then(|first| {
+            let first = match first {
+                SseEmit::Blocked(entities) => return Ok(SseEmit::Blocked(entities)),
+                other => other,
+            };
+            let last = hold.flush(engine)?;
+            Ok(match (first, last) {
+                (SseEmit::Release(mut a), SseEmit::Release(b)) => {
+                    a.push_str(&b);
+                    SseEmit::Release(a)
+                }
+                (SseEmit::Release(a), SseEmit::Nothing) => SseEmit::Release(a),
+                (SseEmit::Nothing, other) => other,
+                (SseEmit::Blocked(_), _) => unreachable!(),
+                (SseEmit::Release(_), SseEmit::Blocked(_)) => unreachable!(),
+            })
+        });
+        let delta = hold.redactions().saturating_sub(*last_redactions);
+        if delta > 0 {
+            metrics.redactions_total.inc_by(delta as u64);
+            *last_redactions = hold.redactions();
+        }
+        return match emit {
+            Ok(SseEmit::Nothing) => body_response(Direction::Response, Vec::new()),
+            Ok(SseEmit::Release(out)) => body_response(Direction::Response, out.into_bytes()),
+            Ok(SseEmit::Blocked(entities)) => {
+                metrics.blocked_total.inc();
+                tracing::warn!(?entities, "blocked response: prohibited content");
+                immediate_response(
+                    Direction::Response,
+                    StatusCode::UnprocessableEntity,
+                    "content_blocked",
+                    &format!(
+                        "response blocked: content matched a prohibited category ({})",
+                        entities.join(", ")
+                    ),
+                )
+            }
+            Err(e) => refuse_or_block(
+                Direction::Response,
+                engine,
+                metrics,
+                &format!("response scan failed: {e}"),
+            ),
+        };
+    }
 
     let Ok(text) = decode_chunk_with_carry(utf8_carry, chunk) else {
         return refuse_or_block(
@@ -600,6 +689,37 @@ fn handle_response_chunk(
 /// ceiling a provider that never sets `Content-Type: text/event-stream` but
 /// streams without stopping would grow this buffer until the pod is
 /// OOM-killed.
+///
+/// Decompress a gzip-compressed buffer in place. No-op on non-gzip data.
+fn decompress_gzip(buf: &mut Vec<u8>) -> Result<(), String> {
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
+    if buf.len() < 2 || buf.first() != Some(&0x1f) || buf.get(1) != Some(&0x8b) {
+        return Ok(());
+    }
+    let mut decoder = GzDecoder::new(&buf[..]);
+    let mut out = Vec::with_capacity(buf.len().saturating_mul(4));
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| format!("gzip decompression failed: {e}"))?;
+    *buf = out;
+    Ok(())
+}
+
+/// Re-compress as gzip only if `content_encoding` is `"gzip"`.
+fn compress_as_gzip(data: &[u8], content_encoding: Option<&str>) -> Option<Vec<u8>> {
+    if !content_encoding.is_some_and(|ce| ce.eq_ignore_ascii_case("gzip")) {
+        return None;
+    }
+    use std::io::Write;
+
+    use flate2::{Compression, write::GzEncoder};
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(data).ok()?;
+    enc.finish().ok()
+}
+
 const MAX_BUFFERED_RESPONSE_BYTES: usize = 33_554_432;
 
 /// Accumulates a non-SSE response body — a plain JSON completion or
@@ -637,6 +757,26 @@ fn handle_buffered_response_chunk(
     if !end_of_stream {
         // Nothing is safe to release until the whole body has been scanned.
         return body_response(Direction::Response, Vec::new());
+    }
+
+    // The upstream may return gzip-compressed JSON. Decompress before JSON
+    // parsing so that serde_json sees uncompressed text, not binary gzip.
+    let original_encoding = content_encoding;
+    let compressed_len = buf.len();
+    if let Err(e) = decompress_gzip(buf) {
+        tracing::error!(
+            content_type,
+            content_encoding,
+            body_len = buf.len(),
+            error = %e,
+            "buffered response body gzip decompression failed"
+        );
+        return refuse_or_block(
+            Direction::Response,
+            engine,
+            metrics,
+            &format!("response body decompression failed: {e}"),
+        );
     }
 
     let mut json = match serde_json::from_slice::<serde_json::Value>(buf) {
@@ -687,11 +827,9 @@ fn handle_buffered_response_chunk(
                     ),
                 );
             }
-            body_response_with_original_length(
-                Direction::Response,
-                serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone()),
-                Some(buf.len()),
-            )
+            let redacted = serde_json::to_vec(&json).unwrap_or_else(|_| buf.clone());
+            let output = compress_as_gzip(&redacted, original_encoding).unwrap_or(redacted);
+            body_response_with_original_length(Direction::Response, output, Some(compressed_len))
         }
         Err(e) => refuse_or_block(
             Direction::Response,
