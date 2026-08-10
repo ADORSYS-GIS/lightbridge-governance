@@ -544,6 +544,7 @@ fn handle_response_chunk(
         last_redactions,
         utf8_carry,
         gzip_buf,
+        content_encoding,
         ..
     } = state;
 
@@ -604,7 +605,17 @@ fn handle_response_chunk(
         }
         return match emit {
             Ok(SseEmit::Nothing) => body_response(Direction::Response, Vec::new()),
-            Ok(SseEmit::Release(out)) => body_response(Direction::Response, out.into_bytes()),
+            Ok(SseEmit::Release(out)) => {
+                // We decompressed the upstream gzip stream to scan it, but the
+                // exchange still carries `Content-Encoding: gzip`. Re-compress
+                // the scanned (possibly redacted) SSE text so the delivered
+                // body matches the header — a gzip-decoding client must not
+                // receive identity-encoded bytes stamped as gzip.
+                let bytes = out.into_bytes();
+                let emitted =
+                    compress_as_gzip(&bytes, content_encoding.as_deref()).unwrap_or(bytes);
+                body_response(Direction::Response, emitted)
+            }
             Ok(SseEmit::Blocked(entities)) => {
                 metrics.blocked_total.inc();
                 tracing::warn!(?entities, "blocked response: prohibited content");
@@ -738,14 +749,19 @@ fn decompress_gzip(buf: &mut Vec<u8>) -> Result<(), String> {
         return Ok(());
     }
     let cap = (buf.len() * 4).min(MAX_BUFFERED_RESPONSE_BYTES);
-    let mut decoder = GzDecoder::new(&buf[..]);
+    let decoder = GzDecoder::new(&buf[..]);
     let mut out = Vec::with_capacity(cap);
+    // Read through a bounded reader so allocation cannot balloon past the cap:
+    // `take(MAX+1)` stops the stream once we've read one byte more than the
+    // limit, so a compression bomb bails while decompressing rather than
+    // allocating gigabytes and then failing after the fact.
     decoder
+        .take((MAX_BUFFERED_RESPONSE_BYTES as u64) + 1)
         .read_to_end(&mut out)
         .map_err(|e| format!("gzip decompression failed: {e}"))?;
-    // If the decompressed output still doesn't fit in the cap (pathologically
-    // compressible input), fail rather than allocate further.
-    if out.len() >= MAX_BUFFERED_RESPONSE_BYTES {
+    // If the decompressed output exceeds the cap (pathologically compressible
+    // input), fail rather than return a partial/oversized body.
+    if out.len() > MAX_BUFFERED_RESPONSE_BYTES {
         return Err(format!(
             "decompressed output exceeds {MAX_BUFFERED_RESPONSE_BYTES} bytes",
         ));
@@ -1046,6 +1062,35 @@ mod tests {
                     value: content_type.to_string(),
                     raw_value: Vec::new(),
                 }],
+            }),
+            attributes: std::collections::HashMap::new(),
+            end_of_stream: false,
+        });
+        state
+    }
+
+    /// Like `response_state_with_content_type`, but also sets Content-Encoding
+    /// so the `is_sse && is_gzip` branch of `set_mode_from_headers` engages.
+    fn response_state_with_content_type_and_encoding(
+        window: usize,
+        content_type: &str,
+        content_encoding: &str,
+    ) -> ResponseState {
+        let mut state = ResponseState::new(window);
+        state.set_mode_from_headers(&HttpHeaders {
+            headers: Some(HeaderMap {
+                headers: vec![
+                    HeaderValue {
+                        key: "content-type".to_string(),
+                        value: content_type.to_string(),
+                        raw_value: Vec::new(),
+                    },
+                    HeaderValue {
+                        key: "content-encoding".to_string(),
+                        value: content_encoding.to_string(),
+                        raw_value: Vec::new(),
+                    },
+                ],
             }),
             attributes: std::collections::HashMap::new(),
             end_of_stream: false,
@@ -1360,6 +1405,85 @@ mod tests {
         assert!(
             matches!(state.mode, ResponseBodyMode::Sse),
             "an SSE Content-Type on the bodyless path must still resolve Sse mode, not silently default to Buffered"
+        );
+    }
+
+    /// The gzip-SSE branch buffers compressed chunks, decompresses at
+    /// end_of_stream, scans through the SSE holdback, and re-compresses the
+    /// emitted output so the delivered body matches the still-present
+    /// `Content-Encoding: gzip` header. Without the re-compress step a
+    /// gzip-decoding client would receive identity bytes stamped as gzip.
+    #[test]
+    fn gzip_sse_is_decompressed_scanned_and_recompressed() {
+        let e = engine();
+        let m = metrics();
+        let mut state =
+            response_state_with_content_type_and_encoding(64, "text/event-stream", "gzip");
+
+        // Assert the gzip-SSE mode actually engaged (gzip_buf armed).
+        assert!(
+            state.gzip_buf.is_some(),
+            "SSE+gzip headers must arm the gzip buffer"
+        );
+
+        // Build gzip-compressed SSE: "data: hello from upstream\n\n".
+        use std::io::Write;
+
+        use flate2::{Compression, write::GzEncoder};
+        let plaintext = b"data: hello from upstream\n\n";
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plaintext).expect("write");
+        let compressed = enc.finish().expect("finish");
+
+        let resp = handle_response_chunk(&e, &m, &mut state, &compressed, true);
+        let body = extract_body(&resp).expect("SSE gzip must emit a scanned body");
+
+        // The emitted body must still be gzip-encoded (magic bytes) to match the
+        // Content-Encoding: gzip header, NOT plaintext.
+        assert!(
+            body.starts_with(&[0x1f, 0x8b]),
+            "gzip-SSE output must be re-compressed, got plaintext: {:?}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // Decompress it back and confirm the SSE line survived the round-trip.
+        use std::io::Read;
+
+        use flate2::read::GzDecoder;
+        let mut dec = GzDecoder::new(&body[..]);
+        let mut roundtrip = String::new();
+        dec.read_to_string(&mut roundtrip).expect("decompress");
+        assert_eq!(roundtrip, "data: hello from upstream\n\n");
+    }
+
+    /// A gzip decompression bomb (small compressed input that expands to far
+    /// more than `MAX_BUFFERED_RESPONSE_BYTES`) must be refused while
+    /// decompressing, not allocate gigabytes and only fail after the fact.
+    #[test]
+    fn gzip_decompression_bomb_is_refused_rather_than_oom() {
+        use std::io::Write;
+
+        use flate2::{Compression, write::GzEncoder};
+
+        // Highly compressible input: >MAX bytes of 'x' compresses to far less
+        // than MAX, but decompresses to a size that exceeds MAX_BUFFERED_RESPONSE_BYTES.
+        const BOMB_SRC: usize = MAX_BUFFERED_RESPONSE_BYTES + (16 * 1024 * 1024);
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(9));
+        enc.write_all(&vec![b'x'; BOMB_SRC]).expect("write");
+        let bomb = enc.finish().expect("finish");
+        // Sanity: the compressed bomb must be much smaller than its intent
+        // (otherwise the test isn't exercising the decompression cap).
+        assert!(
+            bomb.len() < MAX_BUFFERED_RESPONSE_BYTES,
+            "bomb did not compress enough: {}",
+            bomb.len()
+        );
+
+        let mut buf = bomb;
+        let err = decompress_gzip(&mut buf).expect_err("decompression bomb must be refused");
+        assert!(
+            err.contains("exceeds"),
+            "expected an 'exceeds' refusal, got: {err}"
         );
     }
 
