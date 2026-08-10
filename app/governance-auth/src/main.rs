@@ -16,6 +16,7 @@ mod oauth;
 mod otel;
 mod redacted;
 mod security;
+mod update;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -68,6 +69,17 @@ enum Command {
     Status,
     /// Remove the cached session.
     Logout,
+    /// Replace this binary with the latest GitHub release for this platform.
+    ///
+    /// The download is checksummed against the release's own `.sha256`, which
+    /// catches corruption but is NOT a signature -- see `crate::update`'s
+    /// module doc for the trust model and why it says "checksummed", not
+    /// "verified".
+    SelfUpdate {
+        /// Report whether an update exists and exit, changing nothing.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[tokio::main]
@@ -103,5 +115,6 @@ async fn main() -> Result<()> {
         Command::Configure => oauth::configure(&oauth),
         Command::Status => oauth::status(&oauth),
         Command::Logout => oauth::logout(&oauth),
+        Command::SelfUpdate { check } => update::run(&http, check).await,
     }
 }
