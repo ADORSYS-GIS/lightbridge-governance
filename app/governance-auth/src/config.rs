@@ -77,6 +77,19 @@ pub struct OauthConfigArgs {
     /// silently. See `crate::otel`'s module doc.
     #[arg(long, env = "GOVERNANCE_AUTH_OTEL_TOKEN", global = true)]
     otel_token: Option<String>,
+
+    /// How often Claude Code re-runs `otel-headers` for fresh OTLP headers.
+    /// Default 240s, deliberately under Keycloak's 300s access-token
+    /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
+    /// exporting with an expired token for most of every half hour, and
+    /// failing silently while doing it.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS",
+        default_value_t = 240_000,
+        global = true
+    )]
+    otel_headers_debounce_ms: u64,
 }
 
 impl OauthConfigArgs {
@@ -96,6 +109,7 @@ impl OauthConfigArgs {
             audience: self.audience,
             otel_endpoint: self.otel_endpoint,
             otel_token: self.otel_token,
+            otel_headers_debounce_ms: self.otel_headers_debounce_ms,
         })
     }
 }
@@ -114,6 +128,7 @@ pub struct OauthConfig {
     pub audience: Option<String>,
     pub otel_endpoint: Option<String>,
     pub otel_token: Option<String>,
+    pub otel_headers_debounce_ms: u64,
 }
 
 /// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER`: rejects an

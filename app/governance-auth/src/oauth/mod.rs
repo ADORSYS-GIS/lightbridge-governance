@@ -73,14 +73,34 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         endpoint,
         token: config.otel_token.clone().map(Redacted::new),
         resource_attributes,
+        // Point Claude Code at this very binary for fresh headers. Built
+        // from the same issuer/client-id the caller passed, so the helper
+        // line keeps working when those are supplied as flags rather than
+        // inherited env (a helper subprocess isn't guaranteed to inherit
+        // them -- the same reasoning as the `apiKeyHelper` line).
+        headers_helper: Some(format!(
+            "{} --issuer {} --client-id {} otel-headers",
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .unwrap_or_else(|| "governance-auth".to_owned()),
+            config.issuer,
+            config.client_id,
+        )),
+        headers_helper_debounce_ms: config.otel_headers_debounce_ms,
     };
 
     let outcomes = otel::configure_all(&home, &settings)?;
     let mut wrote_vscode = false;
+    let mut needs_static_token = false;
     for outcome in &outcomes {
         match outcome {
             otel::Outcome::Written(path) => {
                 eprintln!("Telemetry configured: {}", path.display());
+                // Codex and VS Code have no dynamic-headers hook, so they're
+                // the only ones a missing static token actually breaks.
+                needs_static_token |= path.file_name().is_some_and(|name| name == "config.toml")
+                    || path.parent().is_some_and(|dir| dir.ends_with("User"));
                 // VS Code's settings live under `<flavour>/User/`, which is
                 // how a written VS Code config is told apart from the two
                 // CLI ones without threading a tool tag through `Outcome`.
@@ -104,35 +124,69 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         );
     }
 
-    if config.otel_token.is_none() {
+    // Only the clients WITHOUT a dynamic-headers hook need the static token.
+    // Claude Code refreshes its own via `otelHeadersHelper`, so warning about
+    // a missing `--otel-token` when Claude Code was the only thing configured
+    // would be false alarm -- and a warning that cries wolf is one people
+    // stop reading.
+    if config.otel_token.is_none() && needs_static_token {
         eprintln!(
-            "warning: no --otel-token supplied, so no OTLP credential was written. \
-             Telemetry will be rejected by an authenticating collector."
+            "warning: no --otel-token supplied, so no OTLP credential was written for the \
+             clients that can't refresh their own (Codex, VS Code Copilot). Their telemetry \
+             will be rejected by an authenticating collector. Claude Code is unaffected -- it \
+             refreshes via otelHeadersHelper."
         );
     }
     Ok(())
 }
 
 pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
-    let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
-
-    let Some(session) = cache::load(&config.issuer, &config.client_id)? else {
-        bail!("no cached session for this issuer/client; run `governance-auth login` first");
-    };
-
-    let session = if session.is_fresh()? {
-        session
-    } else {
-        let refreshed = refresh_or_fail(http, config, &session).await?;
-        cache::store(&refreshed)?;
-        refreshed
-    };
+    let session = current_session(http, config).await?;
 
     // The ONLY thing this command ever writes to stdout. Everything else --
     // prompts, errors, status -- goes to stderr, matching the contract both
     // `apiKeyHelper` and Codex's `auth.command` expect.
     println!("{}", session.access_token.expose());
     Ok(())
+}
+
+/// Claude Code's `otelHeadersHelper` entrypoint: the same refresh-or-fail
+/// path as [`token`], emitted as the JSON object that hook requires
+/// (`{"Authorization": "Bearer …"}`).
+///
+/// This is what makes telemetry auth self-renewing rather than depending on
+/// a human rotating a long-lived key: Claude Code re-invokes this on an
+/// interval, so a short-lived OAuth2 access token is not just workable here,
+/// it's the right credential. Fails closed exactly like `token` -- a
+/// rejected refresh writes nothing to stdout and exits non-zero, which the
+/// hook surfaces in `/status` rather than silently exporting unauthenticated.
+pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
+    let session = current_session(http, config).await?;
+    let headers = serde_json::json!({
+        "Authorization": format!("Bearer {}", session.access_token.expose()),
+    });
+    // stdout carries the JSON object and nothing else, same contract as
+    // `token` -- anything extra makes the hook's parse fail.
+    println!("{headers}");
+    Ok(())
+}
+
+/// Loads the cached session, refreshing it if it's within the expiry skew.
+/// Shared by `token` and `otel-headers` so the two can't drift on when a
+/// refresh happens or on what "fails closed" means.
+async fn current_session(http: &reqwest::Client, config: &OauthConfig) -> Result<CachedSession> {
+    let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
+
+    let Some(session) = cache::load(&config.issuer, &config.client_id)? else {
+        bail!("no cached session for this issuer/client; run `governance-auth login` first");
+    };
+
+    if session.is_fresh()? {
+        return Ok(session);
+    }
+    let refreshed = refresh_or_fail(http, config, &session).await?;
+    cache::store(&refreshed)?;
+    Ok(refreshed)
 }
 
 async fn refresh_or_fail(

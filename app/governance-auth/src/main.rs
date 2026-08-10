@@ -52,6 +52,12 @@ enum Command {
     /// `auth.command`. Fails closed and non-interactively if there's no
     /// valid session.
     Token,
+    /// Print OTLP export headers as a JSON object -- the format Claude
+    /// Code's `otelHeadersHelper` requires. Same refresh-or-fail-closed
+    /// behaviour as `token`; this is that token wrapped in the shape the
+    /// hook expects, so telemetry auth refreshes automatically instead of
+    /// depending on anyone rotating a long-lived key by hand.
+    OtelHeaders,
     /// Re-apply the OpenTelemetry configuration to Claude Code and Codex
     /// without re-running the interactive login. `login` already does this;
     /// this is for an existing session whose endpoint or ingest token
@@ -93,6 +99,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Login { device_code } => oauth::login(&http, &oauth, device_code).await,
         Command::Token => oauth::token(&http, &oauth).await,
+        Command::OtelHeaders => oauth::otel_headers(&http, &oauth).await,
         Command::Configure => oauth::configure(&oauth),
         Command::Status => oauth::status(&oauth),
         Command::Logout => oauth::logout(&oauth),

@@ -50,6 +50,18 @@ pub struct OtelSettings {
     /// telemetry arriving at the collector is attributable without the
     /// collector having to resolve the OTLP credential back to a person.
     pub resource_attributes: BTreeMap<String, String>,
+    /// Command Claude Code re-invokes for fresh OTLP headers
+    /// (`otelHeadersHelper`). When set, telemetry auth is self-renewing and
+    /// the static `OTEL_EXPORTER_OTLP_HEADERS` is not written for that
+    /// client -- the two would fight, and a stale static value silently
+    /// winning is exactly the failure this replaces.
+    pub headers_helper: Option<String>,
+    /// How often Claude Code re-runs the helper. Its own default is 29
+    /// MINUTES, which is far longer than a Keycloak access token lives
+    /// (300s) -- leaving it alone would mean exporting with an expired token
+    /// for most of every half-hour, silently. This must stay below the
+    /// token lifetime.
+    pub headers_helper_debounce_ms: u64,
 }
 
 impl OtelSettings {
@@ -475,11 +487,32 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
         .as_object_mut()
         .with_context(|| format!("{} is not a JSON object", path.display()))?;
 
+    // `otelHeadersHelper` -- Claude Code re-invokes this on an interval and
+    // uses whatever JSON headers it prints, so telemetry auth refreshes
+    // itself instead of depending on anyone rotating a long-lived key by
+    // hand. This is the one client that can do it; see `headers_value`'s
+    // callers for the others.
+    if let Some(helper) = &settings.headers_helper {
+        object.insert(
+            "otelHeadersHelper".to_owned(),
+            serde_json::Value::String(helper.clone()),
+        );
+    }
+
     let env = object
         .entry("env")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
         .as_object_mut()
         .with_context(|| format!("`env` in {} is not a JSON object", path.display()))?;
+
+    // Remove the static header FIRST when a helper is in play. Only adding
+    // keys would leave a stale `OTEL_EXPORTER_OTLP_HEADERS` from an earlier
+    // run sitting next to the refreshing helper -- the exact silent failure
+    // the helper exists to remove, and one that survives every subsequent
+    // `configure`. Observed on a real machine before this line existed.
+    if settings.headers_helper.is_some() {
+        env.remove("OTEL_EXPORTER_OTLP_HEADERS");
+    }
 
     for (key, value) in claude_code_env(settings) {
         env.insert(key.to_owned(), serde_json::Value::String(value));
@@ -506,8 +539,18 @@ fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
             settings.resource_attributes_value(),
         ),
     ];
-    if let Some(headers) = settings.headers_value() {
-        entries.push(("OTEL_EXPORTER_OTLP_HEADERS", headers));
+    match (&settings.headers_helper, settings.headers_value()) {
+        // The helper wins outright when present: a stale static header
+        // sitting alongside a refreshing one is the exact silent-failure
+        // mode this whole mechanism exists to remove.
+        (Some(_), _) => {
+            entries.push((
+                "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+                settings.headers_helper_debounce_ms.to_string(),
+            ));
+        }
+        (None, Some(headers)) => entries.push(("OTEL_EXPORTER_OTLP_HEADERS", headers)),
+        (None, None) => {}
     }
     entries
 }
@@ -628,6 +671,8 @@ mod tests {
         OtelSettings {
             endpoint: "https://otel.example.com".to_owned(),
             token: Some(Redacted::new("ingest-token".to_owned())),
+            headers_helper: None,
+            headers_helper_debounce_ms: 240_000,
             resource_attributes: BTreeMap::from([
                 ("user.id".to_owned(), "abc-123".to_owned()),
                 ("service.name".to_owned(), "claude-code".to_owned()),
