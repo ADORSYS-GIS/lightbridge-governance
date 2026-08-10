@@ -6,19 +6,22 @@ endpoint**, not inferred from documentation — several of them contradict what
 the docs imply.
 
 Last verified: 2026-08-10, against Claude Code 2.1.223, codex-cli 0.146.1,
-and `api.ai.camer.digital`.
+and `api.ai.camer.digital`. The opencode column is read from the org's own
+working configuration (`ai-helm` `charts/librechat-opencode-wellknown/
+values.yaml`), not from opencode's docs — it is already in production use
+against this gateway.
 
 ## Matrix
 
-| Capability | Claude Code | Codex CLI | GitHub Copilot (VS Code) |
-|---|---|---|---|
-| **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ❌ no supported override |
-| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ✅ `auth.command`, `refresh_interval_ms` | ❌ |
-| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ✅ `github.copilot.chat.otel.otlpEndpoint` |
-| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ static only |
-| **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ⚠️ env var only — no setting exists |
-| **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | — |
-| **Config file is safely mergeable** | ✅ JSON | ✅ TOML via `toml_edit` | ⚠️ JSONC — refused if it has comments |
+| Capability | Claude Code | Codex CLI | opencode | GitHub Copilot (VS Code) |
+|---|---|---|---|---|
+| **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
+| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ✅ `auth.command`, `refresh_interval_ms` | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
+| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ `github.copilot.chat.otel.otlpEndpoint` |
+| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ❌ static only |
+| **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | ⚠️ env var only — no setting exists |
+| **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | ✅ **already consumes `/v1/models/info`** | — |
+| **Config file is safely mergeable** | ✅ JSON | ✅ TOML via `toml_edit` | ⚠️ JSONC — same hazard as VS Code | ⚠️ JSONC — refused if it has comments |
 
 ✅ works · ⚠️ works with a caveat · ❌ no mechanism exists
 
@@ -78,6 +81,45 @@ verified live, the warning still prints. Discovery populates the `/model`
 picker; the window comes from `modelOverrides` or
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
 
+### opencode is the most complete client, and it is not configured here
+
+Its `opencode-oauth2` plugin does a full OAuth2 **device-code** flow against
+the same Keycloak realm `governance-auth` uses, with its own refresh loop
+(`syncIntervalMinutes: 60`) — so for inference it needs nothing from
+`governance-auth` at all. Config lives at
+`~/.config/opencode/opencode.json`; the org's working shape is in `ai-helm`
+`charts/librechat-opencode-wellknown/values.yaml`:
+
+```jsonc
+"provider": { "camer-digital": { "options": {
+  "baseURL": "https://api.ai.camer.digital/v1",
+  "oauth2": { "issuer": "https://auth.verif.fyi/realms/camer-digital",
+              "clientId": "opencode-cli", "authFlow": "device_code" },
+  "meta":   { "modelsInfoUrl": "models/info" } } } }
+```
+
+**It has no OpenTelemetry support** — not a config gap, the feature doesn't
+exist. Its plugin system is the only seam (the same seam `opencode-oauth2`
+uses), so instrumenting it means writing a plugin, not writing config.
+That's why `governance-auth` does not configure opencode today: the half it
+could help with is already solved better, and the half we want (telemetry)
+isn't configurable at all.
+
+⚠️ Its config is **JSONC**, so anything editing it faces the same
+comment-preservation hazard as VS Code's `settings.json` — and the org's own
+file is heavily commented.
+
+### opencode independently corroborates the Codex blocker
+
+That config carries `responseApi: false`, with the reason recorded inline:
+routing through the **Responses API** required SSE index-repair for
+`output_index`/`content_index` fields "our Envoy AI Gateway omits", and it
+was enabled then reverted.
+
+So the gateway's Responses-API support is known-incomplete from a second,
+independent direction — not just the 404 measured here. Codex 0.146.1
+*requires* that path, which is why it can't be made to work by configuration.
+
 ## `GET /v1/models/info` — the source for model metadata
 
 Auth-gated (401 without a token), returns 19 models. Per entry:
@@ -107,5 +149,14 @@ binary where they would silently rot as models change.
 
 - **Claude Code — complete.** Inference and telemetry both work, both
   credentials refresh, verified end-to-end against the live gateway.
+- **opencode — inference complete, telemetry impossible.** Already in
+  production with its own OAuth2 device-code refresh and its own
+  `/v1/models/info` consumption; OTEL would need a plugin.
 - **Codex — telemetry config only.** Inference blocked on `/v1/responses`.
 - **VS Code Copilot — telemetry only**, and its auth needs a shell env var.
+
+The two clients that solved model metadata (opencode) and telemetry auth
+(Claude Code) did it in completely different ways, which is the argument for
+reading model windows from `/v1/models/info` rather than hard-coding them:
+opencode already treats that endpoint as the catalogue, so Claude Code
+picking up the same source keeps one source of truth rather than two.
