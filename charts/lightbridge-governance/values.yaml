@@ -427,6 +427,13 @@ aiCliOtel:
   # exact image -- the oidc extension started against the real issuer, and
   # unauthenticated and malformed-token POSTs both returned 401.
   image: "otel/opentelemetry-collector-contrib:0.158.0"
+  # Init container that retry-loops OIDC discovery before the collector
+  # starts -- see the `initContainers` block in otelcollector-ai-cli.yaml for
+  # why this exists (a real prod incident: 0/2 replicas, 100% CrashLoopBackOff,
+  # ai-helm-values#216). Pinned by tag, same convention as `image` above --
+  # digest captured at the time this was written:
+  # curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+  initContainerImage: "curlimages/curl:8.11.1"
   # memory_limiter runs first in every pipeline; these are its bounds.
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
