@@ -62,6 +62,23 @@ pub struct OtelSettings {
     /// for most of every half-hour, silently. This must stay below the
     /// token lifetime.
     pub headers_helper_debounce_ms: u64,
+    /// The `governance-auth … token` command clients spawn for a fresh
+    /// INFERENCE credential (Claude Code's `apiKeyHelper`, Codex's
+    /// `[model_providers.*.auth] command`).
+    ///
+    /// ⚠️ MUST be an absolute path. Codex spawns this itself rather than
+    /// through a shell, so it does NOT get the login shell's `PATH` -- a bare
+    /// `governance-auth` fails with `No such file or directory (os error 2)`
+    /// and the provider silently falls back to unauthenticated. Measured live
+    /// against codex-cli 0.146.1 with the binary in `~/.local/bin`. Claude
+    /// Code happens to resolve a bare name (it goes through a shell), so this
+    /// trap only shows up on one of the two clients -- which is exactly why
+    /// both are built from [`binary_path`] rather than a literal.
+    pub token_command: String,
+    /// Gateway base URL. `Some` turns on inference wiring in both writers;
+    /// `None` leaves every inference key untouched, so a telemetry-only
+    /// `configure` can't clobber a hand-tuned provider block.
+    pub gateway_url: Option<String>,
 }
 
 impl OtelSettings {
@@ -82,6 +99,31 @@ impl OtelSettings {
             .as_ref()
             .map(|token| format!("Authorization=Bearer {}", token.expose()))
     }
+
+    /// `<gateway>/anthropic` -- Claude Code appends `/v1/messages` itself.
+    fn anthropic_base_url(&self) -> Option<String> {
+        self.gateway_url
+            .as_ref()
+            .map(|base| format!("{}/anthropic", base.trim_end_matches('/')))
+    }
+
+    /// `<gateway>/v1` -- the OpenAI-compatible base Codex appends to.
+    fn openai_base_url(&self) -> Option<String> {
+        self.gateway_url
+            .as_ref()
+            .map(|base| format!("{}/v1", base.trim_end_matches('/')))
+    }
+}
+
+/// Absolute path to the running binary, for any command string written into
+/// another tool's config. Falls back to the bare name only when the path is
+/// genuinely unavailable -- see [`OtelSettings::token_command`] for what a
+/// bare name costs on Codex.
+pub fn binary_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "governance-auth".to_owned())
 }
 
 /// Pulls `sub`/`email` out of a JWT access token's payload for use as OTLP
@@ -499,6 +541,27 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
         );
     }
 
+    // `apiKeyHelper` -- the INFERENCE credential, distinct from the telemetry
+    // one above. Only written alongside `ANTHROPIC_BASE_URL`: pointing Claude
+    // Code's API key at this gateway's tokens while it still talks to
+    // api.anthropic.com would send a Keycloak token to Anthropic, so the two
+    // keys move together or not at all.
+    if let Some(base_url) = settings.anthropic_base_url() {
+        object.insert(
+            "apiKeyHelper".to_owned(),
+            serde_json::Value::String(settings.token_command.clone()),
+        );
+        let env = object
+            .entry("env")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .with_context(|| format!("`env` in {} is not a JSON object", path.display()))?;
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_owned(),
+            serde_json::Value::String(base_url),
+        );
+    }
+
     let env = object
         .entry("env")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
@@ -632,6 +695,29 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         }
     }
 
+    if let Some(base_url) = settings.openai_base_url() {
+        let providers = table_entry(document.as_table_mut(), "model_providers")?;
+        let provider = table_entry(providers, CODEX_PROVIDER_ID)?;
+        provider.insert("name", toml_edit::value(CODEX_PROVIDER_ID));
+        provider.insert("base_url", toml_edit::value(&base_url));
+        // The ONLY value codex-cli 0.146.1 accepts: `wire_api = "chat"` is
+        // rejected outright at config load ("no longer supported"), so there
+        // is no shape of this block that reaches a chat-completions gateway.
+        provider.insert("wire_api", toml_edit::value("responses"));
+        provider
+            .decor_mut()
+            .set_prefix("\n# Written by `governance-auth configure --gateway-url`.\n# \u{26a0} INERT until the gateway serves /v1/responses: codex-cli requires\n# wire_api = \"responses\" and this gateway implements /v1/chat/completions\n# (verified: /v1/responses 404s upstream, /v1/chat/completions 200s). The\n# auth wiring below is correct and tested; only the endpoint is missing.\n");
+
+        let auth = table_entry(provider, "auth")?;
+        // Absolute path, deliberately -- see OtelSettings::token_command.
+        // Codex spawns this without a shell, so a bare name cannot resolve.
+        auth.insert("command", toml_edit::value(&settings.token_command));
+        auth.insert(
+            "refresh_interval_ms",
+            toml_edit::value(i64::try_from(settings.headers_helper_debounce_ms).unwrap_or(240_000)),
+        );
+    }
+
     let mut bytes = document.to_string().into_bytes();
     if !bytes.ends_with(b"\n") {
         bytes.push(b'\n');
@@ -639,6 +725,12 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
     write_atomically(&path, &bytes)?;
     Ok(Outcome::Written(path))
 }
+
+/// Provider id `governance-auth` owns in `config.toml`. A stable constant so
+/// re-running `configure` updates the same block instead of accumulating one
+/// per run; any differently-named provider a developer wrote by hand is left
+/// strictly alone.
+const CODEX_PROVIDER_ID: &str = "governance";
 
 /// `table[key]` on a `toml_edit` table panics when the key exists but holds a
 /// non-table (a developer who wrote `otel = "something"` by hand), and
@@ -700,6 +792,18 @@ mod tests {
                 ("user.id".to_owned(), "abc-123".to_owned()),
                 ("service.name".to_owned(), "claude-code".to_owned()),
             ]),
+            token_command: "/abs/path/governance-auth token".to_owned(),
+            // Telemetry-only by default: the inference keys are opt-in, so
+            // every pre-existing test keeps asserting the same surface.
+            gateway_url: None,
+        }
+    }
+
+    /// `settings()` plus the gateway, i.e. what `--gateway-url` turns on.
+    fn settings_with_gateway() -> OtelSettings {
+        OtelSettings {
+            gateway_url: Some("https://api.example.com".to_owned()),
+            ..settings()
         }
     }
 
@@ -754,6 +858,121 @@ mod tests {
         // over it is not.
         assert!(identity_attributes("not-a-jwt").is_empty());
         assert!(identity_attributes("still.not.ajwt").is_empty());
+    }
+
+    #[test]
+    fn binary_path_resolves_to_an_absolute_path() {
+        // The test above pins the WRITER (it passes its fixture through), so
+        // on its own it would still pass if this function regressed to the
+        // bare-name fallback -- which is the actual defect that broke Codex.
+        // This is the guard for the source of that string.
+        let path = binary_path();
+        assert!(
+            path.starts_with('/'),
+            "binary_path must be absolute so Codex can spawn it without a shell, got: {path}"
+        );
+        assert_ne!(
+            path, "governance-auth",
+            "the bare-name fallback means Codex gets `No such file or directory`"
+        );
+    }
+
+    #[test]
+    fn codex_auth_command_is_an_absolute_path_not_a_bare_name() {
+        // THE regression guard for this module. Codex spawns `auth.command`
+        // itself, NOT through a shell, so it never sees the login shell's
+        // PATH. A bare `governance-auth` fails with `No such file or
+        // directory (os error 2)` -- measured live against codex-cli 0.146.1
+        // with the binary in ~/.local/bin, where it silently degraded the
+        // provider to unauthenticated rather than erroring usefully. Claude
+        // Code resolves a bare name fine (it uses a shell), so this trap is
+        // invisible if you only ever test that client.
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex"))
+            .expect("create .codex in the test's own temp dir");
+
+        configure_codex(home.path(), &settings_with_gateway()).expect("write codex config");
+
+        let text = fs::read_to_string(home.path().join(".codex/config.toml"))
+            .expect("read back the config just written");
+        let document = text
+            .parse::<toml_edit::DocumentMut>()
+            .expect("output must be valid TOML");
+
+        let command = document["model_providers"][CODEX_PROVIDER_ID]["auth"]["command"]
+            .as_str()
+            .expect("auth.command must be written when a gateway URL is set");
+        assert!(
+            command.starts_with('/'),
+            "auth.command must be absolute or Codex cannot spawn it, got: {command}"
+        );
+        assert_eq!(
+            document["model_providers"][CODEX_PROVIDER_ID]["base_url"].as_str(),
+            Some("https://api.example.com/v1"),
+        );
+        // Not "chat": codex-cli 0.146.1 refuses to load a config containing
+        // it, which would brick the tool rather than disable the provider.
+        assert_eq!(
+            document["model_providers"][CODEX_PROVIDER_ID]["wire_api"].as_str(),
+            Some("responses"),
+        );
+    }
+
+    #[test]
+    fn codex_provider_block_is_absent_without_a_gateway_url() {
+        // Inference wiring is opt-in. A telemetry-only `configure` must not
+        // invent a provider block -- doing so would point Codex at a gateway
+        // the caller never named, and (given /v1/responses 404s today) at a
+        // broken one.
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex"))
+            .expect("create .codex in the test's own temp dir");
+
+        configure_codex(home.path(), &settings()).expect("write codex config");
+
+        let text = fs::read_to_string(home.path().join(".codex/config.toml"))
+            .expect("read back the config just written");
+        assert!(
+            !text.contains("model_providers"),
+            "telemetry-only configure must not write a provider block, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn claude_code_inference_keys_move_together() {
+        // `apiKeyHelper` and `ANTHROPIC_BASE_URL` are written as a pair or
+        // not at all: an apiKeyHelper pointed at this gateway's tokens while
+        // the base URL still points at api.anthropic.com would ship a
+        // Keycloak token to Anthropic on every request.
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude"))
+            .expect("create .claude in the test's own temp dir");
+
+        configure_claude_code(home.path(), &settings()).expect("telemetry-only write");
+        let text = fs::read_to_string(home.path().join(".claude/settings.json"))
+            .expect("read back settings.json");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert!(
+            value.get("apiKeyHelper").is_none(),
+            "no gateway => no helper"
+        );
+        assert!(
+            value["env"].get("ANTHROPIC_BASE_URL").is_none(),
+            "no gateway => no base URL"
+        );
+
+        configure_claude_code(home.path(), &settings_with_gateway()).expect("with-gateway write");
+        let text = fs::read_to_string(home.path().join(".claude/settings.json"))
+            .expect("read back settings.json");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(
+            value["apiKeyHelper"].as_str(),
+            Some("/abs/path/governance-auth token"),
+        );
+        assert_eq!(
+            value["env"]["ANTHROPIC_BASE_URL"].as_str(),
+            Some("https://api.example.com/anthropic"),
+        );
     }
 
     #[test]
