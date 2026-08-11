@@ -1,0 +1,87 @@
+{{- if .Values.grafanaDashboard.enabled }}
+{{- /*
+Ships dashboards/ai-cli-clients.json to Grafana as a GrafanaDashboard CR.
+
+SEPARATE FROM templates/grafanadashboard.yaml (the Copilot connector
+dashboard) rather than folded into it, for the same reason the two
+collectors are separate CRs: they answer different questions from different
+datasources, and one being broken or disabled must not take the other down.
+
+  copilot-connector.json -> Postgres + Prometheus, the PULL connector's data
+  ai-cli-clients.json    -> Loki, the gateway's own access logs
+
+⚠️ THIS DASHBOARD READS LOKI, NOT THE GOVERNANCE DATABASE. Every panel is
+sourced from the `envoy-ai-gateway` access-log stream -- the same stream the
+deployed envoy-ai-gateway-* dashboards use -- grouped by CLIENT rather than
+by user. Nothing here touches `model_calls`/`executions`; those are the
+Foundry PUSH path (RFC-0002) and are empty until that connector is wired.
+
+Why the gateway logs and not the ai-cli OTLP collector: the collector carries
+the TELEMETRY half (what the client did internally), and its Claude Code path
+is currently blocked on issue #84. The gateway logs carry the INFERENCE half
+(what the client actually asked the gateway for) and are populated today, for
+every client, with no dependency on client-side telemetry being configured at
+all. That makes this dashboard useful now and unaffected by #84.
+
+Every LogQL query in the JSON was executed against the live Loki before being
+committed -- including the four timeseries panels, which must be validated
+with `query_range` rather than the instant `query` endpoint (an instant query
+over a `[1m]` window only sees the last minute and returns empty even when
+the query is perfectly correct, which reads as a broken panel and is not).
+
+The `__DS_LOKI__` placeholder + fail-fast guards below are the same contract
+templates/grafanadashboard.yaml documents at length; see that file for why an
+unsubstituted token is worse than a wrong one (it ships as a literal invalid
+UID and Grafana surfaces no error anywhere).
+*/}}
+{{- $dashboardPath := "dashboards/ai-cli-clients.json" }}
+{{- $rawJson := .Files.Get $dashboardPath }}
+{{- if not $rawJson }}
+{{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed." $dashboardPath) }}
+{{- end }}
+{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid }}
+{{- if contains "__DS_LOKI__" $dashboardJson }}
+{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__ token after replace -- it would ship as a literal (invalid) datasource UID and every panel would silently show 'Datasource not found'. Failing at render time instead." $dashboardPath) }}
+{{- end }}
+{{- /*
+Same broader shape-based guard as the Copilot dashboard: catches a token that
+was RENAMED (e.g. `__DS_LOKI_MAIN__`), which the exact-match check above
+cannot see and which would otherwise ship silently.
+*/}}
+{{- if regexMatch "__DS_[A-Z0-9_]+__" $dashboardJson }}
+{{- fail (printf "%s still contains an unrecognized __DS_..._..__-shaped placeholder after substitution -- fix the token spelling to match the __DS_LOKI__ contract rather than shipping an unsubstituted placeholder." $dashboardPath) }}
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ .Values.name }}-ai-cli-clients
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  # ⚠️ IMMUTABLE -- correcting a wrong selector means delete + recreate.
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if and .Values.grafanaDashboard.folder.enabled .Values.grafanaDashboard.folder.parent.create }}
+  # The PARENT "Governance" folder, NOT the "Copilot" child that
+  # templates/grafanadashboard.yaml uses. This dashboard is about AI CLI
+  # clients reaching the gateway -- it has nothing to do with the GitHub
+  # Copilot connector, and filing it under Copilot would tell a reader it
+  # does. Confirmed live 2026-08-11: `governance` (title "Governance") is the
+  # parent of `lightbridge-governance-copilot` (title "Copilot").
+  #
+  # Gated on `parent.create` because folderRef resolves a GrafanaFolder CR BY
+  # NAME in this namespace: if this chart isn't creating the parent, there may
+  # be no such CR to reference, and a dangling ref puts the dashboard nowhere
+  # rather than failing loudly. Unfiled beats mis-filed, but both beat broken.
+  folderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
+  {{- end }}
+  # Load-bearing: Grafana runs in `observability` while this chart deploys to
+  # the application namespace. Without this the operator finds zero candidate
+  # Grafana instances and reports NoMatchingInstances -- a silent non-render.
+  allowCrossNamespaceImport: {{ .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  # Literal block scalar, not a quoted string -- JSON is full of `"` and `\`
+  # that would need re-escaping to survive a quoted YAML string.
+  json: |
+{{ $dashboardJson | indent 4 }}
+{{- end }}

@@ -397,6 +397,16 @@ grafanaDashboard:
     # exactly the ambiguity ADR-0011 already warns about for
     # governance_copilot_*'s own 30h expiration cliff.
     prometheusUid: mimir
+    # For dashboards/ai-cli-clients.json (`__DS_LOKI__`), which reads the
+    # envoy-ai-gateway access-log stream.
+    #
+    # ✅ CONFIRMED, unlike prometheusUid above: read straight off the deployed
+    # `envoy-ai-gateway-per-user` GrafanaDashboard's own JSON on 2026-08-11,
+    # which references `"uid": "loki"` for exactly this stream. Every query in
+    # ai-cli-clients.json was then executed against that datasource's backing
+    # Loki and returned data, so this value is verified end to end rather than
+    # assumed.
+    lokiUid: loki
 
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
 # copilot-reports.github.com signed-download host (spike-0007), the S3

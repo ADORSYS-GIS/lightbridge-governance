@@ -1,0 +1,851 @@
+{
+  "uid": "governance-ai-cli-clients",
+  "title": "AI CLI clients",
+  "description": "Which AI coding clients talk to the gateway, through which credential, and how well. Sourced from envoy-ai-gateway access logs in Loki -- the same stream the envoy-ai-gateway-* dashboards use, grouped by client rather than by user. Companion to the ai-cli OTLP collector: this shows the INFERENCE side (which always works), while the collector carries the TELEMETRY side.",
+  "tags": [
+    "governance",
+    "ai-cli",
+    "adoption"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Which AI clients are being used",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Requests",
+      "description": "Every request the gateway served in range, all clients.",
+      "id": 2,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"envoy-ai-gateway\"} [$__range]))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Distinct clients",
+      "description": "Distinct user-agent strings. Each CLI version counts separately -- opencode ships many versions, so this runs higher than 'distinct tools'.",
+      "id": 3,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "count(sum by (user_agent) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]` [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Distinct users",
+      "description": "",
+      "id": 4,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "count(sum by (oidc_email) (count_over_time({service_name=\"envoy-ai-gateway\"} | json oidc_email [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Tokens",
+      "description": "",
+      "id": 5,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sum(sum_over_time({service_name=\"envoy-ai-gateway\"} | json tot=`[\"gen_ai.usage.total_tokens\"]` | unwrap tot | __error__=\"\" [$__range]))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by client",
+      "description": "Adoption over time, per client. This is the panel that shows a new client (Claude Code via governance-auth) appearing against the established ones.",
+      "id": 6,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sum by (user_agent) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]` [1m]))",
+          "queryType": "range",
+          "legendFormat": "{{user_agent}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Clients by request count",
+      "description": "Ranked client list for the selected range.",
+      "id": 7,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (user_agent) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]` [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Tokens by client",
+      "description": "Consumption, not just call count -- a client with few calls can still dominate spend.",
+      "id": 8,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (user_agent) (sum_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, tot=`[\"gen_ai.usage.total_tokens\"]` | unwrap tot | __error__=\"\" [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Which credential path (governed vs not)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 9,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by credential (azp)",
+      "description": "`azp` is the OAuth2 authorized party -- it identifies WHICH credential was used, not who used it. `governance-auth-cli` is the governed path this platform issues (ADR-0010); anything else is a long-lived API key or a different client's own registration. The ratio here is the adoption metric for governance-auth itself.",
+      "id": 10,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sum by (azp) (count_over_time({service_name=\"envoy-ai-gateway\"} | json azp [1m]))",
+          "queryType": "range",
+          "legendFormat": "{{azp}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Client x credential",
+      "description": "The join that answers 'is this tool going through the governed path?'. A single client appearing under two azp values means some of its traffic bypasses governance-auth.",
+      "id": 11,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (user_agent, azp) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, azp [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Models by client",
+      "description": "",
+      "id": 12,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (user_agent, model) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, model=`[\"gen_ai.request.model\"]` [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Reliability",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 13,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Non-2xx responses by client",
+      "description": "Client-visible failures. A 404 here is usually a model the gateway does not serve -- Claude Code's built-in default model produces exactly this, since it does not exist upstream.",
+      "id": 14,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sum by (user_agent, code) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, code=`response_code` | code!~\"2..\" [1m]))",
+          "queryType": "range",
+          "legendFormat": "{{user_agent}} {{code}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 latency by client",
+      "description": "",
+      "id": 15,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "quantile_over_time(0.95, {service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, duration | unwrap duration | __error__=\"\" [5m]) by (user_agent)",
+          "queryType": "range",
+          "legendFormat": "{{user_agent}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Response codes by client",
+      "description": "Full code breakdown, 2xx included, so a client's success rate is readable rather than inferred from the error panel alone.",
+      "id": 16,
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "editorMode": "code",
+          "expr": "sort_desc(sum by (user_agent, code) (count_over_time({service_name=\"envoy-ai-gateway\"} | json user_agent=`[\"user-agent\"]`, code=`response_code` [$__range])))",
+          "queryType": "range",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
