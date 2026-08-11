@@ -1,10 +1,11 @@
 {{- if .Values.copilotOtel.enabled }}
 {{- /*
-Push -> pull bridge for copilot-sync's operational OTLP metrics -- see
+Push -> pull bridge for the collector CronJobs' operational OTLP metrics
+(copilot-sync per-run, copilot-verify daily drift/unmapped gauges) -- see
 copilotOtel's header comment in values.yaml for the full ADR-0007 reasoning.
 In one line:
 
-  copilot-sync --OTLP/gRPC:4317--> (this collector) --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+  copilot-sync/copilot-verify --OTLP/gRPC:4317--> (this collector) --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
 
 This is `opentelemetry.io/v1beta1`. In v1beta1 `spec.config` is a nested YAML
 OBJECT, not a string -- that changed from v1alpha1, and getting it wrong
@@ -12,10 +13,11 @@ OBJECT, not a string -- that changed from v1alpha1, and getting it wrong
 It is written as plain nested YAML below for exactly that reason.
 
 The OpenTelemetry Operator creates a Service named "<this CR's name>-collector"
-for it, carrying both the OTLP receiver port (4317, for copilot-sync's push)
-and the prometheus exporter port declared under `ports:` below (for Alloy's
-scrape) -- see templates/servicemonitor-copilot-otel.yaml for exactly how
-that Service's name and labels were determined and the confidence level.
+for it, carrying both the OTLP receiver port (4317, for the collector
+CronJobs' push) and the prometheus exporter port declared under `ports:`
+below (for Alloy's scrape) -- see templates/servicemonitor-copilot-otel.yaml
+for exactly how that Service's name and labels were determined and the
+confidence level.
 */}}
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector

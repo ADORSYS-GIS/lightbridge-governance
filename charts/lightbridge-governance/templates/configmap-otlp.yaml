@@ -1,7 +1,9 @@
 {{- /*
-Feeds copilot-sync's OTEL_EXPORTER_OTLP_ENDPOINT via envFrom (configMapRef,
-optional: true -- see app-template.controllers.copilot-sync.containers.main
-in values.yaml) so the env var is entirely ABSENT, not merely empty, when
+Feeds the collector CronJobs' (copilot-sync, copilot-verify)
+OTEL_EXPORTER_OTLP_ENDPOINT via envFrom (configMapRef, optional: true -- see
+app-template.controllers.copilot-sync.containers.main.env and
+copilot-verify.containers.verify/status.env in values.yaml) so the env var is
+entirely ABSENT, not merely empty, when
 neither path below has a host. Helm values files are never templated, so a
 plain templated env value can't be made to disappear from an app-template
 env map based on this setting; this ConfigMap not existing is what makes the
@@ -12,7 +14,8 @@ because there are now two mutually exclusive sources for it:
   - copilotOtel.enabled (the default): the dedicated in-cluster collector
     this chart renders itself (templates/otelcollector.yaml) via its
     generated Service, "<CR name>-collector" -- reachable by short name
-    since copilot-sync and the collector are always in the same namespace.
+    since the collector CronJobs and the collector are always in the same
+    namespace.
   - copilotOtel.enabled: false: falls back to the manual/external override,
     .Values.copilot.otlp.host (e.g. a real Alloy FQDN).
 
@@ -24,8 +27,8 @@ templates/ciliumnetworkpolicy-copilot-otel.yaml) in the same render, and
 this ConfigMap stops pointing at that now-nonexistent Service in the same
 render too -- it falls back to copilot.otlp.host, which defaults to empty,
 so by default the ConfigMap simply stops rendering rather than leaving a
-dangling endpoint that would make every copilot-sync run log a failed push
-forever.
+dangling endpoint that would make every collector CronJob run log a failed
+push forever.
 */}}
 {{- $otelHost := "" }}
 {{- if .Values.copilotOtel.enabled }}
