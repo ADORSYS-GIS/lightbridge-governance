@@ -139,13 +139,14 @@ copilotOtel:
   # since values.yaml can't be referenced from itself or from another
   # values key -- both sites are commented at point of use.
   prometheusPort: 8889
-  # THE STALENESS TRAP: the CronJob schedule (app-template.controllers.
-  # copilot-sync.cronjob.schedule, below) is `0 */6 * * *` -- every 6h -- and
-  # copilot-sync does one `force_flush` then the pod dies. The prometheus
-  # exporter's own default (metric_expiration: 5m) would make every series
-  # vanish from /metrics ~5 minutes after each run -- no stale marker, no
-  # zero, just gone -- so a dashboard would read empty ~99% of the time and a
-  # "no data for N minutes" freshness alert could never fire (no data is not
+  # THE STALENESS TRAP: the CronJob schedules (app-template.controllers.
+  # copilot-sync.cronjob.schedule, below, is `0 */6 * * *` -- every 6h; the
+  # copilot-verify CronJob pushes its drift/unmapped gauges daily at 03:30)
+  # and each copilot-sync run does one `force_flush` then the pod dies. The
+  # prometheus exporter's own default (metric_expiration: 5m) would make every
+  # series vanish from /metrics ~5 minutes after each run -- no stale marker,
+  # no zero, just gone -- so a dashboard would read empty ~99% of the time and
+  # a "no data for N minutes" freshness alert could never fire (no data is not
   # the same signal as stale data).
   #
   # 30h = 5 x the 6h schedule interval: survives 4 FULLY missed runs back to
@@ -154,7 +155,8 @@ copilotOtel:
   # the CronJob's own `startingDeadlineSeconds: 900` skew, while still
   # eventually expiring -- so a pipeline that's actually been dead for days
   # reads as *missing* at /metrics, not as a silently-stale number from a
-  # week ago quietly passing as "fine".
+  # week ago quietly passing as "fine". The daily copilot-verify push (24h
+  # gap between runs) also stays well inside this window.
   metricExpiration: 30h
 
 serviceMonitor:
@@ -792,6 +794,138 @@ app-template:
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
 
+    copilot-verify:
+      type: cronjob
+      forceRename: copilot-verify
+      labels:
+        app: lightbridge-governance
+      pod:
+        labels:
+          app: lightbridge-governance
+          # Own component label so the egress CNP and the collector's
+          # ingress CNP can select these pods alongside copilot-sync's --
+          # verify/status push their gauges into the same collector.
+          app.kubernetes.io/component: copilot-verify
+      cronjob:
+        # Daily, at 03:30 UTC -- offset from the 6h sync ticks (00/06/12/18)
+        # so the two jobs' pushes don't bunch up on the collector bridge, and
+        # well inside the collector's metricExpiration (30h, see copilotOtel
+        # above) so the drift/unmapped gauges never expire between runs.
+        schedule: "30 3 * * *"
+        concurrencyPolicy: Forbid
+        startingDeadlineSeconds: 900
+        successfulJobsHistory: 3
+        failedJobsHistory: 5
+        backoffLimit: 2
+        activeDeadlineSeconds: 600
+      containers:
+        # BOTH verbs in ONE pod -- the distroless runtime image has no shell
+        # to chain commands with (see .docker/Dockerfile), and both are cheap
+        # read-only reconciliation passes. `verify` reconciles stored row
+        # counts against the manifests and pushes the manifest-drift gauge;
+        # `status` reports last-success age and unmapped users and pushes
+        # those gauges. Without this CronJob the dashboard's "Manifest drift
+        # (verify)" and "Unmapped users" panels have no series at all -- the
+        # chart only ever scheduled `sync`.
+        verify:
+          image:
+            repository: ghcr.io/adorsys-gis/lightbridge-governance
+            tag: "0.1.0"
+            pullPolicy: IfNotPresent
+          command: ["/usr/local/bin/governance-ctl"]
+          args: ["verify"]
+          env:
+            # The SAME env set as copilot-sync, minus nothing: Config::from_env
+            # eagerly builds the S3 archive sink and reads the GitHub App PEM
+            # even for verbs that never call GitHub or S3
+            # (app/governance-ctl/src/sync.rs::from_env).
+            DB_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
+            GH_APP_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_github_app_id
+            GH_APP_PRIVATE_KEY_FILE: /etc/lightbridge/github-app.pem
+            AWS_ACCESS_KEY_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_client_id
+            AWS_SECRET_ACCESS_KEY:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_secret
+          envFrom:
+            - configMapRef:
+                name: lightbridge-governance-copilot
+            - configMapRef:
+                name: lightbridge-governance-otlp
+                optional: true
+          resources:
+            # Read-only reconciliation + one small OTLP push; lighter than the
+            # sync job's paginated GitHub/S3 I/O.
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+        status:
+          image:
+            repository: ghcr.io/adorsys-gis/lightbridge-governance
+            tag: "0.1.0"
+            pullPolicy: IfNotPresent
+          command: ["/usr/local/bin/governance-ctl"]
+          args: ["status"]
+          # Identical env/envFrom to the `verify` container above -- see its
+          # comment for why the full set is required.
+          env:
+            DB_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_db_password
+            DATABASE_URL:
+              value: "{{ .Values.global.databaseUrl }}"
+              dependsOn: DB_PASSWORD
+            GH_APP_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: governance_github_app_id
+            GH_APP_PRIVATE_KEY_FILE: /etc/lightbridge/github-app.pem
+            AWS_ACCESS_KEY_ID:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_client_id
+            AWS_SECRET_ACCESS_KEY:
+              valueFrom:
+                secretKeyRef:
+                  name: lightbridge-governance-env
+                  key: s3_backup_cnpg_secret
+          envFrom:
+            - configMapRef:
+                name: lightbridge-governance-copilot
+            - configMapRef:
+                name: lightbridge-governance-otlp
+                optional: true
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+
   persistence:
     # Duplicated from externalSecret.githubAppPrivateKeyProperty above.
     github-app-key:
@@ -803,6 +937,13 @@ app-template:
       advancedMounts:
         copilot-sync:
           main:
+            - path: /etc/lightbridge
+              readOnly: true
+        copilot-verify:
+          verify:
+            - path: /etc/lightbridge
+              readOnly: true
+          status:
             - path: /etc/lightbridge
               readOnly: true
 

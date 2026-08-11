@@ -1,12 +1,13 @@
 {{- if .Values.copilotOtel.enabled }}
 {{- /*
 Ingress/egress for the dedicated OTLP collector CR in templates/otelcollector.yaml.
-Exactly two ingress callers: copilot-sync itself (same namespace, pushes
-OTLP/gRPC on 4317) and Alloy in the observability namespace (pulls /metrics
-on the prometheus port). The Alloy selector follows the existing
-charts/redact-gateway/templates/ciliumnetworkpolicy.yaml precedent verbatim
-(k8s:app.kubernetes.io/name: alloy, k8s:io.kubernetes.pod.namespace via
-networkPolicy.otlpNamespace).
+Exactly three ingress callers: the two collector CronJobs -- copilot-sync
+(per-run metrics) and copilot-verify (daily drift/unmapped-users gauges), both
+in this namespace pushing OTLP/gRPC on 4317 -- and Alloy in the observability
+namespace (pulls /metrics on the prometheus port). The Alloy selector follows
+the existing charts/redact-gateway/templates/ciliumnetworkpolicy.yaml
+precedent verbatim (k8s:app.kubernetes.io/name: alloy,
+k8s:io.kubernetes.pod.namespace via networkPolicy.otlpNamespace).
 
 The endpointSelector below matches the operator's own SelectorLabels for
 this CR -- see templates/servicemonitor-copilot-otel.yaml for exactly how
@@ -32,22 +33,27 @@ metadata:
     app: {{ .Values.name }}
 spec:
   description: >-
-    The copilot-sync OTLP collector accepts pushes from copilot-sync on 4317
-    and is scraped by Alloy (observability namespace) on the prometheus
-    port. Nothing else reaches it, and it reaches out to nothing but DNS.
+    The copilot OTLP collector accepts pushes from the copilot-sync and
+    copilot-verify CronJobs on 4317 and is scraped by Alloy (observability
+    namespace) on the prometheus port. Nothing else reaches it, and it
+    reaches out to nothing but DNS.
   endpointSelector:
     matchLabels:
       app.kubernetes.io/managed-by: opentelemetry-operator
       app.kubernetes.io/component: opentelemetry-collector
       app.kubernetes.io/instance: {{ printf "%s.%s" .Release.Namespace (include "lightbridge-governance.otelCollectorName" .) }}
   ingress:
-    # copilot-sync's OTLP/gRPC push. Same namespace, so no `k8s:` source
-    # prefix or explicit pod-namespace label is needed (unprefixed
-    # matchLabels are implicitly scoped to this CiliumNetworkPolicy's own
-    # namespace) -- matches this chart's existing local-selector style.
+    # The two collector CronJobs' OTLP/gRPC push. Same namespace, so no
+    # `k8s:` source prefix or explicit pod-namespace label is needed
+    # (unprefixed matchLabels are implicitly scoped to this
+    # CiliumNetworkPolicy's own namespace) -- matches this chart's existing
+    # local-selector style. matchExpressions covers both jobs' component
+    # labels without a second near-identical rule.
     - fromEndpoints:
-        - matchLabels:
-            app.kubernetes.io/component: copilot-sync
+        - matchExpressions:
+            - key: app.kubernetes.io/component
+              operator: In
+              values: [copilot-sync, copilot-verify]
       toPorts:
         - ports:
             - port: "4317"

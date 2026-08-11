@@ -1,7 +1,8 @@
-# copilot-sync's per-deployment values (TENANT_ID, GH_ORG, the S3 archive
-# target) rendered into a ConfigMap and wired via envFrom, rather than typed
-# directly into app-template.controllers.copilot-sync.containers.main.env in
-# values.yaml: Helm values files are never templated, so a literal typed
+# The collector CronJobs' (copilot-sync and copilot-verify) per-deployment
+# values (TENANT_ID, GH_ORG, the S3 archive target) rendered into a ConfigMap
+# and wired via envFrom, rather than typed directly into
+# app-template.controllers.copilot-sync.containers.main.env and
+# copilot-verify.containers.verify/status.env in values.yaml: Helm values files are never templated, so a literal typed
 # into that block freezes at whatever was written there regardless of a
 # deployed override -- a deployed `copilot.tenantId` would never reach the
 # CronJob. This mirrors the technique templates/configmap-otlp.yaml already

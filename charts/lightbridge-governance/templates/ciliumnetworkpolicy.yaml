@@ -1,6 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- /*
-Egress for the copilot-sync CronJob only (RFC-0001, #12 AC: "Egress to GitHub
+Egress for the two collector CronJobs (RFC-0001, #12 AC: "Egress to GitHub
 AND to the signed-download host is allowed explicitly").
 
 Why this shape:
@@ -10,9 +10,12 @@ Why this shape:
   the report envelope's `url` host was `copilot-reports.github.com`, verbatim.
   GitHub's blob storage backs it, so `*.blob.core.windows.net` is included as
   the redirect target the pinned host may resolve to.
-- Scoped to `app.kubernetes.io/component: copilot-sync` because the API
-  Deployment shares the `app` label -- selecting `app` would also cut the
-  API's Postgres egress.
+- Scoped to `app.kubernetes.io/component` in copilot-sync and copilot-verify
+  because the API Deployment shares the `app` label -- selecting `app` would
+  also cut the API's Postgres egress. copilot-verify shares this policy
+  rather than getting a second near-duplicate: its verify/status verbs never
+  call GitHub or S3, so the extra FQDNs are permission, not use. (It also
+  needs DNS + the OTLP egress below, which is why it can't be policy-less.)
 - DNS egress is required for toFQDNs to resolve (Cilium resolves FQDNs via
   cluster DNS, then caches by TTL).
 - The OTLP egress rule below is toEndpoints (in-cluster collector, the
@@ -33,10 +36,13 @@ spec:
   description: >-
     copilot-sync may resolve DNS and reach GitHub's API, the pinned
     copilot-reports.github.com signed-download host (spike-0007) and the S3
-    raw archive. Nothing else.
+    raw archive. copilot-verify shares the policy for its DNS + OTLP needs.
+    Nothing else.
   endpointSelector:
-    matchLabels:
-      app.kubernetes.io/component: copilot-sync
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [copilot-sync, copilot-verify]
   egress:
     # DNS, with L7 visibility (required for toFQDNs resolution).
     - toEndpoints:
