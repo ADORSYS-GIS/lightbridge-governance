@@ -25,19 +25,45 @@
 //!     — the front-proxy-era limitation this module used to carry (a
 //!     raw-byte [`governance_redact::HoldBack`] with no notion of SSE
 //!     structure) is closed.
-//!   - **Buffered** (anything else, including a missing or unrecognised
-//!     Content-Type): accumulated in full and scanned in one pass at
-//!     `end_of_stream`, mirroring `redact-gateway`'s non-streaming response
-//!     path. This is the fail-closed default — `SseHoldBack` only ever
-//!     examines `data:` lines, so feeding it a plain JSON body (because SSE
-//!     was wrongly assumed) would release every byte as
-//!     `Frame::Passthrough` with zero calls to `engine.scan`. That was a
-//!     real gap: prior to this mode existing, every non-SSE response body
-//!     ext_proc's `Streamed` setting handed us went out completely
-//!     unscanned. An ambiguous Content-Type buffers rather than streams —
-//!     "unknown" routes to the branch that inspects the whole body before
-//!     releasing anything, not to the one that assumes it is safe to
-//!     stream through.
+//! - **Buffered** (anything else, including a missing or unrecognised
+//!   Content-Type): accumulated in full and scanned in one pass at
+//!   `end_of_stream`, mirroring `redact-gateway`'s non-streaming response
+//!   path. This is the fail-closed default — `SseHoldBack` only ever
+//!   examines `data:` lines, so feeding it a plain JSON body (because SSE
+//!   was wrongly assumed) would release every byte as
+//!   `Frame::Passthrough` with zero calls to `engine.scan`. That was a
+//!   real gap: prior to this mode existing, every non-SSE response body
+//!   ext_proc's `Streamed` setting handed us went out completely
+//!   unscanned. An ambiguous Content-Type buffers rather than streams —
+//!   "unknown" routes to the branch that inspects the whole body before
+//!   releasing anything, not to the one that assumes it is safe to
+//!   stream through.
+//!
+//! **Accept-Encoding is left intact.** The extproc does not strip or modify
+//! the upstream-bound `Accept-Encoding` header. The upstream decides how to
+//! encode its response based on the header it receives:
+//!
+//! - `stream: false` (non-streaming JSON): the upstream typically returns
+//!   gzip-compressed JSON, which the buffered path decompresses via
+//!   [`decompress_gzip`] before JSON parsing.
+//! - `stream: true` (SSE): the upstream returns plaintext events regardless
+//!   of `Accept-Encoding` — gzip is never applied to streaming responses for
+//!   this provider. The incremental `SseHoldBack` path handles it directly.
+//!
+//! In either case the response-path code in [`handle_response_chunk`]
+//! resolves the correct handling from the response headers (Content-Type
+//! and Content-Encoding), not from what the request carried.
+//!
+//! **Streaming "aggregation" is an Envoy delivery property, not an extproc
+//! bug.** Envoy's `processingMode.response.body: Streamed` sends upstream
+//! DATA frames to the extproc as gRPC streaming messages. For short
+//! completions the entire SSE body often arrives in a single gRPC message
+//! (`end_of_stream: true` on the first chunk), so the `SseHoldBack`
+//! processes all frames at once and releases them together. The client sees
+//! the full response at once not because the extproc aggregated anything,
+//! but because Envoy delivered it all at once. Longer responses arrive in
+//! multiple chunks and the holdback releases them incrementally. The
+//! extproc cannot pace output faster than Envoy delivers input.
 //!
 //! A response chunk boundary landing mid-UTF-8 codepoint (SSE mode only —
 //! the buffered mode hands raw bytes straight to `serde_json`, which does
@@ -280,26 +306,16 @@ fn dispatch(
 ) -> Option<ProcessingResponse> {
     match (req, &mut *phase) {
         (Req::RequestHeaders(_), _) => {
-            // Remove Accept-Encoding so the upstream returns uncompressed
-            // responses (no gzip). This lets us stream and redact the response
-            // body without needing to decompress/re-compress it. The client's
-            // own Accept-Encoding is handled by Envoy's external-to-internal
-            // split: the downstream client gets its compressed stream, but the
-            // upstream sees our stripped header.
-            tracing::debug!("stripped Accept-Encoding from upstream request");
-            Some(ProcessingResponse {
-                response: Some(Resp::RequestHeaders(HeadersResponse {
-                    response: Some(CommonResponse {
-                        status: ResponseStatus::Continue as i32,
-                        header_mutation: Some(HeaderMutation {
-                            remove_headers: vec!["accept-encoding".into()],
-                            set_headers: Vec::new(),
-                        }),
-                        ..Default::default()
-                    }),
-                })),
-                ..Default::default()
-            })
+            // Accept-Encoding is left intact — the upstream decides how to
+            // encode the response. For `stream: false` (JSON) this upstream
+            // returns gzip when the header is present, which we decompress
+            // before scanning (see `decompress_gzip`). For `stream: true`
+            // (SSE) it returns plaintext regardless of the header, which the
+            // incremental `SseHoldBack` path handles directly. Either way
+            // the response-path code (`handle_response_chunk`) resolves the
+            // correct handling from the response headers (Content-Type and
+            // Content-Encoding), not from what we sent in the request.
+            Some(continue_headers(Direction::Request))
         }
 
         (Req::ResponseHeaders(headers), phase) => {
@@ -314,30 +330,6 @@ fn dispatch(
             // Gateway-wide, so that's not a rare path.
             if matches!(phase, Phase::RequestBody(_)) {
                 *phase = Phase::ResponseBody(ResponseState::new(window));
-            }
-            // Log the response Content-Type and Content-Encoding for
-            // debugging the upstream response format. HeaderValue can carry
-            // the value in `value` (string) or `raw_value` (bytes); check
-            // both.
-            if let Some(hm) = &headers.headers {
-                let hdr_val = |k: &str| -> String {
-                    hm.headers
-                        .iter()
-                        .find(|h| h.key.eq_ignore_ascii_case(k))
-                        .map(|h| {
-                            if !h.value.is_empty() {
-                                h.value.clone()
-                            } else {
-                                String::from_utf8_lossy(&h.raw_value).into_owned()
-                            }
-                        })
-                        .unwrap_or_default()
-                };
-                tracing::info!(
-                    content_type = %hdr_val("content-type"),
-                    content_encoding = %hdr_val("content-encoding"),
-                    "upstream response headers"
-                );
             }
             // Resolves SSE-vs-buffered before any `ResponseBody` chunk
             // arrives (Envoy always sends headers first) -- see
@@ -1355,6 +1347,46 @@ mod tests {
         assert!(
             !matches!(&out.response, Some(Resp::ImmediateResponse(_))),
             "response body must be handled normally, not rejected as a state mismatch: {out:?}"
+        );
+    }
+
+    /// RequestHeaders no longer strips Accept-Encoding. The upstream receives
+    /// the client's original Accept-Encoding header and decides how to encode
+    /// the response. The response-path code resolves the correct handling from
+    /// Content-Type and Content-Encoding, not from request-time manipulation.
+    #[test]
+    fn request_headers_does_not_strip_accept_encoding() {
+        use envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders;
+
+        let e = engine();
+        let m = metrics();
+        let mut phase = Phase::RequestBody(Vec::new());
+
+        let out = dispatch(
+            Req::RequestHeaders(HttpHeaders::default()),
+            &mut phase,
+            &e,
+            &m,
+            64,
+        )
+        .expect("RequestHeaders must always get an answer");
+
+        // The response must be a simple Continue without any header mutation
+        // (no removal of Accept-Encoding from upstream-bound headers).
+        let Some(Resp::RequestHeaders(HeadersResponse {
+            response: Some(common),
+        })) = &out.response
+        else {
+            panic!("expected RequestHeaders response, got {out:?}");
+        };
+        assert_eq!(
+            common.status,
+            ResponseStatus::Continue as i32,
+            "RequestHeaders must Continue"
+        );
+        assert!(
+            common.header_mutation.is_none(),
+            "RequestHeaders must NOT mutate upstream headers (Accept-Encoding must be left intact): {common:?}"
         );
     }
 
