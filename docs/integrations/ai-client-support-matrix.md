@@ -12,6 +12,10 @@ working configuration (`ai-helm` `charts/librechat-opencode-wellknown/
 values.yaml`), not from opencode's docs — it is already in production use
 against this gateway.
 
+**Sequence diagrams for every row below live in
+[`ai-client-flows.md`](ai-client-flows.md)** — this file says *whether* a
+capability works per client; that one says *how*, and exactly where it breaks.
+
 ## Matrix
 
 | Capability | Claude Code | Codex CLI | opencode | GitHub Copilot (VS Code) |
