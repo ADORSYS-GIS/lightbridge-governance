@@ -18,7 +18,10 @@
 //! adding `tar`+`flate2` to a security-adjacent binary for no benefit, since
 //! there is exactly one file to ship per platform.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -72,6 +75,118 @@ fn normalise_version(tag: &str) -> &str {
         .trim_start_matches('v')
 }
 
+/// Dotted numeric ordering, longest-common-prefix then length. Deliberately
+/// NOT a semver crate: this only has to answer "is the release newer than
+/// me", and adding a dependency to a security-adjacent binary for one
+/// comparison is a poor trade.
+///
+/// Anything non-numeric (a `-rc.1` suffix, a hash) compares as 0 for that
+/// component, which makes a pre-release sort as equal-or-lower rather than
+/// higher. That's the right bias here: the failure mode is "declines to
+/// update", not "installs something unexpected".
+fn is_newer(candidate: &str, current: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.split(['.', '-', '+'])
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(candidate), parts(current));
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// Refuses to replace a binary this process doesn't own.
+///
+/// ⚠️ FAIL CLOSED, same shape as `/internal/v1/resolve`: "I can't tell who
+/// installed this" is UNKNOWN, and unknown takes the strict branch. A
+/// self-update that fights a package manager is worse than no self-update --
+/// it leaves the package database describing a file that no longer matches,
+/// and on the next `brew upgrade` / `apt upgrade` the change is silently
+/// reverted, so the developer is running a version neither tool agrees on.
+///
+/// This is the conservative half of the rule only: it detects the managed
+/// prefixes we can name. The positive half -- an install receipt written by
+/// the standalone installer, which would let this refuse by DEFAULT rather
+/// than by pattern -- lands with that installer; see the packaging ADR.
+fn ensure_replaceable(target: &Path) -> Result<()> {
+    // Resolve symlinks first: Homebrew puts a symlink on PATH pointing into
+    // the Cellar, and on Linux `current_exe()` already returns the resolved
+    // target while macOS may return the invocation path. Canonicalising
+    // makes both platforms agree before any prefix is matched.
+    let resolved = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    let shown = resolved.display().to_string();
+
+    let managed: &[(&str, &str)] = &[
+        ("/Cellar/", "brew upgrade governance-auth"),
+        ("/homebrew/", "brew upgrade governance-auth"),
+        ("/linuxbrew/", "brew upgrade governance-auth"),
+        ("/nix/store/", "nix profile upgrade governance-auth"),
+        ("/.asdf/", "asdf install governance-auth latest"),
+        ("/mise/", "mise up governance-auth"),
+    ];
+    for (marker, command) in managed {
+        if shown.contains(marker) {
+            bail!(
+                "{shown} is managed by a package manager, so self-update refuses to overwrite \
+                 it (doing so would leave the package database describing a file that no longer \
+                 matches, and the next upgrade would silently revert it).\n\nUpdate it with:\n  \
+                 {command}"
+            );
+        }
+    }
+
+    // Distro package territory. `/usr/local` is explicitly NOT here: that is
+    // the documented location for a manual system-wide install, which this
+    // binary may legitimately replace.
+    if (shown.starts_with("/usr/") && !shown.starts_with("/usr/local/"))
+        || shown.starts_with("/bin/")
+        || shown.starts_with("/sbin/")
+    {
+        bail!(
+            "{shown} looks like a distro-packaged path, so self-update refuses to overwrite it.\
+             \n\nUpdate it with your package manager, e.g.:\n  \
+             sudo apt-get install --only-upgrade governance-auth\n  \
+             sudo dnf upgrade governance-auth"
+        );
+    }
+
+    // Cheapest real check, and the one that catches every case the prefix
+    // list doesn't name: can this process actually write the directory the
+    // rename lands in?
+    let dir = resolved
+        .parent()
+        .context("the running executable has no parent directory")?;
+    let probe = dir.join(".governance-auth.write-probe");
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => bail!(
+            "{} is not writable by this user ({error}), so self-update cannot replace {shown}.\
+             \n\nEither re-run with the privileges that own it, or update it the way you \
+             installed it.",
+            dir.display()
+        ),
+    }
+}
+
 pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
 
@@ -102,7 +217,14 @@ pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
         .context("parsing the releases API response")?;
 
     let latest = normalise_version(&release.tag_name);
-    if latest == current {
+    // `>`, not `!=`. String inequality treats an OLDER release as an update
+    // and installs it -- a real downgrade path, not a theoretical one:
+    // `releases/latest` is the newest release of the whole REPO, and this
+    // binary's version is the workspace version, so a release cut from a
+    // branch, a re-tag, or any tag-shape drift can present a lower version
+    // here. Comparing order means the worst case is "no update", never
+    // "silently rolled back".
+    if !is_newer(latest, current) {
         eprintln!("governance-auth {current} is already the latest release.");
         return Ok(());
     }
@@ -113,6 +235,13 @@ pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
     if check_only {
         return Ok(());
     }
+
+    // Refuse BEFORE downloading ~10MB. The rename at the end would fail
+    // anyway on a root-owned or read-only path, but only after spending the
+    // user's time and this repo's release bandwidth on a decision that was
+    // knowable up front.
+    let target = std::env::current_exe().context("locating the running executable")?;
+    ensure_replaceable(&target)?;
 
     let wanted = asset_name();
     if wanted.is_empty() {
@@ -143,7 +272,6 @@ pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
     let expected = download(http, &checksum.browser_download_url).await?;
     verify_checksum(&bytes, &expected)?;
 
-    let target = std::env::current_exe().context("locating the running executable")?;
     install(&target, &bytes)?;
 
     eprintln!("Updated to {latest}. Re-run any long-lived shell to pick it up.");
@@ -196,7 +324,7 @@ fn install(target: &Path, bytes: &[u8]) -> Result<()> {
     write_executable(&staged, bytes)
         .with_context(|| format!("staging the new binary at {}", staged.display()))?;
 
-    std::fs::rename(&staged, target).with_context(|| {
+    fs::rename(&staged, target).with_context(|| {
         format!(
             "replacing {} (is it on a read-only mount, or owned by another user?)",
             target.display()

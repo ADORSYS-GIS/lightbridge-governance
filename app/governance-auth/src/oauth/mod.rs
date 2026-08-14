@@ -238,8 +238,77 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     Ok(())
 }
 
-pub fn logout(config: &OauthConfig) -> Result<()> {
+/// Revokes the refresh token at the authorization server, THEN clears local
+/// state.
+///
+/// Deleting the local file alone -- what this used to do -- leaves the
+/// refresh token valid at Keycloak until its offline-session lifetime
+/// expires, while telling the developer "session cleared". A logout that
+/// reports success and leaves a usable credential live on the server is
+/// worse than one that fails loudly, because nobody goes looking.
+///
+/// Order matters: revoke first, clear second. Clearing first would destroy
+/// the only copy of the token needed to revoke it, so a revocation failure
+/// would be unrecoverable rather than retryable.
+///
+/// A revocation failure is reported loudly but does NOT stop the local
+/// clear. The developer asked to be logged out of this machine; refusing to
+/// do that because the network is down would strand them logged in, which
+/// is the worse of the two failures.
+pub async fn logout(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
+    let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
+
+    match cache::load(&config.issuer, &config.client_id)? {
+        Some(session) => match session.refresh_token.as_ref() {
+            Some(refresh_token) => {
+                if let Err(error) = revoke(http, config, refresh_token.expose()).await {
+                    eprintln!(
+                        "warning: could not revoke the refresh token at the authorization \
+                         server, so it may remain valid there until it expires: {error:#}"
+                    );
+                } else {
+                    eprintln!("refresh token revoked at {}", config.issuer);
+                }
+            }
+            None => eprintln!("cached session has no refresh token; nothing to revoke"),
+        },
+        None => eprintln!("no cached session; nothing to revoke"),
+    }
+
     cache::clear(&config.issuer, &config.client_id)?;
     eprintln!("session cleared");
+    Ok(())
+}
+
+/// RFC 7009 revocation. Silently a no-op when the authorization server
+/// doesn't advertise `revocation_endpoint` -- that's a property of the
+/// server, not an error the developer can act on.
+async fn revoke(http: &reqwest::Client, config: &OauthConfig, refresh_token: &str) -> Result<()> {
+    let metadata = discovery::discover(http, &config.issuer).await?;
+    let Some(endpoint) = metadata.revocation_endpoint.as_deref() else {
+        eprintln!(
+            "note: {} does not advertise a revocation endpoint; clearing locally only.",
+            config.issuer
+        );
+        return Ok(());
+    };
+
+    let response = http
+        .post(endpoint)
+        .form(&[
+            ("token", refresh_token),
+            ("token_type_hint", "refresh_token"),
+            ("client_id", config.client_id.as_str()),
+        ])
+        .send()
+        .await
+        .context("calling the revocation endpoint")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        // Deliberately does not include the body: an authorization server's
+        // error response can echo the submitted token back.
+        bail!("revocation endpoint returned {status}");
+    }
     Ok(())
 }

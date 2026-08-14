@@ -72,6 +72,7 @@ impl Harness {
         command
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_STATE_HOME")
             .arg("--issuer")
             .arg(&self.issuer)
             .arg("--client-id")
@@ -109,6 +110,7 @@ impl Harness {
         command
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_STATE_HOME")
             .args(args);
         tokio::task::spawn_blocking(move || {
             command
@@ -200,7 +202,9 @@ impl Harness {
         .context("login harness task panicked")?
     }
 
-    fn cache_dir(&self) -> PathBuf {
+    /// The LEGACY session location, pre state/cache split. Kept so the
+    /// migration test can seed a session where an older build left one.
+    pub fn legacy_cache_dir(&self) -> PathBuf {
         let base = if cfg!(target_os = "macos") {
             self.home.path.join("Library").join("Caches")
         } else {
@@ -209,23 +213,51 @@ impl Harness {
         base.join("governance-auth")
     }
 
-    /// Mirrors `cache::cache_key`/`cache::session_path` (private to `src/`,
-    /// so re-derived here) so tests can inspect the cache file the binary
-    /// itself would read and write.
-    pub fn session_path(&self) -> PathBuf {
+    /// Where the session lives now. Mirrors `cache::state_dir`: a refresh
+    /// token is STATE, not cache -- see that module's doc for why the
+    /// distinction is load-bearing rather than cosmetic.
+    fn state_dir(&self) -> PathBuf {
+        let base = if cfg!(target_os = "macos") {
+            self.home.path.join("Library").join("Application Support")
+        } else {
+            self.home.path.join(".local").join("state")
+        };
+        base.join("governance-auth")
+    }
+
+    fn session_file_name(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.issuer.as_bytes());
         hasher.update(b"\0");
         hasher.update(self.client_id.as_bytes());
-        let key = hex::encode(hasher.finalize());
-        self.cache_dir().join(format!("{key}.json"))
+        format!("{}.json", hex::encode(hasher.finalize()))
+    }
+
+    pub fn legacy_session_path(&self) -> PathBuf {
+        self.legacy_cache_dir().join(self.session_file_name())
+    }
+
+    /// Mirrors `cache::cache_key`/`cache::session_path` (private to `src/`,
+    /// so re-derived here) so tests can inspect the session file the binary
+    /// itself would read and write.
+    pub fn session_path(&self) -> PathBuf {
+        self.state_dir().join(self.session_file_name())
     }
 
     pub fn seed_session(&self, session: &serde_json::Value) -> Result<()> {
-        let dir = self.cache_dir();
+        let dir = self.state_dir();
         std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating cache dir {}", dir.display()))?;
+            .with_context(|| format!("creating state dir {}", dir.display()))?;
         std::fs::write(self.session_path(), session.to_string()).context("writing seeded session")
+    }
+
+    /// Seeds a session at the OLD path, as an older build would have left it.
+    pub fn seed_legacy_session(&self, session: &serde_json::Value) -> Result<()> {
+        let dir = self.legacy_cache_dir();
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating legacy cache dir {}", dir.display()))?;
+        std::fs::write(self.legacy_session_path(), session.to_string())
+            .context("writing seeded legacy session")
     }
 }
 

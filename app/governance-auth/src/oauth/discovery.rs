@@ -2,27 +2,114 @@
 //! hand-derived from the issuer URL -- discovery is what lets this binary
 //! work against any Keycloak realm without a code change if paths move.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::security;
+use crate::{cache, security};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcMetadata {
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub device_authorization_endpoint: Option<String>,
+    /// RFC 7009. `Option` because it is not in the OIDC Discovery core spec
+    /// -- Keycloak advertises it, but a `logout` that assumed it exists
+    /// would break against an authorization server that doesn't.
+    pub revocation_endpoint: Option<String>,
+}
+
+/// How long a cached discovery document is reused. Endpoint URLs are close
+/// to static for the life of a realm, so this trades a rare extra round trip
+/// after a move against removing one on EVERY token refresh.
+const DISCOVERY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Cached form of a validated discovery document.
+///
+/// ⚠️ The cache is a LATENCY optimisation, never a trust shortcut. Every
+/// validation in [`discover`] -- issuer match and per-endpoint origin
+/// pinning -- is re-run on the cached copy in [`validate`] before it is
+/// returned. A cache file is an attacker-writable input (it lives in the
+/// user's cache directory), so treating it as pre-trusted would let anyone
+/// who can write that file redirect the token and revocation endpoints.
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedDiscovery {
+    fetched_at: u64,
+    metadata: OidcMetadata,
+}
+
+fn discovery_cache_path(issuer: &str) -> Result<std::path::PathBuf> {
+    let mut hasher = Sha256::new();
+    hasher.update(issuer.as_bytes());
+    Ok(cache::cache_dir()?.join(format!("discovery-{}.json", hex::encode(hasher.finalize()))))
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Reads a still-fresh cached document. Any failure -- missing, unreadable,
+/// unparseable, stale, or failing revalidation -- yields `None` so the
+/// caller refetches. A bad cache must never be fatal.
+fn load_cached(issuer: &str, issuer_url: &Url) -> Option<OidcMetadata> {
+    let path = discovery_cache_path(issuer).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    let cached: CachedDiscovery = serde_json::from_slice(&bytes).ok()?;
+    if now_unix().saturating_sub(cached.fetched_at) > DISCOVERY_TTL.as_secs() {
+        return None;
+    }
+    validate(issuer, issuer_url, &cached.metadata).ok()?;
+    Some(cached.metadata)
+}
+
+fn store_cached(issuer: &str, metadata: &OidcMetadata) {
+    // Best-effort: a read-only or missing cache directory must not break
+    // authentication, it just means no caching.
+    let Ok(path) = discovery_cache_path(issuer) else {
+        return;
+    };
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let record = CachedDiscovery {
+        fetched_at: now_unix(),
+        metadata: metadata.clone(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&record) {
+        let _ = std::fs::write(path, bytes);
+    }
 }
 
 pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<OidcMetadata> {
     let issuer = issuer.trim_end_matches('/');
     let issuer_url = Url::parse(issuer).with_context(|| "parsing the configured issuer URL")?;
-    // Re-validated here, not just trusted from `config::parse_issuer`:
-    // `discover` is the entry point every flow (login, refresh) calls, and
-    // this check must hold regardless of which caller reaches it.
+    // Re-validated here, not just trusted from `config::parse_issuer` -- see
+    // the note below; this must hold before the cache is consulted too.
     security::require_secure(&issuer_url).context("issuer URL")?;
+
+    // Served from cache when fresh. This is on the hot path: `token` and
+    // `otel-headers` are spawned every 240s by two clients, and each one
+    // previously paid a full discovery round trip before the refresh.
+    if let Some(metadata) = load_cached(issuer, &issuer_url) {
+        return Ok(metadata);
+    }
+
+    discover_uncached(http, issuer, &issuer_url).await
+}
+
+async fn discover_uncached(
+    http: &reqwest::Client,
+    issuer: &str,
+    issuer_url: &Url,
+) -> Result<OidcMetadata> {
+    let issuer_url = issuer_url.clone();
 
     let url = format!("{issuer}/.well-known/openid-configuration");
 
@@ -39,40 +126,51 @@ pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<OidcMetada
         .await
         .with_context(|| format!("parsing OIDC discovery document from {url}"))?;
 
+    validate(issuer, &issuer_url, &metadata)?;
+    store_cached(issuer, &metadata);
+    Ok(metadata)
+}
+
+/// Every check that must hold before an endpoint from this document is used.
+///
+/// Split out of [`discover`] so the CACHED path runs byte-for-byte the same
+/// validation as the freshly-fetched one -- see [`CachedDiscovery`] for why
+/// a cache file cannot be treated as pre-trusted.
+fn validate(issuer: &str, issuer_url: &Url, metadata: &OidcMetadata) -> Result<()> {
     // OIDC Discovery (RFC 8414 §3.1.2 / OIDC Discovery 4.3) requires the
     // returned `issuer` to match what was requested. This alone is NOT
-    // sufficient to trust the other endpoints below: `issuer` is just
-    // another string field in the same JSON body an attacker who can
-    // return this document at all could also control, and OIDC discovery
-    // permits `authorization_endpoint`/`token_endpoint`/
-    // `device_authorization_endpoint` to live on an entirely different
-    // host. Matching `issuer` alone stops a discovery document from
-    // impersonating a *different* realm; it does nothing to stop that
-    // realm's own (compromised, misconfigured, or MITM'd) discovery
-    // response from pointing its endpoints somewhere else -- see the
-    // origin pinning below, which is what actually closes that gap.
+    // sufficient to trust the other endpoints: `issuer` is just another
+    // string field in the same JSON body an attacker who can return this
+    // document at all could also control, and OIDC discovery permits the
+    // endpoints to live on an entirely different host. Matching `issuer`
+    // stops a document impersonating a *different* realm; it does nothing
+    // to stop that realm's own (compromised, misconfigured, or MITM'd)
+    // response pointing its endpoints elsewhere -- the origin pinning below
+    // is what actually closes that gap.
     let discovered_issuer = metadata.issuer.trim_end_matches('/');
     if discovered_issuer != issuer {
         bail!(
-            "OIDC discovery document at {url} claims issuer `{discovered_issuer}`, expected `{issuer}` -- refusing to trust it"
+            "OIDC discovery document claims issuer `{discovered_issuer}`, expected `{issuer}` -- refusing to trust it"
         );
     }
 
     require_same_origin(
-        &issuer_url,
+        issuer_url,
         &metadata.authorization_endpoint,
         "authorization_endpoint",
     )?;
-    require_same_origin(&issuer_url, &metadata.token_endpoint, "token_endpoint")?;
+    require_same_origin(issuer_url, &metadata.token_endpoint, "token_endpoint")?;
     if let Some(device_endpoint) = &metadata.device_authorization_endpoint {
-        require_same_origin(
-            &issuer_url,
-            device_endpoint,
-            "device_authorization_endpoint",
-        )?;
+        require_same_origin(issuer_url, device_endpoint, "device_authorization_endpoint")?;
     }
-
-    Ok(metadata)
+    // ⚠️ Load-bearing, not symmetry-for-its-own-sake: `logout` POSTs the
+    // REFRESH TOKEN to this endpoint. Without pinning, a document naming an
+    // attacker-controlled host would turn `logout` into credential
+    // exfiltration -- the one flow whose whole purpose is to destroy it.
+    if let Some(revocation_endpoint) = &metadata.revocation_endpoint {
+        require_same_origin(issuer_url, revocation_endpoint, "revocation_endpoint")?;
+    }
+    Ok(())
 }
 
 /// Pins a discovered endpoint to the issuer's origin (scheme, host and
