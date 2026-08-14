@@ -1,0 +1,104 @@
+name: Release Please
+
+# `release-please-config.json` and `.release-please-manifest.json` have been
+# committed since the repo was set up, but nothing ever ran release-please --
+# which is why `main` carries a `v0.1.0` tag and ZERO published releases, and
+# why `governance-auth self-update` takes its `releases/latest` 404 path on
+# every developer machine today. This workflow is the missing half.
+#
+# What it does: opens (and keeps rebasing) a release PR that bumps the version,
+# writes CHANGELOG.md, and syncs `charts/lightbridge-governance/Chart.yaml`'s
+# `version`/`appVersion` via the config's `extra-files`. Merging that PR is what
+# publishes the GitHub Release. The release PR still needs a human approval --
+# branch protection requires one, and cutting a release should be a decision,
+# not a side effect of merging to main.
+on:
+  push:
+    branches: [main]
+  # Lets a stuck or manually-closed release PR be regenerated without pushing
+  # an empty commit to main.
+  workflow_dispatch:
+
+# The repo's default workflow permission is `read` (checked via the Actions
+# API), so every scope this needs is declared here or the job simply fails.
+permissions:
+  contents: write
+  pull-requests: write
+  # Needed ONLY for the `gh workflow run` in the last step -- see the comment
+  # there for why that dispatch is not optional.
+  actions: write
+
+# Two pushes to main in quick succession would otherwise race to reconcile the
+# same release PR. `cancel-in-progress: false` deliberately: cancelling a run
+# that has already published the release but not yet dispatched the asset build
+# would strand a release with no binaries.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # v5, not v4: the only breaking change in v5.0.0 is the runtime moving to
+      # node24, with no change to inputs or outputs.
+      #
+      # The two outputs consumed below were verified against this action's
+      # source at v5.0.0 (`src/index.ts`), not assumed from its README:
+      # `releases_created` is set unconditionally, and `tag_name` is emitted
+      # through `setPathOutput`, which drops the `<path>--` prefix when the
+      # package path is `.`. This repo's `release-please-config.json` declares
+      # exactly one package, at `.`, so the unprefixed names are the correct
+      # ones here -- a repo that later adds a second package would need the
+      # prefixed form instead.
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Both are release-please's default filenames, named explicitly so
+          # that moving or renaming either one breaks here loudly rather than
+          # silently falling back to a default that no longer describes this
+          # repo.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # ⚠️ THIS STEP IS LOAD-BEARING, NOT A CONVENIENCE.
+      #
+      # `release-governance-auth.yml` triggers on `release: published`. A
+      # release published using the default GITHUB_TOKEN does NOT emit an event
+      # that starts another workflow run -- GitHub suppresses it to prevent
+      # recursive workflows. So without this step the chain breaks *silently*:
+      # release-please cuts a perfectly good release, the asset workflow never
+      # runs, and the release sits there with a changelog and no binaries. The
+      # only symptom is `self-update` reporting "no asset for your platform" on
+      # a developer laptop, weeks later and far from the cause.
+      #
+      # `workflow_dispatch` and `repository_dispatch` are the two documented
+      # exceptions to that suppression rule, which is why this is a dispatch
+      # rather than relying on the `release: published` trigger.
+      #
+      # The `release: published` trigger is deliberately KEPT on that workflow:
+      # it still fires for a release a human publishes by hand (a real user
+      # token is not suppressed). If this repo ever swaps in a PAT or App token
+      # above, both paths fire and the asset job runs twice -- harmless, since
+      # `gh release upload --clobber` is idempotent.
+      - name: Build and attach the governance-auth binaries
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          # Fail loudly rather than dispatching with an empty tag. An empty
+          # `tag` input would make the asset workflow check out the wrong ref
+          # and then fail deep inside a six-target matrix, where the real cause
+          # (release-please reported a release but named no tag) is invisible.
+          if [ -z "${TAG:-}" ]; then
+            echo "::error::release-please reported releases_created=true but produced no tag_name; refusing to dispatch the asset build" >&2
+            exit 1
+          fi
+          echo "Dispatching the asset build for $TAG"
+          gh workflow run release-governance-auth.yml \
+            --ref "${{ github.ref_name }}" \
+            -f tag="$TAG" \
+            --repo "${{ github.repository }}"
