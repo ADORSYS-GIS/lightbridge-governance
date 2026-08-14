@@ -17,7 +17,14 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0008](./0008-money-is-integer-micro-usd.md) | Money is integer micro-USD, everywhere | Accepted | 2026-07-31 |
 | [0009](./0009-cratestack-only-rest-transport-cbor-payloads.md) | cratestack is the only persistence layer; REST transport, CBOR payloads | Accepted | 2026-07-31 |
 | [0010](./0010-bidirectional-scanning-request-and-response-paths.md) | Both request and response are scanned before they cross the trust boundary; incremental streaming for response path | Proposed | 2026-08-04 |
+| [0010](./0010-governance-auth-keycloak-oauth2-credential-helper.md) ⚠️ | `governance-auth`, a Keycloak OAuth2 credential helper for Claude Code / Codex | Proposed | 2026-08-08 |
 | [0011](./0011-bridge-copilot-run-metrics-push-to-pull.md) | Bridge copilot-sync's run-detail metrics from push to pull with a dedicated collector | Proposed | 2026-08-07 |
+| [0012](./0012-governance-auth-packaging-and-distribution.md) | `governance-auth` on-disk layout, packaging and distribution | Proposed | 2026-08-14 |
+
+⚠️ **Number collision**: `0010` is used by two ADRs. Both are listed above so
+neither is invisible, but the number needs resolving — renumbering changes
+every inbound link, so it is deliberately left as a maintainer decision
+(ADR-0012, open question 7) rather than done unilaterally here.
 
 ## Writing one
 
