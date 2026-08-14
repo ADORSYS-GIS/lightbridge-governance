@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
         Command::OtelHeaders => oauth::otel_headers(&http, &oauth).await,
         Command::Configure => oauth::configure(&oauth),
         Command::Status => oauth::status(&oauth),
-        Command::Logout => oauth::logout(&oauth),
+        Command::Logout => oauth::logout(&http, &oauth).await,
         Command::SelfUpdate { check } => update::run(&http, check).await,
     }
 }

@@ -1,8 +1,34 @@
-//! The on-disk session cache: `<cache_dir>/governance-auth/<sha256(issuer+
+//! The on-disk session store: `<state_dir>/governance-auth/<sha256(issuer+
 //! client_id)>.json`, mode `0600`, written tmp-then-rename so a reader never
 //! observes a half-written file. Claude Code and Codex can both invoke the
-//! `token` command around the same time on a cold cache, so callers must
+//! `token` command around the same time on a cold store, so callers must
 //! hold a [`FileLock`] across the read-refresh-write critical section.
+//!
+//! ## Why STATE, not CACHE
+//!
+//! This file holds a REFRESH TOKEN, so deleting it logs the developer out.
+//! That makes it state by the XDG spec's own definition ("data that should
+//! persist between restarts, but is not important enough to be in
+//! `$XDG_DATA_HOME`"), NOT cache ("non-essential data ... can be deleted at
+//! any time without loss of function").
+//!
+//! It used to live under `$XDG_CACHE_HOME`/`~/Library/Caches`, which is
+//! actively dangerous rather than merely untidy:
+//!
+//! - macOS treats `~/Library/Caches` as PURGEABLE and may evict it under
+//!   disk pressure, with no warning and no user action.
+//! - Every "free up disk space" tool, and any container image layer that
+//!   prunes `~/.cache`, does the same on Linux.
+//!
+//! The consequence isn't a re-login prompt at a convenient moment: `token`
+//! fails closed INSIDE a running Claude Code or Codex session, and per
+//! `docs/integrations/ai-client-flows.md` Codex responds to a failed helper
+//! by proceeding UNAUTHENTICATED rather than stopping. Cache eviction must
+//! never be able to cause that, so the session moved to state and the cache
+//! directory is left for genuinely disposable things (see
+//! [`crate::oauth::discovery`]).
+//!
+//! [`load`] migrates a session found at the legacy cache path, once.
 
 use std::{
     fs,
@@ -68,7 +94,11 @@ fn now_unix() -> Result<u64> {
 /// repo's allowed-license list (`deny.toml`) -- and this repo targets only
 /// macOS and Linux laptops, so the two-branch version below is the whole
 /// problem.
-fn cache_dir() -> Result<PathBuf> {
+///
+/// Only the LEGACY session location now; nothing is written here. Kept so
+/// [`load`] can migrate a session written by an older build, and so
+/// [`clear`] can guarantee `logout` leaves no copy behind.
+pub fn cache_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
         && !xdg.is_empty()
     {
@@ -87,6 +117,59 @@ fn cache_dir() -> Result<PathBuf> {
     Ok(base.join("governance-auth"))
 }
 
+/// `$XDG_STATE_HOME` (or `~/.local/state`) on Linux,
+/// `~/Library/Application Support` on macOS.
+///
+/// macOS deliberately does NOT get `~/.local/state`: the entire reason for
+/// moving off `~/Library/Caches` is that the OS may purge it, and Apple's
+/// non-purgeable per-user location is Application Support. (Config stays at
+/// `~/.config` on both platforms -- see `crate::otel`, which already writes
+/// there on macOS. One convention per KIND of data, not one per platform.)
+fn state_dir() -> Result<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_STATE_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("governance-auth"));
+    }
+
+    let home = std::env::var("HOME")
+        .context("locating the state directory ($XDG_STATE_HOME and $HOME both unset)")?;
+    let home = PathBuf::from(home);
+
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        home.join(".local").join("state")
+    };
+    Ok(base.join("governance-auth"))
+}
+
+/// Creates the state directory at `0700`.
+///
+/// The files inside are already `0600`, so this is defence in depth -- but
+/// it costs one line and it stops the DIRECTORY LISTING (which leaks the
+/// set of issuer/client pairs this developer has sessions for) being
+/// world-readable. `create_dir_all` alone applies the umask, which on a
+/// typical laptop yields `0755`.
+#[cfg(unix)]
+fn create_state_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    if dir.is_dir() {
+        return Ok(());
+    }
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("creating state directory {}", dir.display()))
+}
+
+#[cfg(not(unix))]
+fn create_state_dir(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("creating state directory {}", dir.display()))
+}
+
 fn cache_key(issuer: &str, client_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(issuer.as_bytes());
@@ -96,16 +179,81 @@ fn cache_key(issuer: &str, client_id: &str) -> String {
 }
 
 fn session_path(issuer: &str, client_id: &str) -> Result<PathBuf> {
+    Ok(state_dir()?.join(format!("{}.json", cache_key(issuer, client_id))))
+}
+
+/// Where builds before the state/cache split wrote the session.
+fn legacy_session_path(issuer: &str, client_id: &str) -> Result<PathBuf> {
     Ok(cache_dir()?.join(format!("{}.json", cache_key(issuer, client_id))))
 }
 
 fn lock_path(issuer: &str, client_id: &str) -> Result<PathBuf> {
-    Ok(cache_dir()?.join(format!("{}.lock", cache_key(issuer, client_id))))
+    Ok(state_dir()?.join(format!("{}.lock", cache_key(issuer, client_id))))
+}
+
+/// Moves a session written by an older build from the cache path to the
+/// state path, once. Copy-verify-unlink rather than `fs::rename`, because
+/// the two directories are frequently on different filesystems (`~/.cache`
+/// vs `~/.local/state` on a laptop with a separate cache volume, and
+/// container images that mount one and not the other) -- `rename` fails
+/// with `EXDEV` there, and a migration that silently fails is a logout.
+///
+/// Failure is NOT fatal: the caller falls back to reading the legacy file
+/// in place. Being unable to move a session is not a reason to log someone
+/// out mid-session; it just means the migration retries next time.
+fn migrate_legacy_session(legacy: &Path, target: &Path) -> Result<()> {
+    let bytes = fs::read(legacy)
+        .with_context(|| format!("reading legacy session at {}", legacy.display()))?;
+
+    let dir = target
+        .parent()
+        .context("session path has no parent directory")?;
+    create_state_dir(dir)?;
+
+    let tmp = target.with_extension("json.tmp");
+    write_private_file(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, target)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), target.display()))?;
+
+    // Only unlink once the new copy is definitely readable. An interrupted
+    // migration must leave the developer logged IN, never logged out.
+    fs::read(target)
+        .with_context(|| format!("verifying migrated session at {}", target.display()))?;
+    fs::remove_file(legacy)
+        .with_context(|| format!("removing legacy session at {}", legacy.display()))?;
+    Ok(())
 }
 
 pub fn load(issuer: &str, client_id: &str) -> Result<Option<CachedSession>> {
     let path = session_path(issuer, client_id)?;
-    match fs::read(&path) {
+
+    // One-time migration off the old cache location. Only consulted when
+    // nothing is at the new path, so it costs one `exists` check per call
+    // once migrated, and never overwrites a newer session.
+    if !path.exists()
+        && let Ok(legacy) = legacy_session_path(issuer, client_id)
+        && legacy.is_file()
+    {
+        match migrate_legacy_session(&legacy, &path) {
+            Ok(()) => eprintln!(
+                "Moved the cached session to {} (it holds a refresh token, so it must not \
+                 live in a cache directory that the OS may purge).",
+                path.display()
+            ),
+            Err(error) => {
+                // Read it where it lies rather than failing: a session that
+                // can't be moved is still a valid session.
+                eprintln!("warning: could not migrate the session off the cache path: {error:#}");
+                return read_session(&legacy);
+            }
+        }
+    }
+
+    read_session(&path)
+}
+
+fn read_session(path: &Path) -> Result<Option<CachedSession>> {
+    match fs::read(path) {
         Ok(bytes) => {
             let session = serde_json::from_slice(&bytes)
                 .with_context(|| format!("parsing cached session at {}", path.display()))?;
@@ -119,9 +267,8 @@ pub fn load(issuer: &str, client_id: &str) -> Result<Option<CachedSession>> {
 }
 
 pub fn store(session: &CachedSession) -> Result<()> {
-    let dir = cache_dir()?;
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("creating cache directory {}", dir.display()))?;
+    let dir = state_dir()?;
+    create_state_dir(&dir)?;
 
     let path = session_path(&session.issuer, &session.client_id)?;
     let tmp_path = path.with_extension("json.tmp");
@@ -134,15 +281,27 @@ pub fn store(session: &CachedSession) -> Result<()> {
     Ok(())
 }
 
+/// Removes the session from BOTH the state path and the legacy cache path.
+///
+/// Clearing only the current path would leave a pre-migration copy — and
+/// therefore a usable refresh token — sitting in `~/.cache` after `logout`
+/// said "session cleared". A logout that leaves a live credential on disk
+/// is worse than no logout, because it reports success.
 pub fn clear(issuer: &str, client_id: &str) -> Result<()> {
-    let path = session_path(issuer, client_id)?;
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("removing cached session at {}", path.display()))
+    for path in [
+        session_path(issuer, client_id)?,
+        legacy_session_path(issuer, client_id)?,
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("removing cached session at {}", path.display()));
+            }
         }
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -179,9 +338,11 @@ pub struct FileLock {
 
 impl FileLock {
     pub fn acquire(issuer: &str, client_id: &str) -> Result<Self> {
-        let dir = cache_dir()?;
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("creating cache directory {}", dir.display()))?;
+        // Must be the STATE dir, not the cache dir: `lock_path` lives beside
+        // the session it guards, and creating the wrong directory here would
+        // leave the lock's own parent missing.
+        let dir = state_dir()?;
+        create_state_dir(&dir)?;
         let path = lock_path(issuer, client_id)?;
         let pid = std::process::id();
         let deadline = Instant::now() + LOCK_MAX_WAIT;
