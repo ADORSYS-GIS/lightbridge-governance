@@ -53,7 +53,24 @@ struct Asset {
 /// lockstep with the release workflow's build matrix -- a mismatch here shows
 /// up as "no asset for your platform", not as a wrong binary being installed.
 fn asset_name() -> &'static str {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    // ⚠️ `target_env` is load-bearing on Linux, not cosmetic. The release
+    // publishes BOTH `-musl` and `-gnu` assets per arch; without this branch
+    // a musl-built binary would ask for the `-gnu` asset and self-update
+    // itself onto a build that cannot start on the very distro it is running
+    // on (that glibc floor is the whole reason the musl assets exist).
+    if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "musl"
+    )) {
+        "governance-auth-x86_64-unknown-linux-musl"
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "musl"
+    )) {
+        "governance-auth-aarch64-unknown-linux-musl"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "governance-auth-x86_64-unknown-linux-gnu"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         "governance-auth-aarch64-unknown-linux-gnu"
@@ -358,6 +375,55 @@ fn write_executable(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The release workflow's own header says `asset_name` "must stay in
+    /// lockstep with the matrix", and until this test nothing enforced it --
+    /// a drift shows up only as "no asset for your platform" on a developer's
+    /// machine, long after the release.
+    #[test]
+    fn every_asset_name_exists_in_the_release_workflow_matrix() {
+        let workflow = include_str!("../../../.github/workflows/release-governance-auth.yml");
+        for target in [
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ] {
+            assert!(
+                workflow.contains(&format!("target: {target}")),
+                "asset_name() can return governance-auth-{target}, but the release \
+                 workflow builds no such target -- self-update would report \"no asset \
+                 for your platform\""
+            );
+        }
+        // The reverse direction: a target built but never requested is dead
+        // weight in the release, and usually means asset_name() was missed.
+        assert!(
+            !workflow.contains("target: x86_64-unknown-linux-musleabi"),
+            "sanity check that the matcher above is not vacuous"
+        );
+    }
+
+    #[test]
+    fn musl_and_gnu_asset_names_are_distinct() {
+        // Guards the branch order in `asset_name`: `target_env = "musl"` must
+        // be tested BEFORE the bare linux arms, or musl falls through to the
+        // gnu name and self-update installs a binary that cannot start.
+        let name = asset_name();
+        if cfg!(all(target_os = "linux", target_env = "musl")) {
+            assert!(
+                name.ends_with("-musl"),
+                "musl build must want a musl asset, got {name}"
+            );
+        } else if cfg!(target_os = "linux") {
+            assert!(
+                name.ends_with("-gnu"),
+                "glibc build must want a gnu asset, got {name}"
+            );
+        }
+    }
 
     #[test]
     fn version_tags_normalise_across_the_shapes_a_repo_drifts_through() {

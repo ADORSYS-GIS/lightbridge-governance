@@ -26,12 +26,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ⚠️ MUSL IS THE ONE TO INSTALL ON LINUX. The gnu builds below link
+          # against the RUNNER's glibc (2.39 on ubuntu-24.04, which is what
+          # both `ubuntu-latest` and `ubuntu-24.04-arm` are), and Rust's
+          # `std::process::Command` pulls in `GLIBC_2.39`-versioned symbols
+          # when the build host is new enough. That binary will NOT START on
+          # Ubuntu 22.04 (2.35), Debian 12 (2.36), RHEL/Rocky 9 (2.34) or
+          # Amazon Linux 2023 (2.34) -- it fails in the dynamic loader before
+          # `main`, with `version 'GLIBC_2.39' not found`, so it reads as a
+          # corrupt download rather than an OS mismatch.
+          #
+          # The musl targets are statically linked (`crt-static` is on by
+          # default for musl) and carry no glibc dependency at all.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          # Kept as a FALLBACK, not the default. musl's libc implements no
+          # NSS: it never reads `/etc/nsswitch.conf` and never loads
+          # `nss-resolve`, so on a laptop whose DNS is resolved through
+          # systemd-resolved's NSS module rather than a real
+          # `/etc/resolv.conf`, a musl build can fail to resolve the issuer
+          # while every glibc tool on the same machine succeeds. That case
+          # has NOT been reproduced here -- the gnu assets exist so it has an
+          # answer if it shows up, on a distro new enough to run them.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          # Cross-compiled from Apple Silicon, NOT built on an Intel runner.
+          # `macos-13` was retired by GitHub in December 2025 and this entry
+          # used to name it, so an Intel build could not even be scheduled.
+          # `macos-15-intel` exists but is itself retired in 2027, so it only
+          # defers this; Apple's toolchain cross-links x86_64 from arm64
+          # natively. Two per-arch assets, not a `lipo` universal binary --
+          # `update.rs::asset_name()` selects one asset per (os, arch), so a
+          # universal binary would need a new name and a code change for no
+          # benefit.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
@@ -48,19 +81,43 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # `aws-lc-sys` compiles C, so a musl build needs a musl-targeting C
+      # compiler. ⚠️ This binary resolves to `aws-lc-rs`, NOT `ring`, despite
+      # the workspace pinning `rustls = { features = ["ring"] }` -- that pin
+      # only binds crates depending on `rustls` DIRECTLY, which is the server,
+      # not this binary (it gets rustls transitively through `reqwest`, whose
+      # `rustls` feature maps to `__rustls-aws-lc-rs`). Confirmed with
+      # `cargo tree`, not assumed from the manifest comment.
+      #
+      # Only a C compiler is needed: cmake and Go are required for FIPS
+      # builds, which this is not, and pre-generated bindings ship for both
+      # musl targets.
+      - name: Install musl toolchain
+        if: contains(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # cc-rs reads CC_<target with underscores>; without it the build
+          # picks the host gcc and fails to link against musl.
+          echo "CC_$(echo '${{ matrix.target }}' | tr - _)=musl-gcc" >> "$GITHUB_ENV"
+
       # Only this binary. The workspace also contains the server and the
       # collector CLI, which are shipped as a container image instead --
       # building them here would triple the job for artefacts nobody
       # downloads from a release.
+      #
+      # `--profile prod` (thin LTO, codegen-units=1, strip=true), not the
+      # default `release`: these assets are downloaded by every developer and
+      # replaced by `self-update`, and stock `release` ships them unstripped.
       - name: Build
-        run: cargo build --release --locked --bin governance-auth --target ${{ matrix.target }}
+        run: cargo build --profile prod --locked --bin governance-auth --target ${{ matrix.target }}
 
       - name: Stage asset and checksum
         shell: bash
         run: |
           set -euo pipefail
           name="governance-auth-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release/governance-auth" "$name"
+          cp "target/${{ matrix.target }}/prod/governance-auth" "$name"
           # sha256sum's own format (`<hex>  <filename>`), which is what
           # update.rs parses -- and what a developer can check by hand with
           # `sha256sum -c`.
