@@ -14,8 +14,8 @@ description: |
   Published to OCI on merge and consumed by ai-helm, matching the
   lightbridge-authz convention (charts live with the code that they deploy).
 type: application
-version: 0.3.0
-appVersion: 0.3.0
+version: 0.3.1
+appVersion: 0.3.1
 keywords:
   - governance
   - copilot
