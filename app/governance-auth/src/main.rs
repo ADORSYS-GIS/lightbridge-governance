@@ -12,13 +12,14 @@
 mod browser;
 mod cache;
 mod config;
+mod config_file;
 mod oauth;
 mod otel;
 mod redacted;
 mod security;
 mod update;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::OauthConfigArgs;
 
@@ -97,10 +98,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     // Clap can't enforce "issuer/client-id must be present" itself once
     // they're `global` (see `OauthConfigArgs`'s doc comment) -- do it here,
-    // before anything else runs, so a missing flag/env var is reported the
-    // same way a clap parse error would be: immediately, on stderr, nonzero
-    // exit, no partial work.
-    let oauth = cli.oauth.resolve().map_err(|error| anyhow!(error))?;
+    // before anything else runs, so a missing flag/env var/config-file key is
+    // reported the same way a clap parse error would be: immediately, on
+    // stderr, nonzero exit, no partial work. This is also where the two
+    // config-file layers (ADR-0012 Decision 2) get consulted.
+    let oauth = cli.oauth.resolve()?;
     let http = reqwest::Client::builder()
         // `--issuer`/discovery already reject an insecure *initial* request
         // URL (config::parse_issuer, oauth::discovery::require_same_origin)

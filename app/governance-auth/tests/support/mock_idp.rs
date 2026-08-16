@@ -69,6 +69,11 @@ struct Inner {
     last_device_code_challenge: Option<String>,
     last_device_code_challenge_method: Option<String>,
     last_token_code_verifier: Option<String>,
+    // What `scope` the client actually sent on the device-authorization
+    // request -- used to prove ADR-0012 Decision 2's precedence (a `--scopes`
+    // flag must win over `GOVERNANCE_AUTH_SCOPES`) against the real value the
+    // client would put on the wire, not just an internal struct field.
+    last_device_scope: Option<String>,
 }
 
 #[derive(Clone)]
@@ -103,6 +108,7 @@ impl MockIdp {
             last_device_code_challenge: None,
             last_device_code_challenge_method: None,
             last_token_code_verifier: None,
+            last_device_scope: None,
         }));
 
         let router = Router::new()
@@ -145,6 +151,12 @@ impl MockIdp {
     /// the token endpoint.
     pub fn last_token_code_verifier(&self) -> Result<Option<String>> {
         Ok(lock(&self.state)?.last_token_code_verifier.clone())
+    }
+
+    /// What the client sent as `scope` on its most recent device-authorization
+    /// request.
+    pub fn last_device_scope(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_device_scope.clone())
     }
 }
 
@@ -189,6 +201,7 @@ async fn device_authorization(
     guard.device_calls += 1;
     guard.last_device_code_challenge = form.get("code_challenge").cloned();
     guard.last_device_code_challenge_method = form.get("code_challenge_method").cloned();
+    guard.last_device_scope = form.get("scope").cloned();
 
     let base_url = guard.base_url.clone();
     (
