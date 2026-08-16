@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.2.0...v0.2.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **governance-auth:** report the release version, ending the self-update loop ([#135](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/135)) ([83d0846](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/83d0846a9a598055388b7b685d7ce8d641dee242)), closes [#134](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/134)
+
 ## [0.2.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.1.0...v0.2.0) (2026-08-14)
 
 
