@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.0...v0.3.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **governance-auth:** three defects found by running v0.3.0 in production ([#148](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/148)) ([bec7403](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/bec7403fe3742821a70aa0fbb6c35733309499bd)), closes [#145](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/145) [#146](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/146) [#147](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/147)
+
 ## [0.3.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.2.1...v0.3.0) (2026-08-16)
 
 
