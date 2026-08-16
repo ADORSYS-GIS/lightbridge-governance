@@ -41,7 +41,14 @@ pub struct OtelSettings {
     /// Collector base URL, e.g. `https://otel.ai.camer.digital`. Signal
     /// suffixes (`/v1/metrics`, `/v1/logs`, `/v1/traces`) are appended by the
     /// SDKs themselves from this base -- do not include one here.
-    pub endpoint: String,
+    ///
+    /// `None` when the caller has no `--otel-endpoint` -- telemetry wiring is
+    /// independent of inference/gateway wiring (see `gateway_url` below), so
+    /// this can't be a bare `String` without forcing every caller to invent a
+    /// value when only the gateway was configured. Every writer in this
+    /// module treats `None` as "skip telemetry entirely for this tool", never
+    /// as an empty-string endpoint.
+    pub endpoint: Option<String>,
     /// Long-lived OTLP ingest credential, rendered into the header value both
     /// tools send verbatim. `None` writes the endpoint but no header, which
     /// is only useful against a collector that doesn't authenticate.
@@ -222,6 +229,13 @@ const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profi
 /// authenticating Copilot at all, not a choice made here. Callers should say
 /// so out loud.
 pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    if settings.endpoint.is_none() {
+        // No telemetry endpoint means an exported OTLP header would
+        // authenticate to nothing -- this writer exists only to carry the
+        // credential VS Code Copilot needs, which is meaningless without a
+        // collector to send it to.
+        return Ok(Vec::new());
+    }
     let Some(headers) = settings.headers_value() else {
         // Nothing secret to place, and an rc block that exports nothing is
         // just noise in someone's shell startup.
@@ -381,13 +395,22 @@ const VSCODE_FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
 /// surfaces this rather than writing a config that looks complete and
 /// silently drops every span.
 pub fn configure_vscode(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    // VS Code Copilot's OTEL surface is telemetry-only -- there is no
+    // gateway/inference setting this writer could touch instead (see the
+    // module doc's "no setting for OTLP headers" note). With no endpoint
+    // there is nothing meaningful to write, so this is a quiet no-op rather
+    // than a `Skipped` about a tool that may not even be installed here.
+    let Some(endpoint) = settings.endpoint.as_deref() else {
+        return Ok(Vec::new());
+    };
+
     let mut outcomes = Vec::new();
     for flavour in VSCODE_FLAVOURS {
         let dir = vscode_user_dir(home, flavour);
         if !dir.is_dir() {
             continue;
         }
-        outcomes.push(configure_vscode_flavour(&dir, settings)?);
+        outcomes.push(configure_vscode_flavour(&dir, endpoint)?);
     }
     if outcomes.is_empty() {
         outcomes.push(Outcome::Skipped(vscode_user_dir(home, VSCODE_FLAVOURS[0])));
@@ -407,7 +430,7 @@ fn vscode_user_dir(home: &Path, flavour: &str) -> PathBuf {
     base.join(flavour).join("User")
 }
 
-fn configure_vscode_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<Outcome> {
+fn configure_vscode_flavour(user_dir: &Path, endpoint: &str) -> Result<Outcome> {
     let path = user_dir.join("settings.json");
 
     let existing = match fs::read_to_string(&path) {
@@ -432,7 +455,7 @@ fn configure_vscode_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<
                  cannot be rewritten without discarding them). Leaving it untouched -- add \
                  these settings by hand:\n{}",
                 path.display(),
-                vscode_settings_hint(settings)
+                vscode_settings_hint(endpoint)
             )
         })?
     };
@@ -441,7 +464,7 @@ fn configure_vscode_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<
         .as_object_mut()
         .with_context(|| format!("{} is not a JSON object", path.display()))?;
 
-    for (key, value) in vscode_settings(settings) {
+    for (key, value) in vscode_settings(endpoint) {
         object.insert(key.to_owned(), value);
     }
 
@@ -459,7 +482,7 @@ fn configure_vscode_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<
 /// authoritative control, but a client that never sends prompts is one fewer
 /// place they can leak -- matching the `log_user_prompt = false` choice on
 /// the Codex side.
-fn vscode_settings(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)> {
+fn vscode_settings(endpoint: &str) -> Vec<(&'static str, serde_json::Value)> {
     vec![
         (
             "github.copilot.chat.otel.enabled",
@@ -471,7 +494,7 @@ fn vscode_settings(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Va
         ),
         (
             "github.copilot.chat.otel.otlpEndpoint",
-            serde_json::Value::String(settings.endpoint.clone()),
+            serde_json::Value::String(endpoint.to_owned()),
         ),
         (
             "github.copilot.chat.otel.captureContent",
@@ -483,8 +506,8 @@ fn vscode_settings(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Va
 /// Rendered into the error when a JSONC `settings.json` can't be rewritten
 /// losslessly, so declining to edit still leaves the developer with
 /// everything they need to do it themselves.
-fn vscode_settings_hint(settings: &OtelSettings) -> String {
-    vscode_settings(settings)
+fn vscode_settings_hint(endpoint: &str) -> String {
+    vscode_settings(endpoint)
         .into_iter()
         .map(|(key, value)| format!("  \"{key}\": {value},"))
         .collect::<Vec<_>>()
@@ -592,13 +615,18 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
 /// "which keys do we touch" question has one answer.
 fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     let mut entries = vec![
-        ("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_owned()),
         // `apiKeyHelper` output is cached for FIVE MINUTES by default -- the
         // exact lifetime of a Keycloak access token here, so the cache can
         // hand Claude Code a token that expired moments ago and the request
         // 401s. Claude Code re-runs the helper on a 401, so this self-heals,
         // but only after a failed request; keeping the TTL under the token
         // lifetime avoids the failure instead of recovering from it.
+        //
+        // Unconditional (not gated on `gateway_url`) to match this key's
+        // pre-existing behaviour: harmless when `apiKeyHelper` itself isn't
+        // written, and not part of the bug this module fixes (that bug was
+        // `apiKeyHelper` never being reached at all when only the OTEL
+        // endpoint was unset -- see `oauth::apply_telemetry`).
         (
             "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
             settings.headers_helper_debounce_ms.to_string(),
@@ -616,15 +644,28 @@ fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
         // silently rot as models change. Left to the values repo, where the
         // model list already lives.
         ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1".to_owned()),
-        ("OTEL_METRICS_EXPORTER", "otlp".to_owned()),
-        ("OTEL_LOGS_EXPORTER", "otlp".to_owned()),
-        ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()),
-        ("OTEL_EXPORTER_OTLP_ENDPOINT", settings.endpoint.clone()),
-        (
-            "OTEL_RESOURCE_ATTRIBUTES",
-            settings.resource_attributes_value(),
-        ),
     ];
+
+    // Everything below is genuinely telemetry-only: without an OTEL endpoint
+    // there is no collector to export to, so none of these keys should be
+    // written -- that's the other half of the bug this module fixes (the
+    // first half was `apply_telemetry` bailing out before even reaching
+    // here; this half is `settings.endpoint` no longer being a `String` that
+    // could silently be anything when the caller has none).
+    let Some(endpoint) = &settings.endpoint else {
+        return entries;
+    };
+
+    entries.push(("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_owned()));
+    entries.push(("OTEL_METRICS_EXPORTER", "otlp".to_owned()));
+    entries.push(("OTEL_LOGS_EXPORTER", "otlp".to_owned()));
+    entries.push(("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()));
+    entries.push(("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()));
+    entries.push((
+        "OTEL_RESOURCE_ATTRIBUTES",
+        settings.resource_attributes_value(),
+    ));
+
     match (&settings.headers_helper, settings.headers_value()) {
         // The helper wins outright when present: a stale static header
         // sitting alongside a refreshing one is the exact silent-failure
@@ -664,34 +705,40 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("parsing existing {}", path.display()))?;
 
-    let otel = table_entry(document.as_table_mut(), "otel")?;
-    otel.insert("environment", toml_edit::value("prod"));
-    // Content capture stays off. The collector's own redaction is the
-    // authoritative control (RFC-0002 treats that as a release blocker, not
-    // an enhancement), but a client that never sends raw prompts in the first
-    // place is one fewer place for them to leak.
-    otel.insert("log_user_prompt", toml_edit::value(false));
+    // `[otel]` is genuinely telemetry-only: without an OTEL endpoint there is
+    // no collector to point it at, and the `model_providers` block below
+    // (inference) must not depend on it -- that's the bug this branch fixes.
+    if let Some(endpoint) = &settings.endpoint {
+        let otel = table_entry(document.as_table_mut(), "otel")?;
+        otel.insert("environment", toml_edit::value("prod"));
+        // Content capture stays off. The collector's own redaction is the
+        // authoritative control (RFC-0002 treats that as a release blocker,
+        // not an enhancement), but a client that never sends raw prompts in
+        // the first place is one fewer place for them to leak.
+        otel.insert("log_user_prompt", toml_edit::value(false));
 
-    // `otel.exporter` is a TAGGED ENUM, not a string: the exporter kind is
-    // the table NAME and its settings are that table's contents. Writing
-    // `exporter = "otlp-http"` with the settings in a sibling table parses as
-    // TOML but Codex rejects it at load time with `invalid type: unit
-    // variant, expected struct variant in otel.exporter` -- and Codex refuses
-    // to start at all on a config it can't load, so getting this wrong
-    // bricks the tool rather than just disabling telemetry. The shape below
-    // was confirmed by loading it in codex-cli 0.146.1, not inferred from the
-    // reference docs (which describe it as `otel.exporter.<id>.endpoint`).
-    for kind in ["exporter", "metrics_exporter"] {
-        let exporter = table_entry(otel, kind)?;
-        let otlp = table_entry(exporter, "otlp-http")?;
-        otlp.insert("endpoint", toml_edit::value(&settings.endpoint));
-        otlp.insert("protocol", toml_edit::value("binary"));
-        if let Some(token) = &settings.token {
-            let headers = table_entry(otlp, "headers")?;
-            headers.insert(
-                "Authorization",
-                toml_edit::value(format!("Bearer {}", token.expose())),
-            );
+        // `otel.exporter` is a TAGGED ENUM, not a string: the exporter kind is
+        // the table NAME and its settings are that table's contents. Writing
+        // `exporter = "otlp-http"` with the settings in a sibling table parses
+        // as TOML but Codex rejects it at load time with `invalid type: unit
+        // variant, expected struct variant in otel.exporter` -- and Codex
+        // refuses to start at all on a config it can't load, so getting this
+        // wrong bricks the tool rather than just disabling telemetry. The
+        // shape below was confirmed by loading it in codex-cli 0.146.1, not
+        // inferred from the reference docs (which describe it as
+        // `otel.exporter.<id>.endpoint`).
+        for kind in ["exporter", "metrics_exporter"] {
+            let exporter = table_entry(otel, kind)?;
+            let otlp = table_entry(exporter, "otlp-http")?;
+            otlp.insert("endpoint", toml_edit::value(endpoint));
+            otlp.insert("protocol", toml_edit::value("binary"));
+            if let Some(token) = &settings.token {
+                let headers = table_entry(otlp, "headers")?;
+                headers.insert(
+                    "Authorization",
+                    toml_edit::value(format!("Bearer {}", token.expose())),
+                );
+            }
         }
     }
 
@@ -784,7 +831,7 @@ mod tests {
 
     fn settings() -> OtelSettings {
         OtelSettings {
-            endpoint: "https://otel.example.com".to_owned(),
+            endpoint: Some("https://otel.example.com".to_owned()),
             token: Some(Redacted::new("ingest-token".to_owned())),
             headers_helper: None,
             headers_helper_debounce_ms: 240_000,
@@ -1328,5 +1375,148 @@ mod tests {
         without.token = None;
         let env: BTreeMap<_, _> = claude_code_env(&without).into_iter().collect();
         assert!(!env.contains_key("OTEL_EXPORTER_OTLP_HEADERS"));
+    }
+
+    /// `settings_with_gateway()` minus the OTEL endpoint, i.e. exactly what
+    /// `--gateway-url` alone (no `--otel-endpoint`) produces. This is the
+    /// regression fixture for the bug this module fixes: inference wiring
+    /// used to be unreachable whenever telemetry wasn't configured, because
+    /// `oauth::apply_telemetry` bailed out before ever building an
+    /// `OtelSettings`, let alone calling into these writers.
+    fn settings_gateway_only() -> OtelSettings {
+        OtelSettings {
+            endpoint: None,
+            headers_helper: None,
+            ..settings_with_gateway()
+        }
+    }
+
+    #[test]
+    fn gateway_only_writes_claude_code_inference_keys_with_no_telemetry_keys() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude")).expect("create .claude");
+
+        configure_claude_code(home.path(), &settings_gateway_only()).expect("write claude config");
+
+        let text =
+            fs::read_to_string(home.path().join(".claude/settings.json")).expect("read back");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        // The bug: this used to never run at all when no OTEL endpoint was
+        // supplied, because `apply_telemetry` returned before reaching here.
+        assert_eq!(
+            value["apiKeyHelper"].as_str(),
+            Some("/abs/path/governance-auth token"),
+            "gateway-only configure must still write apiKeyHelper"
+        );
+        assert_eq!(
+            value["env"]["ANTHROPIC_BASE_URL"].as_str(),
+            Some("https://api.example.com/anthropic"),
+            "gateway-only configure must still write ANTHROPIC_BASE_URL"
+        );
+
+        // The other half: without an OTEL endpoint there is nothing to point
+        // a telemetry key at, so none of these should appear.
+        assert!(value.get("otelHeadersHelper").is_none());
+        for key in [
+            "CLAUDE_CODE_ENABLE_TELEMETRY",
+            "OTEL_METRICS_EXPORTER",
+            "OTEL_LOGS_EXPORTER",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+        ] {
+            assert!(
+                value["env"].get(key).is_none(),
+                "gateway-only configure must not write telemetry key {key}, got:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_only_writes_codex_provider_block_with_no_otel_table() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("create .codex");
+
+        configure_codex(home.path(), &settings_gateway_only()).expect("write codex config");
+
+        let text = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read back");
+        assert!(
+            text.contains("model_providers"),
+            "gateway-only configure must still write the provider block, got:\n{text}"
+        );
+        assert!(
+            !text.contains("[otel]"),
+            "gateway-only configure must not write an otel table with no endpoint, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn vscode_is_untouched_without_an_otel_endpoint() {
+        // VS Code Copilot's OTEL surface is telemetry-only; a gateway-only
+        // configure has nothing for this writer to do, and must not create or
+        // touch its settings.json.
+        let home = tempdir();
+        let user = vscode_user_dir(home.path(), "Code");
+        fs::create_dir_all(&user).expect("create VS Code User dir");
+        fs::write(user.join("settings.json"), r#"{"editor.fontSize":14}"#).expect("seed settings");
+
+        let outcomes = configure_vscode(home.path(), &settings_gateway_only()).expect("configure");
+        assert!(outcomes.is_empty(), "nothing to write, so nothing reported");
+
+        let text = fs::read_to_string(user.join("settings.json")).expect("read back");
+        assert_eq!(
+            text, r#"{"editor.fontSize":14}"#,
+            "file must be left untouched"
+        );
+    }
+
+    #[test]
+    fn shell_env_is_untouched_without_an_otel_endpoint() {
+        let home = tempdir();
+        fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
+
+        let outcomes =
+            configure_shell_env(home.path(), &settings_gateway_only()).expect("configure");
+        assert!(
+            outcomes.is_empty(),
+            "nothing to export without a telemetry endpoint"
+        );
+
+        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
+        assert_eq!(bashrc, "# mine\n", "rc file must be left untouched");
+        assert!(
+            !home
+                .path()
+                .join(".config/governance-auth/otel.env")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn endpoint_and_gateway_together_write_both_telemetry_and_inference() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude")).expect("create .claude");
+        fs::create_dir_all(home.path().join(".codex")).expect("create .codex");
+
+        let both = settings_with_gateway();
+        configure_claude_code(home.path(), &both).expect("write claude config");
+        configure_codex(home.path(), &both).expect("write codex config");
+
+        let claude = fs::read_to_string(home.path().join(".claude/settings.json")).expect("read");
+        let value: serde_json::Value = serde_json::from_str(&claude).expect("valid JSON");
+        assert_eq!(
+            value["apiKeyHelper"].as_str(),
+            Some("/abs/path/governance-auth token")
+        );
+        assert_eq!(
+            value["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"].as_str(),
+            Some("https://otel.example.com")
+        );
+
+        let codex = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read");
+        assert!(codex.contains("model_providers"), "got:\n{codex}");
+        assert!(codex.contains("[otel]"), "got:\n{codex}");
     }
 }

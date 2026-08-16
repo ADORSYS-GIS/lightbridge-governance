@@ -47,18 +47,48 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
     Ok(())
 }
 
-/// Points Claude Code and Codex at this org's collector. Called by `login`
-/// automatically rather than left as an opt-in step: exporting telemetry is
-/// the condition for using the gateway, so authenticating and being
-/// configured to report are deliberately the same action.
+/// Points Claude Code and Codex at this org's collector and/or this org's AI
+/// gateway. Called by `login` automatically rather than left as an opt-in
+/// step: exporting telemetry is the condition for using the gateway, so
+/// authenticating and being configured to report are deliberately the same
+/// action.
+///
+/// Telemetry wiring (`otel_endpoint`) and inference/gateway wiring
+/// (`gateway_url`) are independent knobs -- a caller can supply either, both,
+/// or (an error) neither. They used to be wrongly coupled: an early return on
+/// a missing `otel_endpoint` skipped the inference wiring too, even though
+/// `apiKeyHelper`/`ANTHROPIC_BASE_URL`/Codex's provider block have nothing to
+/// do with telemetry. That's why the "nothing configured at all" check below
+/// is the only thing that can end this function before doing real work.
 fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> {
-    let Some(endpoint) = config.otel_endpoint.clone() else {
+    let telemetry_requested = config.otel_endpoint.is_some();
+    let inference_requested = config.gateway_url.is_some();
+
+    // The developer explicitly asked to be configured and named neither an
+    // OTEL collector nor a gateway -- there is nothing for this function to
+    // do, and doing nothing silently (the old behaviour) left `login` users
+    // stuck with an unconfigured `apiKeyHelper` and no indication why. Naming
+    // both flags here, not just one, is what tells the caller how to fix it.
+    if !telemetry_requested && !inference_requested {
+        bail!(
+            "nothing to configure: supply --otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT to \
+             write telemetry config, and/or --gateway-url / GOVERNANCE_AUTH_GATEWAY_URL to \
+             write inference (apiKeyHelper / model-provider) config"
+        );
+    }
+
+    if !telemetry_requested {
         eprintln!(
             "No OTEL endpoint configured (--otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT); \
              skipping telemetry setup."
         );
-        return Ok(());
-    };
+    }
+    if !inference_requested {
+        eprintln!(
+            "No gateway URL configured (--gateway-url / GOVERNANCE_AUTH_GATEWAY_URL); skipping \
+             inference (apiKeyHelper / model-provider) setup."
+        );
+    }
 
     let home = std::env::var("HOME")
         .ok()
@@ -70,24 +100,32 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
     resource_attributes.insert("service.namespace".to_owned(), "ai-cli".to_owned());
 
     let settings = otel::OtelSettings {
-        endpoint,
+        endpoint: config.otel_endpoint.clone(),
         token: config.otel_token.clone().map(Redacted::new),
         resource_attributes,
         // Point Claude Code at this very binary for fresh headers. Built
         // from the same issuer/client-id the caller passed, so the helper
         // line keeps working when those are supplied as flags rather than
         // inherited env (a helper subprocess isn't guaranteed to inherit
-        // them -- the same reasoning as the `apiKeyHelper` line).
-        headers_helper: Some(format!(
-            "{} --issuer {} --client-id {} otel-headers",
-            otel::binary_path(),
-            config.issuer,
-            config.client_id,
-        )),
+        // them -- the same reasoning as the `apiKeyHelper` line). `None`
+        // when telemetry wasn't requested: writing a helper for a collector
+        // that isn't configured would give Claude Code a working refresh
+        // loop pointed at nothing.
+        headers_helper: telemetry_requested.then(|| {
+            format!(
+                "{} --issuer {} --client-id {} otel-headers",
+                otel::binary_path(),
+                config.issuer,
+                config.client_id,
+            )
+        }),
         headers_helper_debounce_ms: config.otel_headers_debounce_ms,
         // Same absolute-path rule as the helper above, and for a sharper
         // reason: Codex spawns this one WITHOUT a shell, so a bare name
         // cannot resolve at all. See `otel::OtelSettings::token_command`.
+        // Built unconditionally -- harmless when inference wiring isn't
+        // requested, since nothing reads it in that case (`OtelSettings`'s
+        // writers gate on `gateway_url`, not on this string's presence).
         token_command: format!(
             "{} --issuer {} --client-id {} token",
             otel::binary_path(),
@@ -103,18 +141,22 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
     for outcome in &outcomes {
         match outcome {
             otel::Outcome::Written(path) => {
-                eprintln!("Telemetry configured: {}", path.display());
+                eprintln!("Configured: {}", path.display());
                 // Codex and VS Code have no dynamic-headers hook, so they're
-                // the only ones a missing static token actually breaks.
-                needs_static_token |= path.file_name().is_some_and(|name| name == "config.toml")
-                    || path.parent().is_some_and(|dir| dir.ends_with("User"));
+                // the only ones a missing static token actually breaks --
+                // and only when telemetry was actually requested; a gateway-
+                // only run can write Codex's `config.toml` for the provider
+                // block alone, which needs no OTLP token at all.
+                needs_static_token |= telemetry_requested
+                    && (path.file_name().is_some_and(|name| name == "config.toml")
+                        || path.parent().is_some_and(|dir| dir.ends_with("User")));
                 // VS Code's settings live under `<flavour>/User/`, which is
                 // how a written VS Code config is told apart from the two
                 // CLI ones without threading a tool tag through `Outcome`.
                 wrote_vscode |= path.parent().is_some_and(|dir| dir.ends_with("User"));
             }
             otel::Outcome::Skipped(dir) => {
-                eprintln!("Skipped telemetry setup: {} not present.", dir.display());
+                eprintln!("Skipped: {} not present.", dir.display());
             }
         }
     }
@@ -311,4 +353,54 @@ async fn revoke(http: &reqwest::Client, config: &OauthConfig, refresh_token: &st
         bail!("revocation endpoint returned {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> CachedSession {
+        CachedSession {
+            issuer: "https://issuer.example.com".to_owned(),
+            client_id: "client".to_owned(),
+            access_token: Redacted::new("access-token".to_owned()),
+            refresh_token: None,
+            expires_at: 0,
+        }
+    }
+
+    fn config() -> OauthConfig {
+        OauthConfig {
+            issuer: "https://issuer.example.com".to_owned(),
+            client_id: "client".to_owned(),
+            scopes: "openid".to_owned(),
+            audience: None,
+            otel_endpoint: None,
+            otel_token: None,
+            gateway_url: None,
+            otel_headers_debounce_ms: 240_000,
+        }
+    }
+
+    /// THE regression test for the bug this module fixes. Neither flag set
+    /// used to be a silent no-op (`Ok(())`, nothing written, nothing
+    /// returned) -- exactly what a developer who explicitly ran `configure`
+    /// and got total silence hit in production. It must now be a loud,
+    /// non-zero-exit error that names both flags, so `configure` propagates
+    /// it (this function's caller) while `login` still only warns (see the
+    /// comment on `login`'s call site).
+    #[test]
+    fn configure_fails_loudly_when_neither_otel_endpoint_nor_gateway_url_is_set() {
+        let error = apply_telemetry(&config(), &session())
+            .expect_err("neither flag set must be a hard error, not a silent no-op");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("--otel-endpoint"),
+            "must name the OTEL flag so the developer knows what to supply, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("--gateway-url"),
+            "must name the gateway flag so the developer knows what to supply, got: {rendered}"
+        );
+    }
 }
