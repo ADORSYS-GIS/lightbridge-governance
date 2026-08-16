@@ -1,7 +1,13 @@
 //! CLI-configurable OAuth2 client identity. No issuer/client id is baked in:
-//! the Keycloak realm and client this binary talks to are registered
+//! the OIDC issuer and client this binary talks to are registered
 //! per-deployment (see the ai-helm coordination note in
 //! `docs/adr/0010-governance-auth-keycloak-oauth2-credential-helper.md`).
+//! Keycloak is what's deployed today, but nothing here assumes it: `--issuer`
+//! is resolved purely through OIDC discovery (`oauth::discovery`), and the
+//! optional token-exchange config below (`ExchangeConfig`) makes "authenticate
+//! at one issuer, present credentials minted by a second one" a first-class,
+//! separately-configured pair rather than an assumption baked into a single
+//! `issuer` field.
 //!
 //! [`OauthConfigArgs::resolve`] implements ADR-0012 Decision 2's five-layer
 //! precedence: CLI flag -> env var -> per-user config file -> machine-wide
@@ -13,7 +19,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use url::Url;
 
@@ -117,6 +123,84 @@ pub struct OauthConfigArgs {
     /// this module's doc.
     #[arg(long, env = "GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS", global = true)]
     otel_headers_debounce_ms: Option<u64>,
+
+    /// Whether `login` launches the system browser automatically. OFF by
+    /// default (issue #141): SSH sessions, containers, CI and VM-based
+    /// testing all inherit a `DISPLAY`/`xdg-open` that either fails or
+    /// hijacks an unrelated desktop, and the authorize URL is printed either
+    /// way -- so auto-opening is wrong more often than it's right. Only
+    /// `login`'s loopback (non-`--device-code`) path reads this.
+    ///
+    /// `Option<bool>`, not a plain clap flag (`ArgAction::SetTrue`): a bare
+    /// `SetTrue` bakes in "false" the instant the flag is absent, before any
+    /// config-file layer is consulted -- exactly the `default_value` trap
+    /// this module's doc warns about, just for a bool instead of a string.
+    /// `num_args = 0..=1` + `default_missing_value` keeps `--open-browser`
+    /// usable bare (no `=true` needed) while still leaving the field `None`,
+    /// not `Some(false)`, when the flag is never mentioned at all.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_OPEN_BROWSER",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        global = true
+    )]
+    open_browser: Option<bool>,
+
+    /// Whether `token`/`otel-headers` exchange the cached upstream access
+    /// token for a downstream one before printing it (RFC 8693). OFF by
+    /// default -- opt-in only. See [`ExchangeTokenEndpoint`] and
+    /// [`ExchangeConfig`] for what else must be configured once this is on,
+    /// and `oauth::exchange`'s module doc for the fail-closed contract: a
+    /// misconfigured or failing exchange must never fall back to emitting
+    /// the un-exchanged upstream token. Same `Option<bool>` reasoning as
+    /// `open_browser`, above.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_TOKEN_EXCHANGE",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        global = true
+    )]
+    token_exchange: Option<bool>,
+
+    /// The token-exchange issuer, discovered via OIDC discovery the same way
+    /// the primary `--issuer` is -- only consulted when
+    /// `--exchange-token-endpoint` is absent (discovery costs a round trip
+    /// the explicit form skips). Deliberately a SEPARATE field from
+    /// `--issuer`: "authenticate at A, present credentials minted by B" is
+    /// the whole point of token exchange, so the two issuers must be able to
+    /// differ.
+    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_ISSUER", value_parser = parse_issuer, global = true)]
+    exchange_issuer: Option<String>,
+
+    /// The token-exchange endpoint, given directly rather than discovered.
+    /// Takes precedence over `--exchange-issuer` when both are set (skips a
+    /// discovery round trip for the more specific value; not an error the
+    /// way `otel_token`/`otel_token_file` both-set is, because these two
+    /// aren't independently meaningful ways to say the same secret -- one is
+    /// just a shortcut past the other's discovery step).
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT",
+        value_parser = parse_exchange_token_endpoint,
+        global = true
+    )]
+    exchange_token_endpoint: Option<String>,
+
+    /// The `client_id` presented on the exchange request. Required when
+    /// `--token-exchange` is on; see lightbridge-authz's
+    /// `docs/token-exchange-integration.md` for why this specific client id
+    /// (not the primary `--client-id`) must appear in the subject token's
+    /// `aud` claim for the exchange to succeed at all.
+    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID", global = true)]
+    exchange_client_id: Option<String>,
+
+    /// Space-separated scopes requested on the exchange, if any. Optional --
+    /// omitting it grants the exchange server's allow-list minus
+    /// `offline_access` (see the integration guide's "Scope semantics").
+    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_SCOPES", global = true)]
+    exchange_scopes: Option<String>,
 }
 
 impl OauthConfigArgs {
@@ -234,6 +318,22 @@ impl OauthConfigArgs {
             })
             .unwrap_or(DEFAULT_OTEL_HEADERS_DEBOUNCE_MS);
 
+        let open_browser = self
+            .open_browser
+            .or_else(|| per_user.as_ref().and_then(|file| file.open_browser))
+            .or_else(|| machine.as_ref().and_then(|file| file.open_browser))
+            .unwrap_or(false);
+
+        let token_exchange = resolve_token_exchange(
+            self.token_exchange,
+            self.exchange_issuer.clone(),
+            self.exchange_token_endpoint.clone(),
+            self.exchange_client_id.clone(),
+            self.exchange_scopes,
+            per_user.as_ref(),
+            machine.as_ref(),
+        )?;
+
         Ok(OauthConfig {
             issuer,
             client_id,
@@ -243,8 +343,82 @@ impl OauthConfigArgs {
             otel_token,
             gateway_url,
             otel_headers_debounce_ms,
+            open_browser,
+            token_exchange,
         })
     }
+}
+
+/// The token-exchange sub-block of [`OauthConfigArgs::resolve_with_paths`],
+/// split out as a free function (taking the five raw fields by value, rather
+/// than `&self`) because it's a five-field group with its own internal
+/// validation (client id required, exactly one of issuer/token-endpoint
+/// required) -- inlining it would make the parent function's field-by-field
+/// shape harder to scan. A `&self`-taking method would not compile here:
+/// by the point this is called, several *other* fields of `self` have
+/// already been individually moved out via `self.field.or_else(...)`
+/// (`Option<String>` isn't `Copy`), and Rust does not allow borrowing a
+/// struct as a whole once any one of its fields has been partially moved,
+/// even to read a field that was never touched.
+fn resolve_token_exchange(
+    token_exchange: Option<bool>,
+    exchange_issuer: Option<String>,
+    exchange_token_endpoint: Option<String>,
+    exchange_client_id: Option<String>,
+    exchange_scopes: Option<String>,
+    per_user: Option<&config_file::ConfigFile>,
+    machine: Option<&config_file::ConfigFile>,
+) -> Result<Option<ExchangeConfig>> {
+    let enabled = token_exchange
+        .or_else(|| per_user.and_then(|file| file.token_exchange))
+        .or_else(|| machine.and_then(|file| file.token_exchange))
+        .unwrap_or(false);
+
+    if !enabled {
+        return Ok(None);
+    }
+
+    let exchange_issuer = exchange_issuer
+        .or_else(|| per_user.and_then(|file| file.exchange_issuer.clone()))
+        .or_else(|| machine.and_then(|file| file.exchange_issuer.clone()))
+        .map(|value| parse_issuer(&value).map_err(|error| anyhow::anyhow!(error)))
+        .transpose()?;
+
+    let exchange_token_endpoint = exchange_token_endpoint
+        .or_else(|| per_user.and_then(|file| file.exchange_token_endpoint.clone()))
+        .or_else(|| machine.and_then(|file| file.exchange_token_endpoint.clone()))
+        .map(|value| parse_exchange_token_endpoint(&value).map_err(|error| anyhow::anyhow!(error)))
+        .transpose()?;
+
+    let client_id = exchange_client_id
+        .or_else(|| per_user.and_then(|file| file.exchange_client_id.clone()))
+        .or_else(|| machine.and_then(|file| file.exchange_client_id.clone()))
+        .context(
+            "--exchange-client-id (or GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID, or \
+             `exchange_client_id` in a config file) is required when token exchange \
+             (--token-exchange) is enabled",
+        )?;
+
+    let scopes = exchange_scopes
+        .or_else(|| per_user.and_then(|file| file.exchange_scopes.clone()))
+        .or_else(|| machine.and_then(|file| file.exchange_scopes.clone()));
+
+    let token_endpoint = match (exchange_token_endpoint, exchange_issuer) {
+        (Some(endpoint), _) => ExchangeTokenEndpoint::Explicit(endpoint),
+        (None, Some(issuer)) => ExchangeTokenEndpoint::Issuer(issuer),
+        (None, None) => bail!(
+            "token exchange (--token-exchange) is enabled but neither \
+             --exchange-token-endpoint (GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT) nor \
+             --exchange-issuer (GOVERNANCE_AUTH_EXCHANGE_ISSUER) is set, in a flag, env var, or \
+             config file"
+        ),
+    };
+
+    Ok(Some(ExchangeConfig {
+        token_endpoint,
+        client_id,
+        scopes,
+    }))
 }
 
 /// The resolved, always-present OAuth2 client identity every command
@@ -263,17 +437,74 @@ pub struct OauthConfig {
     pub otel_token: Option<String>,
     pub gateway_url: Option<String>,
     pub otel_headers_debounce_ms: u64,
+    /// Whether `login`'s loopback flow launches the system browser
+    /// automatically. See `OauthConfigArgs::open_browser`'s doc for why this
+    /// defaults to `false` (issue #141).
+    pub open_browser: bool,
+    /// Present only when token exchange (RFC 8693) is enabled -- `None` is
+    /// the ONLY representation of "off", so there is no separate bool that
+    /// could drift out of sync with these fields. See `oauth::exchange`.
+    pub token_exchange: Option<ExchangeConfig>,
 }
 
-/// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER`: rejects an
-/// unparseable URL or one that fails [`security::require_secure`] before
-/// this binary ever tries to use it. The raw string is kept (not the
-/// re-serialized `Url`) so downstream trailing-slash handling
-/// (`oauth::discovery::discover`) sees exactly what the operator passed.
-fn parse_issuer(raw: &str) -> Result<String, String> {
-    let url = Url::parse(raw).map_err(|error| format!("invalid issuer URL: {error}"))?;
+/// Resolved RFC 8693 token-exchange configuration, built by
+/// [`resolve_token_exchange`] only when `--token-exchange` (or its env
+/// var/config-file equivalent) is on. See `oauth::exchange`'s module doc for
+/// the request this drives and its fail-closed contract, and
+/// lightbridge-authz's `docs/token-exchange-integration.md` for the wire
+/// contract itself.
+#[derive(Debug, Clone)]
+pub struct ExchangeConfig {
+    pub token_endpoint: ExchangeTokenEndpoint,
+    pub client_id: String,
+    pub scopes: Option<String>,
+}
+
+/// Where the token-exchange request goes. An explicit
+/// `--exchange-token-endpoint` is used as-is; `--exchange-issuer` costs one
+/// OIDC discovery round trip (cached, same as the primary `--issuer` --
+/// see `oauth::discovery`) to find it.
+#[derive(Debug, Clone)]
+pub enum ExchangeTokenEndpoint {
+    Explicit(String),
+    Issuer(String),
+}
+
+/// Shared validation behind [`parse_issuer`] and
+/// [`parse_exchange_token_endpoint`]: rejects an unparseable URL or one that
+/// fails [`security::require_secure`] before this binary ever tries to use
+/// it. The raw string is kept (not the re-serialized `Url`) so downstream
+/// trailing-slash handling (`oauth::discovery::discover`) sees exactly what
+/// the operator passed.
+///
+/// `label` exists only to keep the error message accurate for both callers:
+/// `--issuer`/`--exchange-issuer` really are issuers, but
+/// `--exchange-token-endpoint` is explicitly a full endpoint URL, not one --
+/// reusing a single hardcoded "invalid issuer URL: ..." message for both
+/// (the previous shape) told an operator who typo'd
+/// `--exchange-token-endpoint` that their *issuer* was wrong, which isn't
+/// even the flag they set.
+fn parse_url(label: &str, raw: &str) -> Result<String, String> {
+    let url = Url::parse(raw).map_err(|error| format!("invalid {label} URL: {error}"))?;
     security::require_secure(&url).map_err(|error| error.to_string())?;
     Ok(raw.to_owned())
+}
+
+/// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER` and
+/// `--exchange-issuer`/`GOVERNANCE_AUTH_EXCHANGE_ISSUER` -- both name an
+/// actual OIDC issuer. See [`parse_url`] for what's validated.
+fn parse_issuer(raw: &str) -> Result<String, String> {
+    parse_url("issuer", raw)
+}
+
+/// `clap` value parser for `--exchange-token-endpoint`/
+/// `GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT`: the same two checks as
+/// [`parse_issuer`], but labelled "endpoint" rather than "issuer" -- this
+/// flag is explicitly NOT an issuer (see its doc comment on
+/// [`OauthConfigArgs::exchange_token_endpoint`]), it's the resolved token
+/// endpoint itself, given directly to skip a discovery round trip.
+fn parse_exchange_token_endpoint(raw: &str) -> Result<String, String> {
+    parse_url("endpoint", raw)
 }
 
 #[cfg(test)]
@@ -298,6 +529,26 @@ mod tests {
     #[test]
     fn accepts_loopback_http_issuer() {
         assert!(parse_issuer("http://127.0.0.1:4181/realms/platform").is_ok());
+    }
+
+    /// `--exchange-token-endpoint` is explicitly not an issuer -- the error
+    /// message for an unparseable value must say "endpoint", not "issuer",
+    /// so an operator who typo'd this flag isn't told the wrong flag is
+    /// wrong. Regression test for the message `parse_issuer` used to
+    /// produce here (it was reused verbatim, hardcoding "issuer" for both).
+    #[test]
+    fn exchange_token_endpoint_parse_error_names_endpoint_not_issuer() {
+        let error = parse_exchange_token_endpoint("not a url")
+            .expect_err("an unparseable exchange-token-endpoint value must be rejected");
+        assert!(
+            error.contains("endpoint"),
+            "error should say 'endpoint', not 'issuer' -- this flag is a token endpoint, not an \
+             issuer, got: {error}"
+        );
+        assert!(
+            !error.contains("issuer"),
+            "error should not call this value an issuer, got: {error}"
+        );
     }
 
     /// ADR-0012 Decision 2's five layers, proved pairwise: flag beats env,
@@ -374,6 +625,12 @@ mod tests {
                 otel_token: None,
                 gateway_url: None,
                 otel_headers_debounce_ms: None,
+                open_browser: None,
+                token_exchange: None,
+                exchange_issuer: None,
+                exchange_token_endpoint: None,
+                exchange_client_id: None,
+                exchange_scopes: None,
             }
         }
 
@@ -714,6 +971,381 @@ mod tests {
                 .resolve_with_paths(&per_user, &machine)
                 .expect_err("malformed TOML must be an error, not silently skipped");
             assert!(format!("{error:#}").contains(&per_user.display().to_string()));
+        }
+
+        /// `open_browser` (issue #141): with nothing configured anywhere,
+        /// the compiled default is `false` -- pinned so the browser default
+        /// stays off without needing a clap `default_value` (see this
+        /// module's doc and `clap_default_value_would_defeat_the_config_file_layer`
+        /// for why that specific mechanism must not be used here either).
+        #[test]
+        fn open_browser_compiled_default_is_false() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(!resolved.open_browser);
+        }
+
+        /// A machine-wide file turning `open_browser` on must be honoured --
+        /// the field-specific version of the "machine file beats compiled
+        /// default" proof every other option already has.
+        #[test]
+        fn machine_file_wins_over_compiled_default_for_open_browser() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(&dir, "machine.toml", "open_browser = true\n");
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(resolved.open_browser);
+        }
+
+        /// A per-user file must win over a machine-wide file for
+        /// `open_browser` too.
+        #[test]
+        fn per_user_file_wins_over_machine_file_for_open_browser() {
+            let dir = tempdir();
+            let per_user = write_config(&dir, "per-user.toml", "open_browser = true\n");
+            let machine = write_config(&dir, "machine.toml", "open_browser = false\n");
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(resolved.open_browser);
+        }
+
+        /// A flag/env value must win over both file layers for
+        /// `open_browser` too.
+        #[test]
+        fn flag_or_env_value_wins_over_both_files_for_open_browser() {
+            let dir = tempdir();
+            let per_user = write_config(&dir, "per-user.toml", "open_browser = true\n");
+            let machine = write_config(&dir, "machine.toml", "open_browser = true\n");
+
+            let args = OauthConfigArgs {
+                open_browser: Some(false),
+                ..base_args()
+            };
+            let resolved = args
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                !resolved.open_browser,
+                "an explicit false from a flag/env must win over both files' true"
+            );
+        }
+
+        /// `--open-browser` used bare (no `=true`) must resolve to `true`
+        /// through REAL clap parsing -- the tri-state `Option<bool>`
+        /// (`num_args = 0..=1` + `default_missing_value`) equivalent of
+        /// `clap_default_value_would_defeat_the_config_file_layer`: this is
+        /// the one test in this module that would catch a regression to a
+        /// plain `ArgAction::SetTrue` bool flag, which would compile fine
+        /// but bake in `false` the instant the flag is absent -- the same
+        /// trap `default_value` sets for a string/int field.
+        #[test]
+        fn open_browser_flag_used_bare_resolves_to_true_through_real_clap_parsing() {
+            use clap::Parser as _;
+
+            #[derive(Debug, clap::Parser)]
+            struct TestCli {
+                #[command(flatten)]
+                oauth: OauthConfigArgs,
+            }
+
+            let cli = TestCli::try_parse_from([
+                "governance-auth",
+                "--issuer",
+                "https://issuer.example",
+                "--client-id",
+                "cli",
+                "--open-browser",
+            ])
+            .expect("parse with a bare --open-browser flag");
+
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+            let resolved = cli
+                .oauth
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                resolved.open_browser,
+                "a bare --open-browser must resolve to true"
+            );
+        }
+
+        /// Same real-clap-parsing proof for the OTHER direction: with
+        /// `--open-browser` never mentioned at all, a real parse must leave
+        /// it `None` internally so the machine-wide file still gets a
+        /// chance -- catches a regression to a plain bool field with an
+        /// implicit `false` default just as surely as the bare-flag test
+        /// above catches the opposite mistake.
+        #[test]
+        fn open_browser_absent_from_a_real_clap_parse_still_falls_through_to_the_machine_file() {
+            use clap::Parser as _;
+
+            #[derive(Debug, clap::Parser)]
+            struct TestCli {
+                #[command(flatten)]
+                oauth: OauthConfigArgs,
+            }
+
+            let cli = TestCli::try_parse_from([
+                "governance-auth",
+                "--issuer",
+                "https://issuer.example",
+                "--client-id",
+                "cli",
+            ])
+            .expect("parse with no --open-browser flag");
+
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(&dir, "machine.toml", "open_browser = true\n");
+            let resolved = cli
+                .oauth
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                resolved.open_browser,
+                "with --open-browser absent from the real CLI parse, the machine-wide file's \
+                 `open_browser = true` must still take effect"
+            );
+        }
+
+        /// Token exchange (issue #140) is OFF by default: with nothing
+        /// configured anywhere, `resolved.token_exchange` must be `None`,
+        /// the ONLY representation of "disabled" (see `ExchangeConfig`'s
+        /// doc).
+        #[test]
+        fn token_exchange_is_off_by_default() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(resolved.token_exchange.is_none());
+        }
+
+        /// Enabling exchange without an exchange client id must be a loud
+        /// error naming the missing flag, not a silently-disabled exchange
+        /// or a panic reaching for a value that was never there.
+        #[test]
+        fn token_exchange_enabled_without_a_client_id_is_an_error() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let args = OauthConfigArgs {
+                token_exchange: Some(true),
+                exchange_issuer: Some("https://exchange.example".to_owned()),
+                ..base_args()
+            };
+            let error = args
+                .resolve_with_paths(&per_user, &machine)
+                .expect_err("token exchange without a client id must be rejected");
+            assert!(format!("{error:#}").contains("--exchange-client-id"));
+        }
+
+        /// Enabling exchange without EITHER an exchange issuer or an
+        /// explicit exchange token endpoint must also be a loud error --
+        /// there is nowhere to send the exchange request otherwise.
+        #[test]
+        fn token_exchange_enabled_without_an_issuer_or_token_endpoint_is_an_error() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let args = OauthConfigArgs {
+                token_exchange: Some(true),
+                exchange_client_id: Some("exchange-cli".to_owned()),
+                ..base_args()
+            };
+            let error = args
+                .resolve_with_paths(&per_user, &machine)
+                .expect_err("token exchange without an issuer/token-endpoint must be rejected");
+            assert!(format!("{error:#}").contains("--exchange-token-endpoint"));
+            assert!(format!("{error:#}").contains("--exchange-issuer"));
+        }
+
+        /// A fully-specified exchange config (issuer form) resolves to
+        /// `Some(ExchangeConfig)` with every field carried through, proving
+        /// the happy path end-to-end through `resolve_with_paths` rather
+        /// than just its error branches.
+        #[test]
+        fn token_exchange_fully_specified_via_issuer_resolves() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let args = OauthConfigArgs {
+                token_exchange: Some(true),
+                exchange_issuer: Some("https://exchange.example".to_owned()),
+                exchange_client_id: Some("exchange-cli".to_owned()),
+                exchange_scopes: Some("openid profile".to_owned()),
+                ..base_args()
+            };
+            let resolved = args
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            let exchange = resolved
+                .token_exchange
+                .expect("token exchange must be Some when fully specified");
+            assert_eq!(exchange.client_id, "exchange-cli");
+            assert_eq!(exchange.scopes.as_deref(), Some("openid profile"));
+            assert!(matches!(
+                exchange.token_endpoint,
+                ExchangeTokenEndpoint::Issuer(ref issuer) if issuer == "https://exchange.example"
+            ));
+        }
+
+        /// An explicit `--exchange-token-endpoint` takes precedence over
+        /// `--exchange-issuer` when both are set -- documented behaviour in
+        /// `OauthConfigArgs::exchange_token_endpoint`'s doc, pinned here so
+        /// a refactor can't silently flip which one wins.
+        #[test]
+        fn token_exchange_explicit_token_endpoint_wins_over_issuer() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let args = OauthConfigArgs {
+                token_exchange: Some(true),
+                exchange_issuer: Some("https://exchange.example".to_owned()),
+                exchange_token_endpoint: Some("https://exchange.example/oauth2/token".to_owned()),
+                exchange_client_id: Some("exchange-cli".to_owned()),
+                ..base_args()
+            };
+            let resolved = args
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            let exchange = resolved.token_exchange.expect("token exchange resolved");
+            assert!(matches!(
+                exchange.token_endpoint,
+                ExchangeTokenEndpoint::Explicit(ref endpoint)
+                    if endpoint == "https://exchange.example/oauth2/token"
+            ));
+        }
+
+        /// Every exchange field falls through the same file layering as
+        /// `issuer`/`client_id` -- a machine-wide file alone can fully
+        /// configure token exchange, with no flag/env involved at all.
+        #[test]
+        fn token_exchange_config_falls_through_to_the_machine_wide_file() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(
+                &dir,
+                "machine.toml",
+                "token_exchange = true\n\
+                 exchange_token_endpoint = \"https://exchange.example/oauth2/token\"\n\
+                 exchange_client_id = \"machine-exchange-cli\"\n",
+            );
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            let exchange = resolved.token_exchange.expect("token exchange resolved");
+            assert_eq!(exchange.client_id, "machine-exchange-cli");
+        }
+
+        /// A per-user file's `token_exchange = false` must win over a
+        /// machine-wide file's `token_exchange = true` -- same precedence
+        /// every other field has, proved specifically for the boolean gate
+        /// rather than just the fields underneath it.
+        #[test]
+        fn per_user_file_wins_over_machine_file_for_token_exchange_enabled() {
+            let dir = tempdir();
+            let per_user = write_config(&dir, "per-user.toml", "token_exchange = false\n");
+            let machine = write_config(
+                &dir,
+                "machine.toml",
+                "token_exchange = true\n\
+                 exchange_token_endpoint = \"https://exchange.example/oauth2/token\"\n\
+                 exchange_client_id = \"machine-exchange-cli\"\n",
+            );
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                resolved.token_exchange.is_none(),
+                "per-user token_exchange = false must win over the machine file's true"
+            );
+        }
+
+        /// The `token_exchange` counterpart to
+        /// `open_browser_absent_from_a_real_clap_parse_still_falls_through_to_the_machine_file`
+        /// -- and, like that test, the only one in this module that can
+        /// catch a `default_value`/`default_value_t` regression reintroduced
+        /// on the real `#[arg(...)]` for `token_exchange`, because it's the
+        /// only one that goes through REAL clap parsing
+        /// (`TestCli::try_parse_from`) rather than hand-constructing
+        /// `OauthConfigArgs { token_exchange: None, .. }`.
+        ///
+        /// Every OTHER `token_exchange` test above builds `OauthConfigArgs`
+        /// by hand, which proves the layering logic in
+        /// `resolve_token_exchange` is correct but can never observe a
+        /// mistake in the `#[arg(...)]` attribute itself: clap fills a
+        /// `default_value` in BEFORE `OauthConfigArgs` exists as a value a
+        /// test could construct differently, so a hand-built
+        /// `token_exchange: None` stays `None` even if the real CLI would
+        /// never produce it. Confirmed by sabotaging with
+        /// `default_value = "false"` on the `token_exchange` arg: with that
+        /// in place, `--token-exchange` never mentioned still parses to
+        /// `Some(false)`, so `resolve_token_exchange` sees `enabled = false`
+        /// and never even reads the machine-wide file's `token_exchange =
+        /// true` -- this test failed with `resolved.token_exchange` being
+        /// `None` instead of `Some`, exactly the trap this module's doc
+        /// warns about.
+        #[test]
+        fn token_exchange_absent_from_a_real_clap_parse_still_falls_through_to_the_machine_file() {
+            use clap::Parser as _;
+
+            #[derive(Debug, clap::Parser)]
+            struct TestCli {
+                #[command(flatten)]
+                oauth: OauthConfigArgs,
+            }
+
+            let cli = TestCli::try_parse_from([
+                "governance-auth",
+                "--issuer",
+                "https://issuer.example",
+                "--client-id",
+                "cli",
+            ])
+            .expect("parse with no --token-exchange flag");
+
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(
+                &dir,
+                "machine.toml",
+                "token_exchange = true\n\
+                 exchange_token_endpoint = \"https://exchange.example/oauth2/token\"\n\
+                 exchange_client_id = \"machine-exchange-cli\"\n",
+            );
+
+            let resolved = cli
+                .oauth
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                resolved.token_exchange.is_some(),
+                "with --token-exchange absent from the real CLI parse, the machine-wide file's \
+                 `token_exchange = true` must still take effect -- if this fails with `None` \
+                 instead, `default_value` has been reintroduced on the `token_exchange` arg"
+            );
         }
     }
 }

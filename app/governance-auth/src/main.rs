@@ -1,10 +1,16 @@
-//! OAuth2 credential helper for Claude Code and Codex against this org's
-//! Keycloak-protected AI gateway. Not a server -- Keycloak already is the
-//! authorization server and the gateway already validates its JWTs. This is
-//! a pure OAuth2 *client*: `login` performs the interactive flow once,
-//! `token` prints a currently-valid access token on every subsequent call,
-//! wired into Claude Code's `apiKeyHelper` and Codex's
-//! `[model_providers.<id>.auth] command`.
+//! OAuth2 credential helper for Claude Code and Codex against this org's AI
+//! gateway. Not a server -- an OIDC-compliant authorization server (today,
+//! Keycloak; nothing here assumes it -- see `crate::config`'s module doc)
+//! already validates its own tokens, and the gateway already validates the
+//! JWTs it issues. This is a pure OAuth2 *client*: `login` performs the
+//! interactive flow once, `token` prints a currently-valid access token on
+//! every subsequent call, wired into Claude Code's `apiKeyHelper` and
+//! Codex's `[model_providers.<id>.auth] command`.
+//!
+//! Optionally, `token`/`otel-headers` can exchange that access token (RFC
+//! 8693) for one minted by a second, downstream authorization server before
+//! printing it -- OFF by default, see `crate::config::ExchangeConfig` and
+//! `oauth::exchange`.
 //!
 //! All UX, prompts and errors go to stderr. `token`'s stdout carries the
 //! access token and nothing else, ever.
@@ -32,7 +38,8 @@ use config::OauthConfigArgs;
     // exactly what someone runs to check whether an update landed. Same source
     // for both. See `update::VERSION`.
     version = update::VERSION,
-    about = "OAuth2 credential helper for pointing Claude Code / Codex at this org's gateway."
+    about = "OAuth2 credential helper for pointing Claude Code / Codex at this org's OIDC-backed \
+             gateway."
 )]
 struct Cli {
     #[command(flatten)]
@@ -44,13 +51,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Interactive first-time login: opens a browser (or, with
-    /// `--device-code`, prints a verification URL and polls) and caches the
-    /// resulting session.
+    /// Interactive first-time login: prints an authorize URL to visit (or,
+    /// with `--device-code`, a verification URL and code, then polls) and
+    /// caches the resulting session. Does NOT open a browser by default --
+    /// see `--open-browser`/`GOVERNANCE_AUTH_OPEN_BROWSER` on the top-level
+    /// options (issue #141).
     Login {
         /// Use the device-authorization flow instead of the loopback
         /// browser flow. For headless sessions (SSH, cloud dev boxes) with
-        /// no local browser to open.
+        /// no local browser at all. Independent of `--open-browser`, which
+        /// only affects the loopback flow (there is nothing to open a
+        /// browser to here -- the verification URL is meant to be visited
+        /// on a different device).
         #[arg(long)]
         device_code: bool,
     },
