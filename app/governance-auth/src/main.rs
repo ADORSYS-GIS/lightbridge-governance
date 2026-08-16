@@ -25,7 +25,12 @@ use config::OauthConfigArgs;
 #[derive(Debug, Parser)]
 #[command(
     name = "governance-auth",
-    version,
+    // Not bare `version` (which clap wires to `CARGO_PKG_VERSION`): on a
+    // released binary that is the stale workspace version, so `--version` and
+    // the version `self-update` acts on would disagree -- and `--version` is
+    // exactly what someone runs to check whether an update landed. Same source
+    // for both. See `update::VERSION`.
+    version = update::VERSION,
     about = "OAuth2 credential helper for pointing Claude Code / Codex at this org's gateway."
 )]
 struct Cli {

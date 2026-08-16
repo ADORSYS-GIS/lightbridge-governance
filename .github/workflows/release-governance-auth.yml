@@ -109,7 +109,26 @@ jobs:
       # `--profile prod` (thin LTO, codegen-units=1, strip=true), not the
       # default `release`: these assets are downloaded by every developer and
       # replaced by `self-update`, and stock `release` ships them unstripped.
+      # ⚠️ `GOVERNANCE_AUTH_RELEASE_VERSION` IS LOAD-BEARING, not metadata.
+      #
+      # release-please runs `release-type: simple` here, which bumps the
+      # manifest and `Chart.yaml` but NOT `Cargo.toml`, so `[workspace.package]
+      # version` stays behind the tag. v0.2.0 shipped binaries reporting
+      # `0.1.0`; `self-update` saw `0.2.0 > 0.1.0` on every single invocation
+      # and reinstalled forever. Injecting the tag being built is what lets a
+      # released binary recognise itself and stop.
+      #
+      # Consumed by `update::VERSION` via `option_env!`. Safe against the
+      # `rust-cache` restore above (keyed on the target triple alone, so every
+      # release after the first hits a warm cache): rustc records the variable
+      # in the unit's dep-info as `# env-dep:GOVERNANCE_AUTH_RELEASE_VERSION=…`
+      # and cargo fingerprints it, so changing the tag forces a rebuild. That
+      # was measured, not assumed -- a `rerun-if-env-changed` build script was
+      # written for this and deleted once the tracking was shown to be
+      # automatic.
       - name: Build
+        env:
+          GOVERNANCE_AUTH_RELEASE_VERSION: ${{ github.event.inputs.tag || github.event.release.tag_name }}
         run: cargo build --profile prod --locked --bin governance-auth --target ${{ matrix.target }}
 
       - name: Stage asset and checksum
