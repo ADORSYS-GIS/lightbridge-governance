@@ -104,6 +104,18 @@ governance-auth token \
   --exchange-client-id governance-auth-exchange-cli
 ```
 
+The `client_id` must be registered in the exchange server's own client list, and the
+upstream token you present must carry that `client_id` in its `aud` -- `lightbridge-authz`
+checks the subject token's audience twice, against two different values, and rejects with
+`401 invalid_token` or `400 invalid_grant` respectively. See its
+`docs/token-exchange-integration.md`.
+
+⚠️ `--exchange-issuer` works against a server that serves **no** `authorization_endpoint`.
+`lightbridge-authz` is exactly that: it has no `/authorize` route and omits the field, which
+OIDC Discovery §3 permits for a provider that supports no authorization endpoint. Requiring
+it here used to make this exact command fail with `missing field 'authorization_endpoint'`
+(#145) -- fixed, and pinned by a test whose mock now reproduces authz's real document.
+
 (`--exchange-token-endpoint <url>` skips the discovery round trip if you already know
 the endpoint; `--exchange-scopes "..."` requests specific scopes.) Every one of these
 is also settable as `GOVERNANCE_AUTH_EXCHANGE_*` / `GOVERNANCE_AUTH_TOKEN_EXCHANGE` env

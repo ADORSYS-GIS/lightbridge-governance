@@ -14,7 +14,23 @@ use crate::{cache, security};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcMetadata {
     pub issuer: String,
-    pub authorization_endpoint: String,
+    /// `Option`, not `String`, and this is load-bearing rather than defensive.
+    ///
+    /// OIDC Discovery 1.0 §3 marks this REQUIRED, but only for providers that
+    /// actually serve an authorization endpoint. `lightbridge-authz` serves
+    /// none -- it has no `/authorize` route and never redirects a user-agent,
+    /// so it omits the field deliberately and correctly (see its `signing.rs`,
+    /// "Authorization endpoint -- never advertised, in either state").
+    ///
+    /// Requiring it here meant `--exchange-issuer` could not discover that
+    /// server AT ALL, failing with a raw serde message
+    /// (`missing field 'authorization_endpoint'`) before any request was made.
+    /// Token exchange is a direct POST to the token endpoint and never touches
+    /// this field, so demanding it broke a flow that does not need it.
+    ///
+    /// Only the authorization-code flow requires it; `authcode.rs` produces a
+    /// clear error when it is absent.
+    pub authorization_endpoint: Option<String>,
     pub token_endpoint: String,
     pub device_authorization_endpoint: Option<String>,
     /// RFC 7009. `Option` because it is not in the OIDC Discovery core spec
@@ -154,11 +170,13 @@ fn validate(issuer: &str, issuer_url: &Url, metadata: &OidcMetadata) -> Result<(
         );
     }
 
-    require_same_origin(
-        issuer_url,
-        &metadata.authorization_endpoint,
-        "authorization_endpoint",
-    )?;
+    // Pinned WHEN PRESENT. Absent is a legitimate state (a server that serves
+    // no authorization endpoint, e.g. lightbridge-authz), not a reason to skip
+    // the check when it IS advertised -- an omitted field must never become a
+    // way to dodge origin pinning.
+    if let Some(authorization_endpoint) = &metadata.authorization_endpoint {
+        require_same_origin(issuer_url, authorization_endpoint, "authorization_endpoint")?;
+    }
     require_same_origin(issuer_url, &metadata.token_endpoint, "token_endpoint")?;
     if let Some(device_endpoint) = &metadata.device_authorization_endpoint {
         require_same_origin(issuer_url, device_endpoint, "device_authorization_endpoint")?;

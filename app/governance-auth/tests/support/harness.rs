@@ -88,6 +88,32 @@ impl Harness {
     /// as a task on this same (by default single-threaded) test runtime --
     /// a plain synchronous `.output()` here would block that thread and
     /// deadlock against the mock server never getting polled.
+    /// Runs the binary with **no** `--issuer`/`--client-id` and no config
+    /// file, i.e. exactly a machine that has never been configured.
+    ///
+    /// Exists for `self-update`, which reads no OAuth config at all. Every
+    /// other command legitimately requires it, so this deliberately does NOT
+    /// become the default -- using it elsewhere would stop those commands'
+    /// "fail early and clearly" behaviour from being exercised.
+    pub async fn run_without_oauth_args(&self, args: &[&str]) -> Result<Output> {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_governance-auth"));
+        command
+            .env("HOME", &self.home.path)
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("GOVERNANCE_AUTH_ISSUER")
+            .env_remove("GOVERNANCE_AUTH_CLIENT_ID")
+            .args(args);
+        tokio::task::spawn_blocking(move || {
+            command
+                .output()
+                .context("running governance-auth without oauth args")
+        })
+        .await
+        .context("joining the blocking command task")?
+    }
+
     pub async fn run(&self, args: &[&str]) -> Result<Output> {
         let mut command = self.command(args);
         tokio::task::spawn_blocking(move || {

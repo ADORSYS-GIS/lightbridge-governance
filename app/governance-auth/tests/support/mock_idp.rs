@@ -60,6 +60,14 @@ pub enum TokenBehavior {
 #[derive(Clone, Default)]
 pub struct DiscoveryOverrides {
     pub token_endpoint: Option<String>,
+    /// Reproduces `lightbridge-authz`'s real discovery document, which serves
+    /// no authorization endpoint and therefore omits the field entirely --
+    /// deliberately and, per OIDC Discovery §3, legitimately (that field is
+    /// REQUIRED only of providers that actually support one).
+    ///
+    /// Exists because the default mock advertising it made every test pass
+    /// while `--exchange-issuer` failed in production.
+    pub omit_authorization_endpoint: bool,
 }
 
 struct Inner {
@@ -195,13 +203,29 @@ async fn discovery(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse 
         .token_endpoint
         .clone()
         .unwrap_or_else(|| format!("{base_url}/token"));
-    Json(json!({
-        "issuer": base_url,
-        "authorization_endpoint": format!("{base_url}/authorize"),
-        "token_endpoint": token_endpoint,
-        "device_authorization_endpoint": format!("{base_url}/device"),
-    }))
-    .into_response()
+    // ⚠️ `authorization_endpoint` is OMITTED when `omit_authorization_endpoint`
+    // is set, because a real exchange server in this estate omits it.
+    //
+    // This mock used to advertise it unconditionally, which made it MORE
+    // permissive than production: `--exchange-issuer` passed every test here
+    // and then failed against `lightbridge-authz` with a raw
+    // `missing field 'authorization_endpoint'`. A mock that accepts documents
+    // the real server never sends cannot catch that class of bug -- so the
+    // authz shape is now reproducible here.
+    let mut doc = serde_json::Map::new();
+    doc.insert("issuer".to_owned(), json!(base_url));
+    if !guard.discovery_overrides.omit_authorization_endpoint {
+        doc.insert(
+            "authorization_endpoint".to_owned(),
+            json!(format!("{base_url}/authorize")),
+        );
+    }
+    doc.insert("token_endpoint".to_owned(), json!(token_endpoint));
+    doc.insert(
+        "device_authorization_endpoint".to_owned(),
+        json!(format!("{base_url}/device")),
+    );
+    Json(serde_json::Value::Object(doc)).into_response()
 }
 
 /// Real device-authorization endpoints (Keycloak's included) reject a

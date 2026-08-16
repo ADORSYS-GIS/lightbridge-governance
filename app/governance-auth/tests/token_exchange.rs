@@ -11,7 +11,7 @@ mod support;
 use anyhow::{Context, Result};
 use support::{
     harness::Harness,
-    mock_idp::{MockIdp, TokenBehavior},
+    mock_idp::{DiscoveryOverrides, MockIdp, TokenBehavior},
 };
 
 fn now_unix() -> Result<u64> {
@@ -116,11 +116,22 @@ async fn token_exchange_enabled_emits_the_exchanged_token_not_the_upstream_one()
 /// real OIDC discovery round trip and uses it, not just that it compiles.
 #[tokio::test]
 async fn token_exchange_via_exchange_issuer_discovery_emits_the_exchanged_token() -> Result<()> {
-    let exchange_idp = MockIdp::start(TokenBehavior::Succeed {
-        access_token: "exchanged-token".to_owned(),
-        refresh_token: None,
-        expires_in: 900,
-    })
+    // ⚠️ The exchange server advertises NO `authorization_endpoint`, mirroring
+    // `lightbridge-authz` exactly. This test previously used the default mock,
+    // which DID advertise one -- so it passed while the identical command
+    // failed in production with `missing field 'authorization_endpoint'`.
+    // Removing `omit_authorization_endpoint` reproduces that gap.
+    let exchange_idp = MockIdp::start_with_discovery_overrides(
+        TokenBehavior::Succeed {
+            access_token: "exchanged-token".to_owned(),
+            refresh_token: None,
+            expires_in: 900,
+        },
+        DiscoveryOverrides {
+            omit_authorization_endpoint: true,
+            ..Default::default()
+        },
+    )
     .await?;
 
     let harness = Harness::new("https://unreachable.invalid.example")?;
@@ -361,6 +372,67 @@ async fn token_exchange_enabled_without_a_client_id_fails_closed() -> Result<()>
     assert!(
         stderr.contains("--exchange-client-id"),
         "error should name the missing flag, got: {stderr}"
+    );
+    Ok(())
+}
+
+/// `self-update` talks only to the GitHub releases API. Requiring OAuth config
+/// for it meant `governance-auth self-update` failed with
+/// `--issuer (or GOVERNANCE_AUTH_ISSUER) is required` on a machine with no
+/// config -- which is precisely the machine most likely to be updating.
+///
+/// Reported from a clean VM running a released binary. Fails again if
+/// `resolve()` is moved back in front of the dispatch in `main.rs`.
+#[tokio::test]
+async fn self_update_does_not_require_oauth_configuration() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+
+    // `--check` so nothing is downloaded or installed; the point is only that
+    // argument resolution does not reject the command before it starts.
+    let output = harness
+        .run_without_oauth_args(&["self-update", "--check"])
+        .await?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains("is required"),
+        "self-update must not demand OAuth config it never reads; got: {stderr}"
+    );
+    Ok(())
+}
+
+/// The browser flow is the ONE flow that needs `authorization_endpoint`. When
+/// an issuer serves none, the failure must name that and suggest the device
+/// flow -- not surface a raw serde `missing field` error, and not fail at
+/// deserialize time for the flows that never touch the field.
+#[tokio::test]
+async fn browser_login_against_an_issuer_with_no_authorization_endpoint_says_so() -> Result<()> {
+    let idp = MockIdp::start_with_discovery_overrides(
+        TokenBehavior::Succeed {
+            access_token: "unused".to_owned(),
+            refresh_token: None,
+            expires_in: 900,
+        },
+        DiscoveryOverrides {
+            omit_authorization_endpoint: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let harness = Harness::new(&idp.base_url)?;
+    let output = harness.run(&["login"]).await?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "login must fail here: {stderr}");
+    assert!(
+        stderr.contains("advertises no `authorization_endpoint`"),
+        "the error must name the missing capability and point at --device-code, not leak a \
+         serde message; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("missing field"),
+        "a raw serde error means the field became required again; got: {stderr}"
     );
     Ok(())
 }
