@@ -29,7 +29,13 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 # Format-preserving TOML edit, for the same reason: Codex's `config.toml` is
 # hand-maintained and carries comments, and a parse-and-reserialize round trip
 # through a plain `toml` Value would delete every one of them.
-toml_edit = "0.24"
+#
+# `serde` feature: ADR-0012 Decision 2 (governance-auth's layered config file)
+# deserializes a plain, tool-owned `config.toml` (not hand-maintained, unlike
+# Codex's) straight into a struct via `toml_edit::de` rather than adding a
+# second TOML crate. Adds `serde_core`/`serde_spanned` to the tree, both
+# MIT/Apache-2.0 and already covered by `deny.toml`'s allow-list.
+toml_edit = { version = "0.24", features = ["serde"] }
 serde_yaml = "0.9"
 
 # --- crypto / jwt ---

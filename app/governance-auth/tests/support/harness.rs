@@ -121,6 +121,28 @@ impl Harness {
         .context("run_raw harness task panicked")?
     }
 
+    /// Like [`Self::run`], but with extra environment variables set on the
+    /// child process only -- e.g. `GOVERNANCE_AUTH_SCOPES`, to prove a CLI
+    /// flag wins over its env var (ADR-0012 Decision 2's layer 1 vs layer 2)
+    /// against the real process environment, not a simulated one. Setting
+    /// this on the child rather than the test binary's own process is what
+    /// keeps this test-safe under Rust 2024's `unsafe` requirement on
+    /// `std::env::set_var` -- a per-child env is ordinary, safe
+    /// `Command::env`, and this repo denies `unsafe_code` outright.
+    pub async fn run_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<Output> {
+        let mut command = self.command(args);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        tokio::task::spawn_blocking(move || {
+            command
+                .output()
+                .context("running governance-auth subprocess")
+        })
+        .await
+        .context("run_with_env harness task panicked")?
+    }
+
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
