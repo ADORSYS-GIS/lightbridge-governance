@@ -87,8 +87,19 @@ fn build_authorize_url(
     pkce: &pkce::Pkce,
     state: &str,
 ) -> Result<Url> {
-    let mut url = Url::parse(&metadata.authorization_endpoint)
-        .context("parsing authorization endpoint URL")?;
+    // The ONE flow that needs this field, so "absent" is reported here rather
+    // than by making it required at deserialize time -- doing that broke
+    // `--exchange-issuer` against a server that legitimately serves no
+    // authorization endpoint (issue #145). A caller reaching this genuinely
+    // cannot log in interactively against that issuer, and the message says
+    // so instead of surfacing a serde `missing field` error.
+    let authorization_endpoint = metadata.authorization_endpoint.as_deref().context(
+        "this issuer advertises no `authorization_endpoint`, so the browser login flow cannot be \
+         used against it; use `--device-code`, or point `--issuer` at an authorization server \
+         that serves one",
+    )?;
+    let mut url =
+        Url::parse(authorization_endpoint).context("parsing authorization endpoint URL")?;
     {
         let mut query = url.query_pairs_mut();
         query

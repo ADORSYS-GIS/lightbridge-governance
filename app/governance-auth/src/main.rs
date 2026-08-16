@@ -114,7 +114,14 @@ async fn main() -> Result<()> {
     // reported the same way a clap parse error would be: immediately, on
     // stderr, nonzero exit, no partial work. This is also where the two
     // config-file layers (ADR-0012 Decision 2) get consulted.
-    let oauth = cli.oauth.resolve()?;
+    //
+    // ⚠️ Resolved PER COMMAND, not once up front. `self-update` talks only to
+    // the GitHub releases API and reads none of this -- resolving before the
+    // dispatch made `governance-auth self-update` fail with
+    // `--issuer (or GOVERNANCE_AUTH_ISSUER) is required` on a machine that had
+    // no config yet, which is exactly the machine most likely to be updating.
+    // Every other command still resolves before it does any work, so a missing
+    // value is still reported immediately with no partial work done.
     let http = reqwest::Client::builder()
         // `--issuer`/discovery already reject an insecure *initial* request
         // URL (config::parse_issuer, oauth::discovery::require_same_origin)
@@ -128,12 +135,15 @@ async fn main() -> Result<()> {
         .context("building the HTTP client")?;
 
     match cli.command {
-        Command::Login { device_code } => oauth::login(&http, &oauth, device_code).await,
-        Command::Token => oauth::token(&http, &oauth).await,
-        Command::OtelHeaders => oauth::otel_headers(&http, &oauth).await,
-        Command::Configure => oauth::configure(&oauth),
-        Command::Status => oauth::status(&oauth),
-        Command::Logout => oauth::logout(&http, &oauth).await,
+        Command::Login { device_code } => {
+            oauth::login(&http, &cli.oauth.resolve()?, device_code).await
+        }
+        Command::Token => oauth::token(&http, &cli.oauth.resolve()?).await,
+        Command::OtelHeaders => oauth::otel_headers(&http, &cli.oauth.resolve()?).await,
+        Command::Configure => oauth::configure(&cli.oauth.resolve()?),
+        Command::Status => oauth::status(&cli.oauth.resolve()?),
+        Command::Logout => oauth::logout(&http, &cli.oauth.resolve()?).await,
+        // Deliberately does NOT resolve: see the comment above.
         Command::SelfUpdate { check } => update::run(&http, check).await,
     }
 }
