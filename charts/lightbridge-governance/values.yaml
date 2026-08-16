@@ -443,18 +443,36 @@ aiCliOtel:
   # collector needs one exporter and no knowledge of the backends.
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
   oidc:
-    # The lightbridge-authz API-key issuer -- it already serves OIDC discovery
-    # and JWKS publicly (both confirmed 200), so the collector can validate
-    # callers itself with no Authorino involvement.
-    #
-    # These are long-lived (120d) revocable API keys deliberately, NOT Keycloak
-    # access tokens: every client reads its OTEL config once at process start
-    # and none has a credential-helper hook for OTLP headers, so a 300s token
-    # would export for five minutes then 401 silently. Keycloak stays on the
-    # inference path, where refresh actually works.
+    # The lightbridge-authz issuer -- it already serves OIDC discovery and JWKS
+    # publicly (both confirmed 200), so the collector validates callers itself
+    # with no Authorino involvement. UNCHANGED: callers now present a token
+    # authz MINTED, via RFC 8693 token-exchange, rather than a long-lived API
+    # key -- but the signing issuer is the same either way.
     issuerUrl: "https://auth.ai.camer.digital"
-    # Must match the `aud` these API keys carry (authz's oauth2.signing.audience).
-    audience: "lightbridge-api-key"
+    # ⚠️ This is a CLIENT ID, not a service name, and that is not cosmetic.
+    #
+    # `governance-auth` exchanges its Keycloak token at authz's /oauth2/token
+    # (lightbridge-governance#84). Per lightbridge-authz ADR-0011 Decision 5 the
+    # minted token's `aud`/`azp` are ALWAYS exactly the requesting `client_id` --
+    # `TokenExchangeOpStore::handle_token_exchange` never reads the RFC 8693
+    # `audience` request parameter (zero occurrences in that file), so a client
+    # cannot ask for a different one. Verified against a live exchange: HTTP 200,
+    # `aud: governance-auth-cli`. So this value MUST equal the `client_id`
+    # registered in authz's `oauth2.clients`, and changing one without the other
+    # silently 401s every push.
+    #
+    # ⚠️ CONSEQUENCE, accepted deliberately (lightbridge-governance#84 AC 4):
+    # narrowing to this audience means the static `--otel-token` path -- a
+    # long-lived lightbridge-authz API key, which carries `aud:
+    # lightbridge-api-key` -- is NO LONGER accepted here. That is the credential
+    # Codex and VS Code Copilot use, because neither has a credential-helper hook
+    # for OTLP headers. Restoring them needs a second receiver/oidc extension
+    # trusting `lightbridge-api-key`, tracked separately. Claude Code is
+    # unaffected: `otelHeadersHelper` re-invokes `governance-auth otel-headers`
+    # on an interval, so a short-lived exchanged token is the right credential
+    # there -- which is why the previous "no client has a refresh hook, so use
+    # 120d API keys" reasoning no longer holds.
+    audience: "governance-auth-cli"
   ingress:
     enabled: true
     # Traefik, not the Envoy core-gateway: otel.<domain> already resolves to
