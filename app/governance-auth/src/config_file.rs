@@ -94,6 +94,15 @@ pub struct ConfigFile {
     otel_token_file: Option<String>,
     pub gateway_url: Option<String>,
     pub otel_headers_debounce_ms: Option<u64>,
+    /// See `config::OauthConfigArgs::open_browser`'s doc (issue #141).
+    pub open_browser: Option<bool>,
+    /// See `config::OauthConfigArgs::token_exchange`'s doc (issue #140), and
+    /// the four fields below it -- all part of the same opt-in block.
+    pub token_exchange: Option<bool>,
+    pub exchange_issuer: Option<String>,
+    pub exchange_token_endpoint: Option<String>,
+    pub exchange_client_id: Option<String>,
+    pub exchange_scopes: Option<String>,
 }
 
 impl ConfigFile {
@@ -294,7 +303,13 @@ mod tests {
              audience = \"aud\"\n\
              otel_endpoint = \"https://otel.example\"\n\
              gateway_url = \"https://gw.example\"\n\
-             otel_headers_debounce_ms = 60000\n",
+             otel_headers_debounce_ms = 60000\n\
+             open_browser = true\n\
+             token_exchange = true\n\
+             exchange_issuer = \"https://exchange.example\"\n\
+             exchange_token_endpoint = \"https://exchange.example/oauth2/token\"\n\
+             exchange_client_id = \"exchange-cli\"\n\
+             exchange_scopes = \"openid profile\"\n",
         )
         .expect("seed a full config file");
         #[cfg(unix)]
@@ -313,6 +328,18 @@ mod tests {
         assert_eq!(file.otel_endpoint.as_deref(), Some("https://otel.example"));
         assert_eq!(file.gateway_url.as_deref(), Some("https://gw.example"));
         assert_eq!(file.otel_headers_debounce_ms, Some(60_000));
+        assert_eq!(file.open_browser, Some(true));
+        assert_eq!(file.token_exchange, Some(true));
+        assert_eq!(
+            file.exchange_issuer.as_deref(),
+            Some("https://exchange.example")
+        );
+        assert_eq!(
+            file.exchange_token_endpoint.as_deref(),
+            Some("https://exchange.example/oauth2/token")
+        );
+        assert_eq!(file.exchange_client_id.as_deref(), Some("exchange-cli"));
+        assert_eq!(file.exchange_scopes.as_deref(), Some("openid profile"));
     }
 
     #[cfg(unix)]

@@ -69,6 +69,12 @@ struct Inner {
     last_device_code_challenge: Option<String>,
     last_device_code_challenge_method: Option<String>,
     last_token_code_verifier: Option<String>,
+    // Same idea as `last_token_code_verifier`, but for the authorization-code
+    // grant instead of the device-code one -- lets `tests/pkce_authcode.rs`
+    // recompute S256(verifier) and check it against the `code_challenge` an
+    // earlier assertion already pulled off the authorize URL, the same
+    // cross-check the device-code test does.
+    last_authcode_code_verifier: Option<String>,
     // What `scope` the client actually sent on the device-authorization
     // request -- used to prove ADR-0012 Decision 2's precedence (a `--scopes`
     // flag must win over `GOVERNANCE_AUTH_SCOPES`) against the real value the
@@ -108,6 +114,7 @@ impl MockIdp {
             last_device_code_challenge: None,
             last_device_code_challenge_method: None,
             last_token_code_verifier: None,
+            last_authcode_code_verifier: None,
             last_device_scope: None,
         }));
 
@@ -151,6 +158,12 @@ impl MockIdp {
     /// the token endpoint.
     pub fn last_token_code_verifier(&self) -> Result<Option<String>> {
         Ok(lock(&self.state)?.last_token_code_verifier.clone())
+    }
+
+    /// What the client sent as `code_verifier` on its most recent
+    /// authorization-code token request.
+    pub fn last_authcode_code_verifier(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_authcode_code_verifier.clone())
     }
 
     /// What the client sent as `scope` on its most recent device-authorization
@@ -228,10 +241,14 @@ async fn token(
         return (StatusCode::INTERNAL_SERVER_ERROR, "mock idp lock poisoned").into_response();
     };
     guard.token_calls += 1;
-    if form.get("grant_type").map(String::as_str)
-        == Some("urn:ietf:params:oauth:grant-type:device_code")
-    {
-        guard.last_token_code_verifier = form.get("code_verifier").cloned();
+    match form.get("grant_type").map(String::as_str) {
+        Some("urn:ietf:params:oauth:grant-type:device_code") => {
+            guard.last_token_code_verifier = form.get("code_verifier").cloned();
+        }
+        Some("authorization_code") => {
+            guard.last_authcode_code_verifier = form.get("code_verifier").cloned();
+        }
+        _ => {}
     }
 
     match &guard.behavior {
