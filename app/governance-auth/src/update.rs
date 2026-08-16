@@ -33,8 +33,56 @@ use sha2::{Digest, Sha256};
 const RELEASES_API: &str =
     "https://api.github.com/repos/ADORSYS-GIS/lightbridge-governance/releases/latest";
 
+/// The version this binary claims to be, and the ONLY thing `self-update`
+/// compares a release tag against.
+///
+/// ⚠️ Why this is not simply `CARGO_PKG_VERSION`. release-please governs this
+/// repo's releases with `release-type: simple`, which bumps
+/// `.release-please-manifest.json` and `Chart.yaml` but **not** `Cargo.toml`
+/// (its `extra-files` never lists one, and the Rust strategy cannot be used
+/// here -- its updater rejects a virtual workspace manifest outright). So the
+/// tag moves to `v0.2.0` while `[workspace.package] version` stays `0.1.0`.
+///
+/// That shipped: release `v0.2.0` contains binaries whose `CARGO_PKG_VERSION`
+/// is `0.1.0`. `self-update` then sees `0.2.0 > 0.1.0`, reinstalls, and on the
+/// next invocation sees the identical mismatch -- an unbounded reinstall loop
+/// that no amount of retrying escapes, because the newly-installed binary is
+/// just as stale as the one it replaced.
+///
+/// The release workflow therefore injects the tag it is building at
+/// `.github/workflows/release-governance-auth.yml`, and a released binary
+/// reports that. A locally-built one falls back to `CARGO_PKG_VERSION` and so
+/// reads as older than any release, which is the correct bias: a developer
+/// build offering to update is harmless, whereas a released build that cannot
+/// recognise itself loops forever.
+///
+/// No build script is needed to make this correct across cached CI builds, and
+/// one was written and then deleted rather than kept "just in case". rustc
+/// records every variable an `env!`/`option_env!` touches in the unit's
+/// dep-info, and cargo fingerprints it -- measured here rather than assumed:
+///
+/// ```text
+/// # env-dep:GOVERNANCE_AUTH_RELEASE_VERSION=v2.2.2
+/// ```
+///
+/// With no `build.rs` present at all, changing the variable rebuilds and the
+/// reported version follows, so a warm `Swatinem/rust-cache` restore cannot
+/// bake a previous release's tag into a new one.
+pub const VERSION: &str = match option_env!("GOVERNANCE_AUTH_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// GitHub rejects API requests without one.
-const USER_AGENT: &str = concat!("governance-auth/", env!("CARGO_PKG_VERSION"));
+///
+/// Built at runtime rather than via `concat!`, which only accepts literals and
+/// so would pin this to `CARGO_PKG_VERSION` -- reintroducing, in the one string
+/// GitHub actually logs, exactly the stale-version claim [`VERSION`] exists to
+/// eliminate. Three short-lived allocations per `self-update` run, on a path
+/// that is already making network requests.
+fn user_agent() -> String {
+    format!("governance-auth/{VERSION}")
+}
 
 #[derive(Debug, Deserialize)]
 struct Release {
@@ -205,11 +253,16 @@ fn ensure_replaceable(target: &Path) -> Result<()> {
 }
 
 pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
-    let current = env!("CARGO_PKG_VERSION");
+    // Normalised on BOTH sides. The injected value is whatever the workflow
+    // was triggered with, which is a tag (`v0.2.0`) rather than a bare version,
+    // and `is_newer` parses digits -- so an un-normalised `v0.2.0` would parse
+    // its first component as 0 and make a released binary read as older than
+    // itself, restoring the loop through a different door.
+    let current = normalise_version(VERSION);
 
     let response = http
         .get(RELEASES_API)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::USER_AGENT, user_agent())
         .send()
         .await
         .context("querying the GitHub releases API")?;
@@ -298,7 +351,7 @@ pub async fn run(http: &reqwest::Client, check_only: bool) -> Result<()> {
 async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     Ok(http
         .get(url)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::USER_AGENT, user_agent())
         .send()
         .await
         .with_context(|| format!("downloading {url}"))?
@@ -423,6 +476,124 @@ mod tests {
                 "glibc build must want a gnu asset, got {name}"
             );
         }
+    }
+
+    /// The bug that shipped in v0.2.0, pinned as an executable statement so it
+    /// cannot quietly return: a binary that reports a version older than the
+    /// latest tag asks to update, and -- because reinstalling does not change
+    /// what it reports -- asks again, forever.
+    #[test]
+    fn a_binary_that_misreports_its_version_never_stops_updating() {
+        let tag = normalise_version("v0.2.0");
+
+        // What v0.2.0 actually shipped: CARGO_PKG_VERSION frozen at 0.1.0.
+        assert!(
+            is_newer(tag, "0.1.0"),
+            "the stale-version binary asks to update ..."
+        );
+        // ... and installing it changes nothing, because the replacement
+        // reports 0.1.0 too. Same inputs, same answer, no termination.
+        assert!(
+            is_newer(tag, "0.1.0"),
+            "... and asks again after installing, which is the loop"
+        );
+
+        // The fix terminates it: a binary reporting its own release tag.
+        assert!(
+            !is_newer(tag, normalise_version("v0.2.0")),
+            "a binary that knows its own version must stop"
+        );
+    }
+
+    /// Guards the `v`-stripping on the INJECTED side specifically. The workflow
+    /// injects a tag, not a bare version, and `is_newer` parses digits -- so
+    /// skipping normalisation here parses `v0` as 0 and makes a released binary
+    /// read as older than itself, which is the loop again by another route.
+    #[test]
+    fn an_injected_tag_is_normalised_before_comparison() {
+        assert!(
+            !is_newer(normalise_version("v0.2.0"), normalise_version("v0.2.0")),
+            "tag-shaped VERSION must compare equal to the same tag"
+        );
+        // Sanity check that the assertion above is not vacuous -- and note the
+        // version deliberately starts at 1, not 0. `is_newer` parses `"v1"` as
+        // 0, so on a 0.x line the un-normalised bug is INVISIBLE (0 == 0) and
+        // only starts biting the day this repo cuts 1.0.0. A regression here
+        // would therefore lie dormant across every 0.x release and surface at
+        // the worst possible moment, which is exactly why it is pinned.
+        assert!(
+            is_newer(normalise_version("v1.2.0"), "v1.2.0"),
+            "sanity: skipping normalisation on the current side parses `v1` as \
+             0, so a released binary reads as older than itself"
+        );
+    }
+
+    /// `option_env!` resolves at compile time, and this test binary is built
+    /// without the variable set, so `VERSION` must be the crate version here.
+    /// Also pins the fallback direction: unset means "developer build", never
+    /// empty.
+    #[test]
+    fn version_falls_back_to_the_crate_version_when_nothing_is_injected() {
+        assert!(!VERSION.is_empty(), "VERSION must never be empty");
+        if option_env!("GOVERNANCE_AUTH_RELEASE_VERSION").is_none() {
+            assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        }
+    }
+
+    /// The injection is split across three files that cannot see each other:
+    /// `option_env!` here, the `env:` block in the release workflow, and the
+    /// `rerun-if-env-changed` in `build.rs`. Remove any one and the binary goes
+    /// back to misreporting its version -- silently, and only on a real
+    /// release, which is the worst place to find out. These two tests fail if
+    /// either of the other two files loses its half.
+    #[test]
+    fn the_release_workflow_injects_the_release_version() {
+        let workflow = include_str!("../../../.github/workflows/release-governance-auth.yml");
+        assert!(
+            workflow.contains("GOVERNANCE_AUTH_RELEASE_VERSION:"),
+            "the release workflow no longer sets GOVERNANCE_AUTH_RELEASE_VERSION, so released \
+             binaries would report the stale workspace version and self-update would loop"
+        );
+        assert!(
+            workflow.contains("tag_name"),
+            "the injected value must come from the release tag, not a literal"
+        );
+    }
+
+    /// The two consumer sites. `run` reading `CARGO_PKG_VERSION` directly, or
+    /// clap's `version` going back to bare `version`, both restore the bug
+    /// while every behavioural test above still passes -- because those test
+    /// `is_newer` in isolation and never observe which value gets fed in.
+    /// Asserted against the source because the alternative is a live HTTP
+    /// round-trip through `run` for a one-line invariant.
+    #[test]
+    fn the_crate_version_is_read_in_exactly_one_place() {
+        let this_module = include_str!("update.rs");
+        // Only the shipping half. The tests below legitimately mention the
+        // macro (the fallback assertion uses it, and this needle is spelled
+        // out), and counting those would make the guard permanently wrong.
+        let shipping = this_module
+            .split_once("#[cfg(test)]")
+            .map_or(this_module, |(before, _)| before);
+        // Split so this needle does not match itself in the file it scans.
+        let needle = concat!("env!(\"CARGO_PKG_", "VERSION\")");
+        let direct_reads = shipping.matches(needle).count();
+        assert_eq!(
+            direct_reads, 1,
+            "`CARGO_PKG_VERSION` must be read ONLY as VERSION's fallback; another read means some \
+             path compares against the stale workspace version again (found {direct_reads})"
+        );
+    }
+
+    #[test]
+    fn the_cli_reports_the_same_version_self_update_acts_on() {
+        let main_rs = include_str!("main.rs");
+        assert!(
+            main_rs.contains("version = update::VERSION"),
+            "`--version` must come from update::VERSION; bare `version` wires clap to \
+             CARGO_PKG_VERSION, so a released binary would print a version that disagrees with \
+             the one self-update compares -- and `--version` is what people run to check"
+        );
     }
 
     #[test]
