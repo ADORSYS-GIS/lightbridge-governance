@@ -151,10 +151,12 @@ sequenceDiagram
     Note over OTEL: Collector logs the wrong issuer BY NAME:<br/>issuer: https://auth.verif.fyi/realms/camer-digital
 ```
 
-### PROPOSED — the same flow once token exchange lands
+### Token exchange (RFC 8693, opt-in) — the same flow once `--token-exchange` is on
 
-Not yet merged or deployed; read from the working branch of
-`lightbridge-authz` (`crates/lightbridge-authz-rest/src/token_exchange.rs`).
+Ships in `governance-auth` behind `--token-exchange`/`GOVERNANCE_AUTH_TOKEN_EXCHANGE`
+(OFF by default). See `oauth::exchange`'s module doc and `oauth::mod::emit_token`
+for the source of truth this diagram is traced from — read those, not this
+diagram, if the two ever disagree.
 
 ```mermaid
 sequenceDiagram
@@ -167,20 +169,20 @@ sequenceDiagram
 
     CLI->>ga: spawn otelHeadersHelper
 
-    alt exchanged token still valid
-        ga-->>CLI: cached exchanged token
+    ga->>ga: load cached upstream session
+    alt upstream access token still valid
+        Note over ga: no Keycloak round trip
     else expired, refresh token held
-        ga->>authz: POST /oauth2/token<br/>grant_type=refresh_token
-        authz-->>ga: new access_token (no re-login)
-    else no exchanged token yet
-        ga->>KC: refresh if needed
-        KC-->>ga: keycloak access_token
-        ga->>authz: POST /oauth2/token<br/>grant_type=…:token-exchange<br/>subject_token={keycloak}<br/>project_id=…  scope=offline_access
-        authz->>KC: validate subject_token (upstream bearer)
-        KC-->>authz: valid
-        authz->>authz: sign with ApiKeyJwtSigner<br/>iss/aud from oauth2.signing.*
-        authz-->>ga: access_token (~900s) + refresh_token (lgbr_rt_…, hashed, revocable)
+        ga->>KC: POST token (grant_type=refresh_token)
+        KC-->>ga: new upstream access_token
     end
+
+    Note over ga,authz: emit_token calls exchange::run FRESH on every<br/>invocation -- no caching of the exchanged token,<br/>and no independent refresh via authz's own<br/>refresh_token grant.
+    ga->>authz: POST /oauth2/token<br/>grant_type=…:token-exchange<br/>subject_token={upstream access_token}<br/>subject_token_type=access_token<br/>[scope=… if --exchange-scopes set]
+    authz->>KC: validate subject_token (upstream bearer)
+    KC-->>authz: valid
+    authz->>authz: sign with ApiKeyJwtSigner<br/>iss/aud from oauth2.signing.*
+    authz-->>ga: access_token (~900s)
 
     ga-->>CLI: {"Authorization": "Bearer {authz token}"}
     CLI->>OTEL: POST /v1/traces
@@ -193,10 +195,26 @@ same `ApiKeyJwtSigner` that mints today's API keys, and a token with
 `iss: auth.ai.camer.digital` / `aud: lightbridge-api-key` is already verified
 to return 200 from this collector.
 
-Integration details `governance-auth` still needs: `project_id` is
-**required** on exchange, `offline_access` must be requested to get a refresh
-token, and the 240s debounce can rise (access TTL defaults to 900s) but must
-stay under it.
+What `governance-auth` sends on the exchange request, and what it doesn't:
+
+- **No `project_id`.** Required by this deployment until upstream PR #309
+  merged; now optional, so the exchange resolves to the subject's own
+  auto-provisioned default project. There is no `--exchange-project-id` flag
+  — adding one would just reintroduce a required field the server itself
+  dropped.
+- **No `audience`/`resource`.** This deployment's exchange handler never
+  reads it — the minted token's `aud`/`azp` are always exactly the
+  requesting `client_id` regardless of what's sent, so a config knob for it
+  would silently do nothing.
+- **No caching, no independent refresh.** `emit_token` calls `exchange::run`
+  fresh on every `token`/`otel-headers` invocation when exchange is on —
+  there is no cached exchanged token with its own expiry, and no separate
+  `refresh_token` grant against authz. Each invocation re-derives the
+  exchanged token from the CURRENT upstream (Keycloak) access token,
+  refreshing that upstream token first only if it's stale (the same
+  `current_session` refresh cycle every other flow already uses). The 240s
+  `otelHeadersHelper` debounce is what bounds the request rate against
+  authz, not caching.
 
 ---
 

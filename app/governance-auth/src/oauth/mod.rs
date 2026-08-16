@@ -192,7 +192,7 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
 
 pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     let session = current_session(http, config).await?;
-    let access_token = emit_token(http, config, &session).await?;
+    let access_token = emit_token(http, config, session).await?;
 
     // The ONLY thing this command ever writes to stdout. Everything else --
     // prompts, errors, status -- goes to stderr, matching the contract both
@@ -212,10 +212,18 @@ pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
 /// that falls back to `session.access_token`. A misconfigured or rejected
 /// exchange therefore always means non-zero exit, nothing on stdout -- the
 /// same contract `current_session`'s refusal-to-refresh already has.
+///
+/// Takes `session` BY VALUE, not `&CachedSession`: both call sites drop
+/// `session` immediately after this returns, and the exchange-OFF branch
+/// (the default, and the common case -- this runs on Claude Code's
+/// `otelHeadersHelper` timer and every `apiKeyHelper`/`auth.command` call)
+/// used to `session.access_token.clone()` a `Redacted<String>` for no
+/// reason a borrow wouldn't have avoided. Moving `session.access_token` out
+/// instead means that branch is a move, not a clone.
 async fn emit_token(
     http: &reqwest::Client,
     config: &OauthConfig,
-    session: &CachedSession,
+    session: CachedSession,
 ) -> Result<Redacted<String>> {
     match &config.token_exchange {
         Some(exchange_config) => exchange::run(
@@ -225,7 +233,7 @@ async fn emit_token(
         )
         .await
         .context("token exchange failed; refusing to fall back to the un-exchanged upstream token"),
-        None => Ok(session.access_token.clone()),
+        None => Ok(session.access_token),
     }
 }
 
@@ -241,7 +249,7 @@ async fn emit_token(
 /// hook surfaces in `/status` rather than silently exporting unauthenticated.
 pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     let session = current_session(http, config).await?;
-    let access_token = emit_token(http, config, &session).await?;
+    let access_token = emit_token(http, config, session).await?;
     let headers = serde_json::json!({
         "Authorization": format!("Bearer {}", access_token.expose()),
     });

@@ -180,7 +180,12 @@ pub struct OauthConfigArgs {
     /// way `otel_token`/`otel_token_file` both-set is, because these two
     /// aren't independently meaningful ways to say the same secret -- one is
     /// just a shortcut past the other's discovery step).
-    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT", value_parser = parse_issuer, global = true)]
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT",
+        value_parser = parse_exchange_token_endpoint,
+        global = true
+    )]
     exchange_token_endpoint: Option<String>,
 
     /// The `client_id` presented on the exchange request. Required when
@@ -382,7 +387,7 @@ fn resolve_token_exchange(
     let exchange_token_endpoint = exchange_token_endpoint
         .or_else(|| per_user.and_then(|file| file.exchange_token_endpoint.clone()))
         .or_else(|| machine.and_then(|file| file.exchange_token_endpoint.clone()))
-        .map(|value| parse_issuer(&value).map_err(|error| anyhow::anyhow!(error)))
+        .map(|value| parse_exchange_token_endpoint(&value).map_err(|error| anyhow::anyhow!(error)))
         .transpose()?;
 
     let client_id = exchange_client_id
@@ -465,15 +470,41 @@ pub enum ExchangeTokenEndpoint {
     Issuer(String),
 }
 
-/// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER`: rejects an
-/// unparseable URL or one that fails [`security::require_secure`] before
-/// this binary ever tries to use it. The raw string is kept (not the
-/// re-serialized `Url`) so downstream trailing-slash handling
-/// (`oauth::discovery::discover`) sees exactly what the operator passed.
-fn parse_issuer(raw: &str) -> Result<String, String> {
-    let url = Url::parse(raw).map_err(|error| format!("invalid issuer URL: {error}"))?;
+/// Shared validation behind [`parse_issuer`] and
+/// [`parse_exchange_token_endpoint`]: rejects an unparseable URL or one that
+/// fails [`security::require_secure`] before this binary ever tries to use
+/// it. The raw string is kept (not the re-serialized `Url`) so downstream
+/// trailing-slash handling (`oauth::discovery::discover`) sees exactly what
+/// the operator passed.
+///
+/// `label` exists only to keep the error message accurate for both callers:
+/// `--issuer`/`--exchange-issuer` really are issuers, but
+/// `--exchange-token-endpoint` is explicitly a full endpoint URL, not one --
+/// reusing a single hardcoded "invalid issuer URL: ..." message for both
+/// (the previous shape) told an operator who typo'd
+/// `--exchange-token-endpoint` that their *issuer* was wrong, which isn't
+/// even the flag they set.
+fn parse_url(label: &str, raw: &str) -> Result<String, String> {
+    let url = Url::parse(raw).map_err(|error| format!("invalid {label} URL: {error}"))?;
     security::require_secure(&url).map_err(|error| error.to_string())?;
     Ok(raw.to_owned())
+}
+
+/// `clap` value parser for `--issuer`/`GOVERNANCE_AUTH_ISSUER` and
+/// `--exchange-issuer`/`GOVERNANCE_AUTH_EXCHANGE_ISSUER` -- both name an
+/// actual OIDC issuer. See [`parse_url`] for what's validated.
+fn parse_issuer(raw: &str) -> Result<String, String> {
+    parse_url("issuer", raw)
+}
+
+/// `clap` value parser for `--exchange-token-endpoint`/
+/// `GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT`: the same two checks as
+/// [`parse_issuer`], but labelled "endpoint" rather than "issuer" -- this
+/// flag is explicitly NOT an issuer (see its doc comment on
+/// [`OauthConfigArgs::exchange_token_endpoint`]), it's the resolved token
+/// endpoint itself, given directly to skip a discovery round trip.
+fn parse_exchange_token_endpoint(raw: &str) -> Result<String, String> {
+    parse_url("endpoint", raw)
 }
 
 #[cfg(test)]
@@ -498,6 +529,26 @@ mod tests {
     #[test]
     fn accepts_loopback_http_issuer() {
         assert!(parse_issuer("http://127.0.0.1:4181/realms/platform").is_ok());
+    }
+
+    /// `--exchange-token-endpoint` is explicitly not an issuer -- the error
+    /// message for an unparseable value must say "endpoint", not "issuer",
+    /// so an operator who typo'd this flag isn't told the wrong flag is
+    /// wrong. Regression test for the message `parse_issuer` used to
+    /// produce here (it was reused verbatim, hardcoding "issuer" for both).
+    #[test]
+    fn exchange_token_endpoint_parse_error_names_endpoint_not_issuer() {
+        let error = parse_exchange_token_endpoint("not a url")
+            .expect_err("an unparseable exchange-token-endpoint value must be rejected");
+        assert!(
+            error.contains("endpoint"),
+            "error should say 'endpoint', not 'issuer' -- this flag is a token endpoint, not an \
+             issuer, got: {error}"
+        );
+        assert!(
+            !error.contains("issuer"),
+            "error should not call this value an issuer, got: {error}"
+        );
     }
 
     /// ADR-0012 Decision 2's five layers, proved pairwise: flag beats env,
@@ -1229,6 +1280,71 @@ mod tests {
             assert!(
                 resolved.token_exchange.is_none(),
                 "per-user token_exchange = false must win over the machine file's true"
+            );
+        }
+
+        /// The `token_exchange` counterpart to
+        /// `open_browser_absent_from_a_real_clap_parse_still_falls_through_to_the_machine_file`
+        /// -- and, like that test, the only one in this module that can
+        /// catch a `default_value`/`default_value_t` regression reintroduced
+        /// on the real `#[arg(...)]` for `token_exchange`, because it's the
+        /// only one that goes through REAL clap parsing
+        /// (`TestCli::try_parse_from`) rather than hand-constructing
+        /// `OauthConfigArgs { token_exchange: None, .. }`.
+        ///
+        /// Every OTHER `token_exchange` test above builds `OauthConfigArgs`
+        /// by hand, which proves the layering logic in
+        /// `resolve_token_exchange` is correct but can never observe a
+        /// mistake in the `#[arg(...)]` attribute itself: clap fills a
+        /// `default_value` in BEFORE `OauthConfigArgs` exists as a value a
+        /// test could construct differently, so a hand-built
+        /// `token_exchange: None` stays `None` even if the real CLI would
+        /// never produce it. Confirmed by sabotaging with
+        /// `default_value = "false"` on the `token_exchange` arg: with that
+        /// in place, `--token-exchange` never mentioned still parses to
+        /// `Some(false)`, so `resolve_token_exchange` sees `enabled = false`
+        /// and never even reads the machine-wide file's `token_exchange =
+        /// true` -- this test failed with `resolved.token_exchange` being
+        /// `None` instead of `Some`, exactly the trap this module's doc
+        /// warns about.
+        #[test]
+        fn token_exchange_absent_from_a_real_clap_parse_still_falls_through_to_the_machine_file() {
+            use clap::Parser as _;
+
+            #[derive(Debug, clap::Parser)]
+            struct TestCli {
+                #[command(flatten)]
+                oauth: OauthConfigArgs,
+            }
+
+            let cli = TestCli::try_parse_from([
+                "governance-auth",
+                "--issuer",
+                "https://issuer.example",
+                "--client-id",
+                "cli",
+            ])
+            .expect("parse with no --token-exchange flag");
+
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(
+                &dir,
+                "machine.toml",
+                "token_exchange = true\n\
+                 exchange_token_endpoint = \"https://exchange.example/oauth2/token\"\n\
+                 exchange_client_id = \"machine-exchange-cli\"\n",
+            );
+
+            let resolved = cli
+                .oauth
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(
+                resolved.token_exchange.is_some(),
+                "with --token-exchange absent from the real CLI parse, the machine-wide file's \
+                 `token_exchange = true` must still take effect -- if this fails with `None` \
+                 instead, `default_value` has been reintroduced on the `token_exchange` arg"
             );
         }
     }

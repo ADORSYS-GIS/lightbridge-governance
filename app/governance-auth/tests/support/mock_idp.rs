@@ -42,6 +42,12 @@ pub enum TokenBehavior {
         status: u16,
         error: &'static str,
     },
+    /// HTTP 200 (success status) with a body that is not valid JSON at all
+    /// -- distinct from `Fail`, which exercises the non-2xx branch of
+    /// `token_endpoint::request`. This exercises the OTHER failure branch:
+    /// a server that returns a success status but an unparseable body must
+    /// still fail closed, never `Ok` with a fabricated/empty token.
+    MalformedSuccess,
 }
 
 /// Lets a test override what the discovery document advertises for
@@ -275,6 +281,9 @@ async fn token(
                 })),
             )
                 .into_response()
+        }
+        TokenBehavior::MalformedSuccess => {
+            (StatusCode::OK, "not a json body at all").into_response()
         }
     }
 }
