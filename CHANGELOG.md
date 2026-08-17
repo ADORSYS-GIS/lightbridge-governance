@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.1...v0.4.0) (2026-08-17)
+
+
+### Features
+
+* **chart:** aiCliOtel accepts the exchanged token's audience ([#142](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/142)) ([64b709d](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/64b709df32d036834bbad4fdc2922aa3ce64b7df)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+
 ## [0.3.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.0...v0.3.1) (2026-08-16)
 
 
