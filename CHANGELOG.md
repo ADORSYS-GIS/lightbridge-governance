@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.0...v0.3.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **governance-auth:** three defects found by running v0.3.0 in production ([#148](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/148)) ([bec7403](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/bec7403fe3742821a70aa0fbb6c35733309499bd)), closes [#145](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/145) [#146](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/146) [#147](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/147)
+
+## [0.3.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.2.1...v0.3.0) (2026-08-16)
+
+
+### Features
+
+* **governance-auth:** config file layering (ADR-0012 Decision 2) ([#138](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/138)) ([b9abe0e](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/b9abe0e145fc5347fc9a7230a3632f90bdf6cfb7))
+* **governance-auth:** provider-agnostic config, optional token exchange, no auto-browser ([#143](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/143)) ([89fa707](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/89fa70702d5c7f77ff6946bcdd31eb294830cfe7))
+
+
+### Bug Fixes
+
+* **governance-auth:** decouple inference wiring from the telemetry endpoint ([#137](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/137)) ([830b890](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/830b890c6a979700de49d39e8ed9ca6366c713a7))
+
 ## [0.2.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.2.0...v0.2.1) (2026-08-16)
 
 

@@ -60,6 +60,7 @@ async fn login_never_posts_the_code_to_an_off_origin_token_endpoint() -> Result<
         },
         DiscoveryOverrides {
             token_endpoint: Some(format!("{}/token", attacker.base_url)),
+            ..Default::default()
         },
     )
     .await?;

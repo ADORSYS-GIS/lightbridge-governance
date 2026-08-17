@@ -1,7 +1,15 @@
 //! Authorization Code + PKCE via a localhost loopback redirect (RFC 8252,
-//! the native-app pattern). Default interactive flow: opens the system
-//! browser, binds an ephemeral port, and blocks for exactly one HTTP
-//! request -- the redirect back from the authorization server.
+//! the native-app pattern). Default interactive flow: binds an ephemeral
+//! port, prints the authorize URL, and blocks for exactly one HTTP request
+//! -- the redirect back from the authorization server. Launching the system
+//! browser automatically is opt-in (`config.open_browser`, issue #141) --
+//! see that field's doc in `crate::config` for why it isn't the default.
+//!
+//! ⚠️ PKCE (`code_challenge`/`code_challenge_method=S256`, below) is
+//! unconditional, not a flag. RFC 8252 / OAuth 2.1 require it for public
+//! clients (this binary ships with no client secret), and there is
+//! deliberately no way to turn it off -- see `tests/pkce_authcode.rs` for
+//! the regression guard.
 
 use std::{
     io::{BufRead, BufReader, Write},
@@ -32,11 +40,21 @@ pub async fn run(
 
     let authorize_url = build_authorize_url(metadata, config, &redirect_uri, &pkce, &state)?;
 
-    eprintln!("Opening your browser to log in. If it doesn't open, visit:\n{authorize_url}");
-    if let Err(error) = browser::open(authorize_url.as_str()) {
-        eprintln!(
-            "Could not open a browser automatically ({error}); visit the URL above manually."
-        );
+    // OFF by default (issue #141): auto-opening a browser is wrong more
+    // often than right over SSH, in containers, in CI, and in VM-based
+    // testing, and the URL below works exactly the same whether the tab was
+    // launched by this binary or pasted by a human -- so the default costs
+    // nothing. `--open-browser`/`GOVERNANCE_AUTH_OPEN_BROWSER`/the config
+    // key restore the old behaviour.
+    if config.open_browser {
+        eprintln!("Opening your browser to log in. If it doesn't open, visit:\n{authorize_url}");
+        if let Err(error) = browser::open(authorize_url.as_str()) {
+            eprintln!(
+                "Could not open a browser automatically ({error}); visit the URL above manually."
+            );
+        }
+    } else {
+        eprintln!("To log in, visit:\n{authorize_url}");
     }
 
     let (code, returned_state) = tokio::task::spawn_blocking(move || await_callback(listener))
@@ -69,8 +87,19 @@ fn build_authorize_url(
     pkce: &pkce::Pkce,
     state: &str,
 ) -> Result<Url> {
-    let mut url = Url::parse(&metadata.authorization_endpoint)
-        .context("parsing authorization endpoint URL")?;
+    // The ONE flow that needs this field, so "absent" is reported here rather
+    // than by making it required at deserialize time -- doing that broke
+    // `--exchange-issuer` against a server that legitimately serves no
+    // authorization endpoint (issue #145). A caller reaching this genuinely
+    // cannot log in interactively against that issuer, and the message says
+    // so instead of surfacing a serde `missing field` error.
+    let authorization_endpoint = metadata.authorization_endpoint.as_deref().context(
+        "this issuer advertises no `authorization_endpoint`, so the browser login flow cannot be \
+         used against it; use `--device-code`, or point `--issuer` at an authorization server \
+         that serves one",
+    )?;
+    let mut url =
+        Url::parse(authorization_endpoint).context("parsing authorization endpoint URL")?;
     {
         let mut query = url.query_pairs_mut();
         query

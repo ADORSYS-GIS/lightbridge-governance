@@ -23,9 +23,21 @@ governance-auth login \
   --client-id governance-auth-cli
 ```
 
-Opens your browser to Keycloak. On a headless box (SSH, a Coder cloud workspace with no
-local browser) use `--device-code` instead: it prints a verification URL and code to
-stderr and polls until you complete it elsewhere.
+`--issuer` is resolved through plain OIDC discovery, so this works against any
+RFC 8414-compliant issuer -- Keycloak today, but nothing about `governance-auth` assumes
+it.
+
+Prints the URL to visit and waits; it does NOT open your browser automatically (a
+headless SSH session, a container, or a CI runner would otherwise get a `DISPLAY`/
+`xdg-open` that fails or hijacks an unrelated desktop). Pass `--open-browser` (or set
+`GOVERNANCE_AUTH_OPEN_BROWSER=true`, or `open_browser = true` in a config file --
+see `governance-auth --help`) to restore the old auto-open behaviour on a machine
+where it's actually useful.
+
+On a headless box (SSH, a Coder cloud workspace with no local browser) use
+`--device-code` instead: it prints a verification URL and code to stderr and polls
+until you complete it elsewhere. Independent of `--open-browser` -- there is no
+browser to open for a device-code flow either way.
 
 Set `GOVERNANCE_AUTH_ISSUER` / `GOVERNANCE_AUTH_CLIENT_ID` in your shell profile so you
 don't have to pass `--issuer`/`--client-id` on every subsequent command -- `token`,
@@ -78,7 +90,46 @@ Reports whether a session is cached and its freshness. A real request from eithe
 is the actual proof -- but confirming the helper alone rules out half the failure modes
 before touching the tools.
 
-## 6. Troubleshooting
+## 6. Optional: token exchange (RFC 8693)
+
+Some deployments want `token`/`otel-headers` to present a DIFFERENT, downstream-minted
+credential rather than the raw token issued by `--issuer` -- e.g. exchanging a Keycloak
+access token for a project-scoped token minted by `lightbridge-authz`'s native
+`/oauth2/token` endpoint. This is OFF by default; nothing changes unless you opt in.
+
+```bash
+governance-auth token \
+  --token-exchange \
+  --exchange-issuer https://auth.ai.camer.digital \
+  --exchange-client-id governance-auth-exchange-cli
+```
+
+The `client_id` must be registered in the exchange server's own client list, and the
+upstream token you present must carry that `client_id` in its `aud` -- `lightbridge-authz`
+checks the subject token's audience twice, against two different values, and rejects with
+`401 invalid_token` or `400 invalid_grant` respectively. See its
+`docs/token-exchange-integration.md`.
+
+⚠️ `--exchange-issuer` works against a server that serves **no** `authorization_endpoint`.
+`lightbridge-authz` is exactly that: it has no `/authorize` route and omits the field, which
+OIDC Discovery §3 permits for a provider that supports no authorization endpoint. Requiring
+it here used to make this exact command fail with `missing field 'authorization_endpoint'`
+(#145) -- fixed, and pinned by a test whose mock now reproduces authz's real document.
+
+(`--exchange-token-endpoint <url>` skips the discovery round trip if you already know
+the endpoint; `--exchange-scopes "..."` requests specific scopes.) Every one of these
+is also settable as `GOVERNANCE_AUTH_EXCHANGE_*` / `GOVERNANCE_AUTH_TOKEN_EXCHANGE` env
+vars or config-file keys, with the same flag > env > per-user file > machine-wide file
+precedence as every other option.
+
+⚠️ **Fails closed.** If exchange is enabled and the exchange request fails for any
+reason, `token`/`otel-headers` exit non-zero and print nothing to stdout -- never a
+silent fallback to the un-exchanged upstream token. See the Keycloak-client audience
+requirements in lightbridge-authz's `docs/token-exchange-integration.md` before turning
+this on: a subject token whose `aud` doesn't include both the bearer-validation audience
+and your `--exchange-client-id` will fail the exchange every time.
+
+## 7. Troubleshooting
 
 - **`no cached session ... run \`governance-auth login\` first`** -- exactly what it
   says; the cache was empty (first run, or `logout` was called) and `token` correctly

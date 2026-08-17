@@ -42,6 +42,12 @@ pub enum TokenBehavior {
         status: u16,
         error: &'static str,
     },
+    /// HTTP 200 (success status) with a body that is not valid JSON at all
+    /// -- distinct from `Fail`, which exercises the non-2xx branch of
+    /// `token_endpoint::request`. This exercises the OTHER failure branch:
+    /// a server that returns a success status but an unparseable body must
+    /// still fail closed, never `Ok` with a fabricated/empty token.
+    MalformedSuccess,
 }
 
 /// Lets a test override what the discovery document advertises for
@@ -54,6 +60,14 @@ pub enum TokenBehavior {
 #[derive(Clone, Default)]
 pub struct DiscoveryOverrides {
     pub token_endpoint: Option<String>,
+    /// Reproduces `lightbridge-authz`'s real discovery document, which serves
+    /// no authorization endpoint and therefore omits the field entirely --
+    /// deliberately and, per OIDC Discovery §3, legitimately (that field is
+    /// REQUIRED only of providers that actually support one).
+    ///
+    /// Exists because the default mock advertising it made every test pass
+    /// while `--exchange-issuer` failed in production.
+    pub omit_authorization_endpoint: bool,
 }
 
 struct Inner {
@@ -69,6 +83,12 @@ struct Inner {
     last_device_code_challenge: Option<String>,
     last_device_code_challenge_method: Option<String>,
     last_token_code_verifier: Option<String>,
+    // Same idea as `last_token_code_verifier`, but for the authorization-code
+    // grant instead of the device-code one -- lets `tests/pkce_authcode.rs`
+    // recompute S256(verifier) and check it against the `code_challenge` an
+    // earlier assertion already pulled off the authorize URL, the same
+    // cross-check the device-code test does.
+    last_authcode_code_verifier: Option<String>,
     // What `scope` the client actually sent on the device-authorization
     // request -- used to prove ADR-0012 Decision 2's precedence (a `--scopes`
     // flag must win over `GOVERNANCE_AUTH_SCOPES`) against the real value the
@@ -108,6 +128,7 @@ impl MockIdp {
             last_device_code_challenge: None,
             last_device_code_challenge_method: None,
             last_token_code_verifier: None,
+            last_authcode_code_verifier: None,
             last_device_scope: None,
         }));
 
@@ -153,6 +174,12 @@ impl MockIdp {
         Ok(lock(&self.state)?.last_token_code_verifier.clone())
     }
 
+    /// What the client sent as `code_verifier` on its most recent
+    /// authorization-code token request.
+    pub fn last_authcode_code_verifier(&self) -> Result<Option<String>> {
+        Ok(lock(&self.state)?.last_authcode_code_verifier.clone())
+    }
+
     /// What the client sent as `scope` on its most recent device-authorization
     /// request.
     pub fn last_device_scope(&self) -> Result<Option<String>> {
@@ -176,13 +203,29 @@ async fn discovery(State(state): State<Arc<Mutex<Inner>>>) -> impl IntoResponse 
         .token_endpoint
         .clone()
         .unwrap_or_else(|| format!("{base_url}/token"));
-    Json(json!({
-        "issuer": base_url,
-        "authorization_endpoint": format!("{base_url}/authorize"),
-        "token_endpoint": token_endpoint,
-        "device_authorization_endpoint": format!("{base_url}/device"),
-    }))
-    .into_response()
+    // ⚠️ `authorization_endpoint` is OMITTED when `omit_authorization_endpoint`
+    // is set, because a real exchange server in this estate omits it.
+    //
+    // This mock used to advertise it unconditionally, which made it MORE
+    // permissive than production: `--exchange-issuer` passed every test here
+    // and then failed against `lightbridge-authz` with a raw
+    // `missing field 'authorization_endpoint'`. A mock that accepts documents
+    // the real server never sends cannot catch that class of bug -- so the
+    // authz shape is now reproducible here.
+    let mut doc = serde_json::Map::new();
+    doc.insert("issuer".to_owned(), json!(base_url));
+    if !guard.discovery_overrides.omit_authorization_endpoint {
+        doc.insert(
+            "authorization_endpoint".to_owned(),
+            json!(format!("{base_url}/authorize")),
+        );
+    }
+    doc.insert("token_endpoint".to_owned(), json!(token_endpoint));
+    doc.insert(
+        "device_authorization_endpoint".to_owned(),
+        json!(format!("{base_url}/device")),
+    );
+    Json(serde_json::Value::Object(doc)).into_response()
 }
 
 /// Real device-authorization endpoints (Keycloak's included) reject a
@@ -228,10 +271,14 @@ async fn token(
         return (StatusCode::INTERNAL_SERVER_ERROR, "mock idp lock poisoned").into_response();
     };
     guard.token_calls += 1;
-    if form.get("grant_type").map(String::as_str)
-        == Some("urn:ietf:params:oauth:grant-type:device_code")
-    {
-        guard.last_token_code_verifier = form.get("code_verifier").cloned();
+    match form.get("grant_type").map(String::as_str) {
+        Some("urn:ietf:params:oauth:grant-type:device_code") => {
+            guard.last_token_code_verifier = form.get("code_verifier").cloned();
+        }
+        Some("authorization_code") => {
+            guard.last_authcode_code_verifier = form.get("code_verifier").cloned();
+        }
+        _ => {}
     }
 
     match &guard.behavior {
@@ -258,6 +305,9 @@ async fn token(
                 })),
             )
                 .into_response()
+        }
+        TokenBehavior::MalformedSuccess => {
+            (StatusCode::OK, "not a json body at all").into_response()
         }
     }
 }

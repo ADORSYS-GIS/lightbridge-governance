@@ -88,6 +88,32 @@ impl Harness {
     /// as a task on this same (by default single-threaded) test runtime --
     /// a plain synchronous `.output()` here would block that thread and
     /// deadlock against the mock server never getting polled.
+    /// Runs the binary with **no** `--issuer`/`--client-id` and no config
+    /// file, i.e. exactly a machine that has never been configured.
+    ///
+    /// Exists for `self-update`, which reads no OAuth config at all. Every
+    /// other command legitimately requires it, so this deliberately does NOT
+    /// become the default -- using it elsewhere would stop those commands'
+    /// "fail early and clearly" behaviour from being exercised.
+    pub async fn run_without_oauth_args(&self, args: &[&str]) -> Result<Output> {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_governance-auth"));
+        command
+            .env("HOME", &self.home.path)
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("GOVERNANCE_AUTH_ISSUER")
+            .env_remove("GOVERNANCE_AUTH_CLIENT_ID")
+            .args(args);
+        tokio::task::spawn_blocking(move || {
+            command
+                .output()
+                .context("running governance-auth without oauth args")
+        })
+        .await
+        .context("joining the blocking command task")?
+    }
+
     pub async fn run(&self, args: &[&str]) -> Result<Output> {
         let mut command = self.command(args);
         tokio::task::spawn_blocking(move || {
@@ -161,18 +187,59 @@ impl Harness {
     /// Same as [`Self::login_via_browser`], but lets the caller control
     /// what "the browser" submits back to the loopback callback -- used to
     /// exercise the client-side `state` check with a tampered value.
-    ///
-    /// Blocking child-process I/O runs on a dedicated thread so it never
-    /// starves the async test's own runtime, which the mock IdP server
-    /// depends on to keep answering the child's discovery/token requests.
     pub async fn login_with_browser_action(
         &self,
         act: impl FnOnce(&str) -> Result<()> + Send + 'static,
     ) -> Result<Output> {
-        let mut command = self.command(&["login"]);
+        Ok(self.login_full(&[], &[], act).await?.0)
+    }
+
+    /// Like [`Self::login_with_browser_action`], but with extra CLI args
+    /// (e.g. `--open-browser`) and/or extra environment variables (e.g. a
+    /// `PATH` override pointing at a fake `xdg-open`/`open`) on the child
+    /// process. Used by `tests/browser_launch.rs` to prove `login` does or
+    /// doesn't invoke a browser opener, without ever needing a real browser.
+    pub async fn login_with_env_and_browser_action(
+        &self,
+        extra_args: &[&str],
+        envs: &[(&str, &str)],
+        act: impl FnOnce(&str) -> Result<()> + Send + 'static,
+    ) -> Result<Output> {
+        Ok(self.login_full(extra_args, envs, act).await?.0)
+    }
+
+    /// Like [`Self::login_with_browser_action`], but also returns the
+    /// authorize URL observed on stderr -- used by `tests/pkce_authcode.rs`
+    /// to assert `code_challenge`/`code_challenge_method=S256` are present
+    /// on the actual URL the client built, not just that the flow completed.
+    pub async fn login_capturing_authorize_url(
+        &self,
+        act: impl FnOnce(&str) -> Result<()> + Send + 'static,
+    ) -> Result<(Output, String)> {
+        let (output, url) = self.login_full(&[], &[], act).await?;
+        let url = url.context("no authorize URL was observed on stderr")?;
+        Ok((output, url))
+    }
+
+    /// The shared implementation behind every `login_*` variant above.
+    /// Blocking child-process I/O runs on a dedicated thread so it never
+    /// starves the async test's own runtime, which the mock IdP server
+    /// depends on to keep answering the child's discovery/token requests.
+    async fn login_full(
+        &self,
+        extra_args: &[&str],
+        envs: &[(&str, &str)],
+        act: impl FnOnce(&str) -> Result<()> + Send + 'static,
+    ) -> Result<(Output, Option<String>)> {
+        let mut args = vec!["login"];
+        args.extend_from_slice(extra_args);
+        let mut command = self.command(&args);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        tokio::task::spawn_blocking(move || -> Result<Output> {
+        tokio::task::spawn_blocking(move || -> Result<(Output, Option<String>)> {
             let mut child = command.spawn().context("spawn governance-auth login")?;
             let stderr = child.stderr.take().context("child stderr pipe")?;
             let mut reader = std::io::BufReader::new(stderr);
@@ -196,8 +263,8 @@ impl Harness {
                 }
             }
 
-            if let Some(url) = authorize_url {
-                act(&url)?;
+            if let Some(url) = &authorize_url {
+                act(url)?;
             }
 
             let mut remaining_stderr = String::new();
@@ -214,11 +281,14 @@ impl Harness {
 
             let status = child.wait().context("waiting for governance-auth login")?;
 
-            Ok(Output {
-                status,
-                stdout: stdout.into_bytes(),
-                stderr: seen_stderr.into_bytes(),
-            })
+            Ok((
+                Output {
+                    status,
+                    stdout: stdout.into_bytes(),
+                    stderr: seen_stderr.into_bytes(),
+                },
+                authorize_url,
+            ))
         })
         .await
         .context("login harness task panicked")?
