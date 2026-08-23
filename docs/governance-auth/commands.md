@@ -150,6 +150,43 @@ refresh token valid at the server until its offline-session lifetime expires, wh
 the developer `session cleared`. A logout that reports success and leaves a usable
 credential live is worse than one that fails loudly, because nobody goes back to check.
 
+### ⚠️ Logout is not immediate cutoff
+
+**An access token already issued keeps working until its own `exp` — up to 300 seconds after
+you log out.** `logout` stops *new* tokens being minted; it does not reach out and kill the
+one already in flight.
+
+Measured, both against the live deployment at the same moment, with the same token:
+
+| Request | Result |
+|---|---|
+| `GET /userinfo` at the issuer | **401** — the session really is revoked |
+| `POST /anthropic/v1/messages` at the gateway | **200** |
+| `POST /v1/chat/completions` at the gateway | **200** |
+
+The mechanism is that the gateway validates the JWT by **signature and `exp`**. It does not
+introspect, and it does not check session liveness — so a revoked session is invisible to it
+until the token expires on its own.
+
+That is a deliberate trade, not an oversight. Per-request introspection at the Authorino step
+is exactly what was disabled in production on 2026-07-02: the ext_authz timeout is shorter
+than the lookup takes (see the estate's `AGENTS.md` — *never add a database lookup to the
+Authorino step itself*). The access-token lifetime **is** the mitigation, which is the real
+argument for keeping it at 300s and for keeping
+`otel_headers_debounce_ms`/`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` underneath it.
+
+What follows for an operator:
+
+- For a routine logout, none of this matters.
+- For a **suspected compromise**, `logout` alone leaves a window of up to the remaining token
+  lifetime. If the credential is broadly scoped, treat the window as real and act at the
+  identity provider — end the user's sessions, and rotate or disable the account — rather than
+  assuming the CLI's `session cleared` ended access.
+
+The size of that window is the whole reason the scope of the token matters. A CLI credential
+carrying realm-administration or impersonation rights makes 300 seconds a meaningful blast
+radius; one scoped to inference does not.
+
 ---
 
 ## `self-update`
