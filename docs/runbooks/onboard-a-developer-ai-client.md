@@ -3,17 +3,34 @@
 **When:** a developer wants Claude Code and/or Codex pointed at `api.ai.camer.digital`
 with real per-developer OAuth2 (ADR-0010), instead of a manually-issued static key.
 
-⚠️ **Not yet operational.** This runbook documents the target flow once the
-`ai-helm`-side Keycloak client exists ([#680](https://github.com/ADORSYS-GIS/ai-helm/issues/680),
-[#679](https://github.com/ADORSYS-GIS/ai-helm/issues/679)) -- see ADR-0010's Appendix for
-exactly what that registration needs. Until then, `governance-auth login` has nothing to
-authenticate against.
+⚠️ **Partially operational.** Split by half, as of 2026-08-23:
+
+- **The gateway half is live and verified.** With a token obtained by exchange, all three
+  paths return 200: `POST /v1/chat/completions`, `POST /anthropic/v1/messages`, and
+  `POST /otel/v1/traces`. See [Section 6](#6-optional-token-exchange-rfc-8693).
+- **The interactive `login` half is not yet provisioned.** The `ai-helm`-side client
+  registration ([#680](https://github.com/ADORSYS-GIS/ai-helm/issues/680),
+  [#679](https://github.com/ADORSYS-GIS/ai-helm/issues/679)) is still open -- see ADR-0010's
+  Appendix for exactly what that registration needs. Until it lands, `governance-auth login`
+  has nothing to authenticate against, so Steps 2-5 below describe the target flow rather
+  than something you can run today.
+
+Note that the exchange server cannot stand in for `--issuer`: it serves no
+`authorization_endpoint`, so it cannot host an interactive login at all. The shape is
+*log in at the identity provider, exchange at authz*.
+
+📖 This runbook is the short path. The exhaustive reference -- every flag, every env var,
+every file this binary touches -- is [`docs/governance-auth/`](../governance-auth/README.md).
 
 ## 1. Install `governance-auth`
 
 Download the release binary for your platform (macOS arm64/x64, Linux x64/arm64) and put
 it on `$PATH`. There is no package manager entry yet -- copy it into
-`~/.local/bin` or equivalent.
+`~/.local/bin` or equivalent. Keep it current with `governance-auth self-update`.
+
+⚠️ Use an **absolute** path everywhere a config file names this binary. Codex spawns the
+auth command directly rather than through a shell, so a bare `governance-auth` doesn't
+resolve and the provider falls back to unauthenticated, silently.
 
 ## 2. Log in once
 
@@ -41,7 +58,32 @@ browser to open for a device-code flow either way.
 
 Set `GOVERNANCE_AUTH_ISSUER` / `GOVERNANCE_AUTH_CLIENT_ID` in your shell profile so you
 don't have to pass `--issuer`/`--client-id` on every subsequent command -- `token`,
-`status` and `logout` all read the same env vars.
+`status` and `logout` all read the same env vars. A config file works too and survives a
+subprocess that doesn't inherit your environment; see
+[`configuration.md`](../governance-auth/configuration.md).
+
+### Or skip steps 3 and 4 entirely
+
+Add `--gateway-url` and `--otel-endpoint` to the `login` above and it writes the wiring for
+Claude Code, Codex and VS Code Copilot itself -- inference and telemetry both, only the keys
+it owns, merged into your existing files rather than replacing them:
+
+```bash
+governance-auth login \
+  --issuer https://auth.ai.camer.digital/realms/platform \
+  --client-id governance-auth-cli \
+  --gateway-url https://api.ai.camer.digital \
+  --otel-endpoint https://otel.ai.camer.digital \
+  --otel-token "$OTLP_INGEST_TOKEN"
+```
+
+`governance-auth configure` re-runs just that part for an existing session -- after
+installing one of the tools for the first time, or when the endpoint or ingest token
+changed. Exactly which keys in which files:
+[`files.md`](../governance-auth/files.md).
+
+The two sections below are the by-hand equivalent, for when you want to see it or when
+you're editing managed settings your org pushes.
 
 ## 3. Wire it into Claude Code
 
