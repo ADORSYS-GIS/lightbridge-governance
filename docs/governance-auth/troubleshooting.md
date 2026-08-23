@@ -31,6 +31,15 @@ The login didn't request `offline_access`, or the server didn't grant it. Check 
 the compiled default includes it, but any explicit value replaces the default wholesale rather
 than adding to it.
 
+**I logged out, but requests still succeed**
+
+Expected, for up to 300 seconds. `logout` revokes the session at the issuer — verifiable, in
+that `/userinfo` starts returning 401 immediately — but the gateway validates tokens by
+signature and `exp` without introspecting, so an already-issued access token keeps working
+until it expires on its own. See *"Logout is not immediate cutoff"* in
+[`commands.md`](./commands.md). If you are logging out because a credential leaked, that
+window is real: act at the identity provider, not just here.
+
 **`login` prints a URL and appears to hang**
 
 That is the design. It is waiting for you to visit the URL; it does not open a browser unless
