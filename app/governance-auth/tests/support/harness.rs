@@ -336,6 +336,13 @@ impl Harness {
         self.state_dir().join(self.session_file_name())
     }
 
+    /// The lock `FileLock::acquire` uses for this issuer/client pair, so a
+    /// test can plant the debris a crashed or disk-full run leaves behind.
+    pub fn lock_path(&self) -> PathBuf {
+        self.state_dir()
+            .join(self.session_file_name().replace(".json", ".lock"))
+    }
+
     pub fn seed_session(&self, session: &serde_json::Value) -> Result<()> {
         let dir = self.state_dir();
         std::fs::create_dir_all(&dir)
