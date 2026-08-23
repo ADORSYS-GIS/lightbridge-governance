@@ -37,6 +37,12 @@ this file only orients; follow the links for the details.
 | `crates/governance-core/schema/governance.cstack` | The schema — tables, migrations, CRUD, routes |
 | [`charts/lightbridge-governance`](charts/lightbridge-governance/README.md) | `Deployment`, `copilot-sync` `CronJob`, `ServiceMonitor` |
 
+**Developer client access:**
+
+| Path | What's there |
+|---|---|
+| [`app/governance-auth`](app/governance-auth/README.md) | OAuth2 credential helper (bin): points Claude Code / Codex / VS Code Copilot at the gateway and the collector |
+
 **Redaction (independent subsystem — neither side depends on the registry):**
 
 | Path | What's there |
