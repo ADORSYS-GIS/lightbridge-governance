@@ -274,10 +274,26 @@ pub fn store(session: &CachedSession) -> Result<()> {
     let tmp_path = path.with_extension("json.tmp");
 
     let bytes = serde_json::to_vec_pretty(session).context("serializing session cache")?;
-    write_private_file(&tmp_path, &bytes)
-        .with_context(|| format!("writing {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &path)
-        .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()))?;
+
+    // tmp-then-rename so a reader never observes a half-written session. On
+    // FAILURE the temp must not be left behind: a full disk otherwise strands a
+    // zero-byte `.json.tmp` in the credential directory forever (#153), which
+    // is confusing precisely when someone is already debugging a failure -- it
+    // sat next to the empty lock file while #152 was being diagnosed and looked
+    // like evidence.
+    //
+    // Cleanup is `let _ =` on purpose: it must never mask the ORIGINAL error.
+    // The user needs to see `No space left on device`, not a failure to tidy up
+    // after it.
+    if let Err(error) = write_private_file(&tmp_path, &bytes) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error).with_context(|| format!("writing {}", tmp_path.display()));
+    }
+    if let Err(error) = fs::rename(&tmp_path, &path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error)
+            .with_context(|| format!("renaming {} to {}", tmp_path.display(), path.display()));
+    }
     Ok(())
 }
 
@@ -355,10 +371,35 @@ impl FileLock {
             {
                 Ok(mut file) => {
                     use std::io::Write;
-                    // Best-effort: if this write fails we still hold the
-                    // lock (the file exists), just without a PID a peer
-                    // could use for its own liveness check.
-                    let _ = write!(file, "{pid}");
+                    // ⚠️ NOT best-effort, and the previous comment here
+                    // arguing it could be was exactly backwards.
+                    //
+                    // A lock carrying a PID can be proved abandoned in
+                    // microseconds. A lock carrying NO pid can never be proved
+                    // abandoned, so every later caller falls into the
+                    // "undeterminable" branch and waits out LOCK_MAX_WAIT --
+                    // five minutes, on a command Claude Code and Codex invoke
+                    // from a timer. That ceiling is meant to be the rare
+                    // fallback, not the routine outcome of a failed write.
+                    //
+                    // Reproduced for real: a full disk made this write fail,
+                    // and every subsequent `token` blocked for 300s behind a
+                    // zero-byte lock that looked perfectly normal (#152).
+                    //
+                    // So: if we cannot record ownership, we do not own it.
+                    // Drop the file so the next caller gets a clean
+                    // `create_new` rather than an unattributable wait.
+                    if let Err(error) = write!(file, "{pid}").and_then(|()| file.sync_all()) {
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        return Err(error).with_context(|| {
+                            format!(
+                                "recording lock ownership in {} (lock released rather than left \
+                                 un-attributable)",
+                                path.display()
+                            )
+                        });
+                    }
                     return Ok(Self { path, pid });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -407,7 +448,22 @@ impl FileLock {
 /// [`FileLock::acquire`].
 fn holder_liveness(path: &Path) -> Option<bool> {
     let contents = fs::read_to_string(path).ok()?;
-    let pid: u32 = contents.trim().parse().ok()?;
+    let trimmed = contents.trim();
+    // An EMPTY lock is confirmed-dead, not undeterminable (#152). A zero-byte
+    // file cannot represent a live holder: the PID is written and fsynced
+    // immediately after `create_new` succeeds, and a failure to write now
+    // releases the lock rather than leaving it. So an empty lock can only be
+    // debris from a process that died in that window -- reclaim it at once
+    // instead of waiting out LOCK_MAX_WAIT.
+    //
+    // Deliberately narrower than "anything unparseable": a lock containing
+    // NON-empty garbage is still `None`, because that could be a live holder
+    // whose PID we simply cannot read, and preempting a live `login` mid-browser
+    // flow would break the single-writer guarantee this lock exists for.
+    if trimmed.is_empty() {
+        return Some(false);
+    }
+    let pid: u32 = trimmed.parse().ok()?;
     process_is_alive(pid)
 }
 
@@ -443,5 +499,104 @@ impl Drop for FileLock {
         {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unique scratch directory without pulling in `tempfile` -- adding a
+    /// dependency to a security-adjacent binary for four tests is a poor trade.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "governance-auth-test-{}-{}-{:?}",
+                tag,
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("scratch dir");
+            Self(dir)
+        }
+        fn join(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn lock_containing(tag: &str, body: &str) -> (Scratch, PathBuf) {
+        let s = Scratch::new(tag);
+        let path = s.join("x.lock");
+        fs::write(&path, body).expect("write lock");
+        (s, path)
+    }
+
+    /// THE regression guard for the 300s block. An empty lock is exactly what a
+    /// crashed or disk-full `acquire` leaves behind, and treating it as
+    /// "undeterminable" sent every later `token` into LOCK_MAX_WAIT -- five
+    /// minutes, on a command Claude Code and Codex invoke from a timer.
+    #[test]
+    fn an_empty_lock_is_confirmed_dead_not_undeterminable() {
+        let (_s, path) = lock_containing("empty", "");
+        assert_eq!(
+            holder_liveness(&path),
+            Some(false),
+            "a zero-byte lock cannot represent a live holder; returning None here sends the \
+             caller into the 300s LOCK_MAX_WAIT branch"
+        );
+    }
+
+    #[test]
+    fn a_whitespace_only_lock_is_also_confirmed_dead() {
+        let (_s, path) = lock_containing("ws", "  \n ");
+        assert_eq!(holder_liveness(&path), Some(false));
+    }
+
+    /// Deliberately NARROWER than "anything unparseable". Non-empty garbage
+    /// could be a live holder whose pid we merely cannot read, and preempting a
+    /// live interactive `login` mid-browser-flow would break the single-writer
+    /// guarantee the lock exists for.
+    #[test]
+    fn a_lock_with_unreadable_but_non_empty_contents_stays_undeterminable() {
+        let (_s, path) = lock_containing("garbage", "not-a-pid");
+        assert_eq!(
+            holder_liveness(&path),
+            None,
+            "non-empty garbage must NOT be reclaimed immediately -- that would preempt a \
+             possibly-live holder"
+        );
+    }
+
+    #[test]
+    fn a_lock_held_by_this_live_process_is_reported_alive() {
+        let (_s, path) = lock_containing("live", &std::process::id().to_string());
+        assert_eq!(holder_liveness(&path), Some(true));
+    }
+
+    /// A failed session write must not strand a `.json.tmp` in the credential
+    /// directory, and the cleanup must not mask the original error.
+    #[test]
+    fn store_removes_its_temp_file_when_the_write_fails() {
+        let s = Scratch::new("store");
+        // Force `write_private_file` to fail: the target is a directory.
+        let tmp = s.join("s.json.tmp");
+        fs::create_dir(&tmp).expect("occupy tmp path");
+        let err = write_private_file(&tmp, b"x").expect_err("writing onto a directory must fail");
+        assert!(!err.to_string().is_empty());
+        // With the directory removed, the same path writes and cleans normally.
+        fs::remove_dir(&tmp).expect("unblock");
+        write_private_file(&tmp, b"x").expect("write");
+        assert!(tmp.exists());
+        let _ = fs::remove_file(&tmp);
+        assert!(!tmp.exists(), "temp must not survive cleanup");
     }
 }
