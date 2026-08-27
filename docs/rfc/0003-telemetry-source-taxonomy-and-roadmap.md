@@ -163,6 +163,15 @@ The two stores are not redundant. `usage_events` has no execution grouping key, 
 and no trace correlation, so it cannot answer "executions per developer", "tool-call count per
 execution" or "P95 tool latency" — which is what this product sells.
 
+⚠️ **This boundary is currently contradicted by an open epic next door.**
+`lightbridge-authz` [#491](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/491) is
+titled *"GenAI observability ingestion — usage DB serves the governance KPIs"*, which asserts
+the opposite allocation: their store serving this product's KPIs. Both positions are
+defensible and only one can be built. This is not a documentation inconsistency to reconcile
+in prose — it is a decision that needs making once, in an ADR in each repository, before
+either side builds against its own assumption. Until it is made, every estimate on both sides
+is conditional.
+
 ### 7. Model capability is a shared surface, not per-plugin data
 
 A first-party IDE plugin ([#105](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/105))
@@ -177,7 +186,42 @@ Extending **that** with context window and modality flags gives all three client
 of truth; a capability table compiled into a plugin rots silently the first time a model
 changes.
 
-### 8. The declaration gate
+### 8. Related work already in flight
+
+This RFC does not start from nothing. Both adjacent repositories have open epics covering
+parts of the same surface, and several of them make decisions this document depends on.
+
+**`lightbridge-authz`**
+
+| Issue | Bearing on this RFC |
+|---|---|
+| [#491](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/491) — GenAI observability ingestion epic | **Contradicts §6.** Asserts their usage DB serves this product's KPIs. |
+| [#489](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/489) — P0: `usage_events` is not a hypertable | The F2 finding, filed. Confirms the trap in *Risks*. |
+| [#510](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/510) — Epic: one trust root for the platform | The natural home for pattern B's missing grant, though it is not scoped there today. |
+| [#508](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/508) — Epic: usage graphs end to end | Overlaps the consumption layer; needs the §6 boundary settled first. |
+| [#430](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/430) / PR [#454](https://github.com/ADORSYS-GIS/lightbridge-authz/pull/454) — remove `allowed_models`/`model_policy`/`quota_tier` claims | **Settles a question this repo had open.** Those claims are being deleted, not enforced. Any design here that reads them is building on something being removed. |
+| [#421](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/421) — `api_key_id` reused as token-exchange session id causes gateway 403 | Still open. Affects pattern A attribution — the minted token names a principal that does not resolve on introspection. |
+| [#427](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/427) — cut OpenCode to the device grant | Pattern A for the OpenCode row. |
+| [#481](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/481) — OAuth client registry moves to a cratestack model | Where a per-collector client would be registered under patterns B and C. |
+
+**`converse-frontends`**
+
+| Issue | Bearing on this RFC |
+|---|---|
+| [#298](https://github.com/ADORSYS-GIS/converse-frontends/issues/298) — Epic: complete the console feature set | The consumption surface these sources feed. |
+| [#300](https://github.com/ADORSYS-GIS/converse-frontends/issues/300) — usage dashboards on live data | Blocked on whichever store §6 selects. |
+| [#294](https://github.com/ADORSYS-GIS/converse-frontends/issues/294) — usage API: expose latency/percentile fields | Percentile aggregates need `timescaledb_toolkit`, which ties this to the hypertable decision. |
+| [#311](https://github.com/ADORSYS-GIS/converse-frontends/issues/311) — model filter from `listModelCatalog` | §7 already has a UI consumer; the capability surface has more than three callers. |
+| [#291](https://github.com/ADORSYS-GIS/converse-frontends/issues/291) — Epic: cross-team dependencies for the console | Where asks arising from this RFC should land. |
+
+Two gaps this comparison exposes:
+
+- **Pattern B's machine-to-machine grant has no ticket in any repository.** It blocks six of
+  twelve rows here and is assumed by nothing upstream. It needs filing before it is planned
+  around.
+- **Microsoft Copilot (M365) has no ticket either**, in this repo or any other.
+
+### 9. The declaration gate
 
 **A new source declares its matrix row before its implementation is written.** If Direction,
 Grain, Identity origin, Auth pattern and Cost units cannot all be filled in, the integration
@@ -228,7 +272,14 @@ Not "tests pass". The observable outcomes that would show this taxonomy is real:
 
 1. **What machine-to-machine grant will `lightbridge-authz` offer?** `client_credentials`, or
    per-collector device-code enrolment with a stored refresh token? This blocks patterns B
-   and C.
+   and C — six of the twelve rows. **No issue exists for it in any repository** (§8); the
+   nearest home is their [#510](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/510),
+   which does not scope it today.
+
+   1a. **Which store does this product's KPIs come from?** §6 and `lightbridge-authz`
+   [#491](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/491) currently assert
+   opposite answers. Everything in §2 downstream of "where does it land" is conditional on
+   this.
 2. **Do the day-grain tables get generalised now or per-source later?** Now is cheaper; later
    is less disruptive to the one connector currently in flight.
 3. **Is cost recomputed from `model_pricing`, or trusted from the emitter?** Recomputing makes

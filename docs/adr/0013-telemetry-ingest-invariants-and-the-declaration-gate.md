@@ -150,3 +150,16 @@ statement that ran without raising. A migration that cannot fail is not a migrat
   applied through
 - `lightbridge-authz` `docs/research/2026-08-25-genai-usage-ingestion.md` — the audit whose six
   findings this ADR is written against
+- `lightbridge-authz` [#491](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/491) —
+  their GenAI-ingestion epic, which asserts an allocation of KPIs contradicting RFC-0003 §6.
+  This ADR's invariants hold under either allocation; only *where* they are applied changes.
+- `lightbridge-authz` [#489](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/489) —
+  the filed hypertable P0 that the storage-assertion clause of the Decision exists to avoid
+  repeating
+- `lightbridge-authz` [#430](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/430) /
+  PR [#454](https://github.com/ADORSYS-GIS/lightbridge-authz/pull/454) — `allowed_models`,
+  `model_policy` and `quota_tier` are being **removed** from minted tokens. Invariant 2's
+  "identity is bound at issuance" must not be read as licence to depend on those claims.
+- `converse-frontends` [#298](https://github.com/ADORSYS-GIS/converse-frontends/issues/298),
+  [#294](https://github.com/ADORSYS-GIS/converse-frontends/issues/294) — the consumption
+  surface; invariant 5 is what makes its numbers defensible
