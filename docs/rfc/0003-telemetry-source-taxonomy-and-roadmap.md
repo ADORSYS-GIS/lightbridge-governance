@@ -47,9 +47,10 @@ the same class of defect: cost off by 10⁶ because two layers disagreed on unit
 stored as `0`, non-idempotent ingest that double-bills on an OTLP retry, and PII written
 wholesale into a JSONB column on a table with no retention policy.
 
-**Auth gets decided per-source, late, by whoever implements it.** Four of the sources below
-are headless cron jobs holding long-lived third-party admin credentials. That is the highest-
-value secret in the system and it should have one designed pattern, not four incidental ones.
+**Auth gets decided per-source, late, by whoever implements it.** Six of the sources below are
+headless cron jobs, each holding a long-lived third-party admin credential. That is the
+highest-value secret in the system and it should have one designed pattern, not six incidental
+ones.
 
 The purpose of this document is that the thirteenth source costs a mapper and a matrix row,
 not a design argument.
@@ -86,6 +87,19 @@ per source and the conversion has to live somewhere deliberate.
 | Microsoft Copilot (M365) | pull cron | day | tenant-scoped | C | none — seats | **no ticket** |
 | Cursor | pull cron | day | org-scoped | C | — | [#99](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/99) |
 | JetBrains AI / Amazon Q / Tabnine | pull cron | day | org-scoped | C | — | [#100](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/100) |
+
+**The tally, since the rest of this document counts against it.** Twelve rows:
+**A** — 4 (Claude Code, Codex, OpenCode, Copilot IDE) · **B** — 1 (Foundry) ·
+**C** — 6 (Copilot API, Anthropic, OpenAI, M365, Cursor, JetBrains/Q/Tabnine) ·
+**D** — 1 (Envoy).
+
+Three derived counts, which are not interchangeable:
+
+| Count | Rows | Which |
+|---|---|---|
+| No user present at any point | **8** | B + C + D |
+| Blocked on a machine-to-machine grant | **7** | B + C — D is in-cluster and topologically trusted |
+| Holding a long-lived third-party admin credential | **6** | C only |
 
 Two rows deserve emphasis. **GitHub Copilot appears twice** and must stay twice — collapsing
 them into one "Copilot connector" is how a request-grain stream and a day-grain aggregate end
@@ -125,10 +139,12 @@ A query must never sum across grains. One authoritative source per measure.
 `authorization_code` grant. `governance-auth` can therefore authenticate directly against it.
 
 **Pattern B is blocked.** That same discovery document advertises no `client_credentials`
-grant. Six of the twelve rows are headless. This is the single widest blocker in this RFC.
+grant. **Seven of the twelve rows depend on one** — pattern B's single hosted-agent row plus
+all six of pattern C. (An eighth row, the gateway, has no user either, but is covered by
+pattern D and needs no grant.) This is the single widest blocker in this RFC.
 
 **Pattern C is the one to design carefully**, because it is the only pattern that holds a
-long-lived third-party admin credential, and there will be five or six of them. Every such
+long-lived third-party admin credential, and there are six of them. Every such
 `secretKeyRef` must be non-optional: an optional ref lets a pod that beats ESO capture an
 empty credential and fail auth until it is restarted by hand.
 
@@ -216,8 +232,8 @@ parts of the same surface, and several of them make decisions this document depe
 
 Two gaps this comparison exposes:
 
-- **Pattern B's machine-to-machine grant has no ticket in any repository.** It blocks six of
-  twelve rows here and is assumed by nothing upstream. It needs filing before it is planned
+- **Pattern B's machine-to-machine grant has no ticket in any repository.** It blocks seven of
+  the twelve rows here and is assumed by nothing upstream. It needs filing before it is planned
   around.
 - **Microsoft Copilot (M365) has no ticket either**, in this repo or any other.
 
@@ -272,7 +288,7 @@ Not "tests pass". The observable outcomes that would show this taxonomy is real:
 
 1. **What machine-to-machine grant will `lightbridge-authz` offer?** `client_credentials`, or
    per-collector device-code enrolment with a stored refresh token? This blocks patterns B
-   and C — six of the twelve rows. **No issue exists for it in any repository** (§8); the
+   and C — seven of the twelve rows. **No issue exists for it in any repository** (§8); the
    nearest home is their [#510](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/510),
    which does not scope it today.
 
