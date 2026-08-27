@@ -20,6 +20,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0010](./0010-governance-auth-keycloak-oauth2-credential-helper.md) ⚠️ | `governance-auth`, a Keycloak OAuth2 credential helper for Claude Code / Codex | Proposed | 2026-08-08 |
 | [0011](./0011-bridge-copilot-run-metrics-push-to-pull.md) | Bridge copilot-sync's run-detail metrics from push to pull with a dedicated collector | Proposed | 2026-08-07 |
 | [0012](./0012-governance-auth-packaging-and-distribution.md) | `governance-auth` on-disk layout, packaging and distribution | Proposed | 2026-08-14 |
+| [0013](./0013-telemetry-ingest-invariants-and-the-declaration-gate.md) | Bind every telemetry source to six ingest invariants, declared before implementation | Proposed | 2026-08-27 |
 
 ⚠️ **Number collision**: `0010` is used by two ADRs. Both are listed above so
 neither is invisible, but the number needs resolving — renumbering changes
