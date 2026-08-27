@@ -1,4 +1,4 @@
-//! PII detection and redaction for the AI request path.
+//! PII detection and redaction for the AI request path (edited).
 //!
 //! This crate owns the *policy* — which entities matter, what happens to them,
 //! and what happens when the detector fails — and delegates only "where are the
