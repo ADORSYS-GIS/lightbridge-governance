@@ -66,7 +66,7 @@
 //! before its second `run` call, so the DDL reinstall can never overlap
 //! another test's insert.
 
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use governance_core::{
     ingest::ExecutionInput,
     schema::cratestack_schema::{
@@ -114,8 +114,8 @@ async fn connect_and_migrate() -> Option<(
     Some((pool, guard))
 }
 
-fn authenticated_ctx() -> CoolContext {
-    CoolContext::authenticated(vec![(
+fn authenticated_ctx() -> CratestackContext {
+    CratestackContext::authenticated(vec![(
         "id".to_owned(),
         cratestack::Value::String("test-principal".to_owned()),
     )])
@@ -505,7 +505,7 @@ async fn update_touches_updated_at() {
 )]
 async fn create_application(
     db: &Cratestack,
-    ctx: &CoolContext,
+    ctx: &CratestackContext,
     tenant_id: &str,
 ) -> governance_core::schema::cratestack_schema::models::Application {
     db.bind_context(ctx.clone())
@@ -529,7 +529,7 @@ async fn create_application(
 )]
 async fn create_environment(
     db: &Cratestack,
-    ctx: &CoolContext,
+    ctx: &CratestackContext,
     application: &governance_core::schema::cratestack_schema::models::Application,
 ) -> governance_core::schema::cratestack_schema::models::Environment {
     db.bind_context(ctx.clone())

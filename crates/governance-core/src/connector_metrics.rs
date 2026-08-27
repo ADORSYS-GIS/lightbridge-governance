@@ -11,7 +11,7 @@
 //! boundary, not buried in a query helper.
 
 use chrono::{DateTime, Utc};
-use cratestack::{cool_error_from_sqlx, sqlx};
+use cratestack::{cratestack_error_from_sqlx, sqlx};
 use sqlx::PgPool;
 
 use crate::{Error, Result};
@@ -80,7 +80,7 @@ pub async fn connector_freshness(
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(rows
         .into_iter()
@@ -93,7 +93,7 @@ pub async fn connector_freshness(
 
 #[cfg(test)]
 mod tests {
-    use cratestack::{cool_error_from_sqlx, sqlx};
+    use cratestack::{cratestack_error_from_sqlx, sqlx};
     use sqlx::PgPool;
 
     use super::connector_freshness;
@@ -137,7 +137,7 @@ mod tests {
         .bind(status)
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)
+        .map_err(cratestack_error_from_sqlx)
         .expect("insert manifest fixture");
     }
 
@@ -165,7 +165,7 @@ mod tests {
         .bind(report_type)
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)
+        .map_err(cratestack_error_from_sqlx)
         .expect("insert typed manifest fixture");
     }
 

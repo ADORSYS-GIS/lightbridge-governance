@@ -18,7 +18,7 @@
 use std::fmt;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use cratestack::{CoolContext, CoolError, cool_error_from_sqlx, sqlx};
+use cratestack::{CratestackContext, CratestackError, cratestack_error_from_sqlx, sqlx};
 use sha2::{Digest, Sha256};
 
 use crate::schema::cratestack_schema::{
@@ -56,10 +56,10 @@ impl fmt::Display for CredentialSecret {
     }
 }
 
-fn generate_secret() -> Result<CredentialSecret, CoolError> {
+fn generate_secret() -> Result<CredentialSecret, CratestackError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
-        .map_err(|error| CoolError::Internal(format!("csprng failure: {error}")))?;
+        .map_err(|error| CratestackError::Internal(format!("csprng failure: {error}")))?;
     Ok(CredentialSecret(format!(
         "{SECRET_PREFIX}{}",
         URL_SAFE_NO_PAD.encode(bytes)
@@ -82,16 +82,16 @@ fn display_prefix(secret: &str) -> String {
 /// matching `createApiKey`'s handling of `projectId` in `lightbridge-authz`.
 pub async fn issue(
     db: &Cratestack,
-    ctx: &CoolContext,
+    ctx: &CratestackContext,
     args: IssueIntegrationCredentialInput,
-) -> Result<IntegrationCredential, CoolError> {
+) -> Result<IntegrationCredential, CratestackError> {
     let application = db
         .bind_context(ctx.clone())
         .application()
         .find_unique(args.applicationId.clone())
         .run()
         .await?
-        .ok_or_else(|| CoolError::Validation("application not found".to_owned()))?;
+        .ok_or_else(|| CratestackError::Validation("application not found".to_owned()))?;
 
     // `environmentId` must be a real, registered `Environment` under *this*
     // application -- not just any environment, or a caller could mint a
@@ -105,9 +105,9 @@ pub async fn issue(
         .find_unique(args.environmentId.clone())
         .run()
         .await?
-        .ok_or_else(|| CoolError::Validation("environment not found".to_owned()))?;
+        .ok_or_else(|| CratestackError::Validation("environment not found".to_owned()))?;
     if environment.applicationId != args.applicationId {
-        return Err(CoolError::Validation(
+        return Err(CratestackError::Validation(
             "environment does not belong to the given application".to_owned(),
         ));
     }
@@ -137,7 +137,7 @@ pub async fn issue(
     .bind(&args.internalUserId)
     .execute(db.pool())
     .await
-    .map_err(cool_error_from_sqlx)?;
+    .map_err(cratestack_error_from_sqlx)?;
 
     let integration = db
         .bind_context(ctx.clone())
@@ -145,7 +145,9 @@ pub async fn issue(
         .find_unique(id)
         .run()
         .await?
-        .ok_or_else(|| CoolError::Internal("just-inserted integration not found".to_owned()))?;
+        .ok_or_else(|| {
+            CratestackError::Internal("just-inserted integration not found".to_owned())
+        })?;
 
     Ok(IntegrationCredential {
         integration,
@@ -159,9 +161,9 @@ pub async fn issue(
 /// error -- only a genuinely unknown id is `NotFound`.
 pub async fn revoke(
     db: &Cratestack,
-    ctx: &CoolContext,
+    ctx: &CratestackContext,
     args: RevokeIntegrationCredentialInput,
-) -> Result<crate::schema::cratestack_schema::models::Integration, CoolError> {
+) -> Result<crate::schema::cratestack_schema::models::Integration, CratestackError> {
     sqlx::query(
         "UPDATE integrations SET status = 'revoked', revoked_at = now() \
          WHERE id = $1 AND status = 'active'",
@@ -169,14 +171,14 @@ pub async fn revoke(
     .bind(&args.integrationId)
     .execute(db.pool())
     .await
-    .map_err(cool_error_from_sqlx)?;
+    .map_err(cratestack_error_from_sqlx)?;
 
     db.bind_context(ctx.clone())
         .integration()
         .find_unique(args.integrationId)
         .run()
         .await?
-        .ok_or_else(|| CoolError::NotFound("integration not found".to_owned()))
+        .ok_or_else(|| CratestackError::NotFound("integration not found".to_owned()))
 }
 
 /// The identity a valid credential resolves to (#11's own AC: "returns the

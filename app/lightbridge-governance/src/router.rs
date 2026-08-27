@@ -11,7 +11,7 @@
 use std::future::Future;
 
 use axum::Router;
-use cratestack::{AuthProvider, CoolContext, CoolError, RequestContext, Value};
+use cratestack::{AuthProvider, CratestackContext, CratestackError, RequestContext, Value};
 use cratestack_codec_cbor::CborCodec;
 use governance_core::schema::cratestack_schema::{self, Cratestack};
 
@@ -19,12 +19,12 @@ use governance_core::schema::cratestack_schema::{self, Cratestack};
 pub struct GatewayAuthProvider;
 
 impl AuthProvider for GatewayAuthProvider {
-    type Error = CoolError;
+    type Error = CratestackError;
 
     fn authenticate(
         &self,
         request: &RequestContext<'_>,
-    ) -> impl Future<Output = Result<CoolContext, Self::Error>> + Send {
+    ) -> impl Future<Output = Result<CratestackContext, Self::Error>> + Send {
         let id = request
             .headers
             .get("x-auth-id")
@@ -32,8 +32,10 @@ impl AuthProvider for GatewayAuthProvider {
             .map(str::to_owned);
 
         core::future::ready(Ok(match id {
-            Some(id) => CoolContext::authenticated(vec![("id".to_owned(), Value::String(id))]),
-            None => CoolContext::anonymous(),
+            Some(id) => {
+                CratestackContext::authenticated(vec![("id".to_owned(), Value::String(id))])
+            }
+            None => CratestackContext::anonymous(),
         }))
     }
 }
@@ -47,9 +49,10 @@ impl cratestack_schema::procedures::ProcedureRegistry for Procedures {
     async fn issue_integration_credential(
         &self,
         db: &Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: cratestack_schema::procedures::issue_integration_credential::Args,
-    ) -> Result<cratestack_schema::procedures::issue_integration_credential::Output, CoolError>
+        _authorized: cratestack_schema::procedures::issue_integration_credential::Authorized,
+    ) -> Result<cratestack_schema::procedures::issue_integration_credential::Output, CratestackError>
     {
         governance_core::credential::issue(db, ctx, args.args).await
     }
@@ -57,14 +60,26 @@ impl cratestack_schema::procedures::ProcedureRegistry for Procedures {
     async fn revoke_integration_credential(
         &self,
         db: &Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: cratestack_schema::procedures::revoke_integration_credential::Args,
-    ) -> Result<cratestack_schema::procedures::revoke_integration_credential::Output, CoolError>
+        _authorized: cratestack_schema::procedures::revoke_integration_credential::Authorized,
+    ) -> Result<cratestack_schema::procedures::revoke_integration_credential::Output, CratestackError>
     {
         governance_core::credential::revoke(db, ctx, args.args).await
     }
 }
 
 pub fn build_router(db: Cratestack) -> Router {
-    cratestack_schema::axum::router(db, Procedures, CborCodec, GatewayAuthProvider)
+    // 0.8.x `router` signature: (db, registry, resolvers, codec, auth_provider,
+    // body_limit_bytes). `()` is the no-op `ComputedFieldResolver` (this schema
+    // declares no `@computed` fields); `DEFAULT_BODY_LIMIT_BYTES` is cratestack's
+    // 2 MiB ceiling, applied once as the outermost `DefaultBodyLimit` layer.
+    cratestack_schema::axum::router(
+        db,
+        Procedures,
+        (),
+        CborCodec,
+        GatewayAuthProvider,
+        cratestack::DEFAULT_BODY_LIMIT_BYTES,
+    )
 }

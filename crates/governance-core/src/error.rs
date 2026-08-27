@@ -25,7 +25,7 @@ pub enum Error {
     /// the boundary with the fields you actually want; never let `Display`
     /// surface it to a caller.
     #[error("storage error")]
-    Storage(#[from] cratestack_core::CoolError),
+    Storage(#[from] cratestack_core::CratestackError),
 }
 
 /// Convenience alias for fallible governance operations.
