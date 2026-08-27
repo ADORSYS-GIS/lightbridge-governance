@@ -200,3 +200,4 @@ pub use payload::{ScanReport, scan_request, scan_response};
 pub use profile::{Action, Profile};
 pub use sse::{SseEmit, SseHoldBack};
 pub use streaming::{StreamOutcome, scan_sse};
+// extra line to grow past the grandfathered baseline
