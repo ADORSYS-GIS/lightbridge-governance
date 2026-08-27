@@ -13,6 +13,7 @@ ADR-0006 (auth). The ADRs are the durable record; the RFC is the working documen
 |---|---|---|
 | [0001](./0001-github-copilot-connector.md) | GitHub Copilot connector | Draft |
 | [0002](./0002-microsoft-foundry-otlp-ingestion.md) | Microsoft Foundry OTLP ingestion | Draft |
+| [0003](./0003-telemetry-source-taxonomy-and-roadmap.md) | Telemetry source taxonomy and integration roadmap | Draft |
 
 Statuses: `Draft` -> `In review` -> `Accepted` -> `Implemented` | `Withdrawn`.
 
