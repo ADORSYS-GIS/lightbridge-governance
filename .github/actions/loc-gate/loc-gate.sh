@@ -50,9 +50,19 @@ in_paths() {
 # Three-dot diff (merge-base..head) so only files this change actually touched
 # are considered, not everything that differs from the base branch tip.
 fail=0
-while IFS=$'\t' read -r status path; do
+# `git diff --name-status` emits a rename as `R<score>\t<old>\t<new>` (rename
+# detection is on by default). Reading only `status path` would swallow the new
+# path into `path` as `old\tnew` (tab included), so the `-f` check below would
+# fail and the renamed file would be skipped unmeasured. Capture the third field
+# and, for renames, measure the NEW path while keeping the OLD path's
+# grandfathered ceiling — a rename is "touching", not "growing".
+while IFS=$'\t' read -r status path newpath; do
   case "${status}" in
-    A | M | R) ;; # added, modified, renamed — measure these
+    A | M) ;; # added, modified — measure `path`
+    R*) # renamed — measure the new path, keep the old path's ceiling
+      baseline_key="${path}"
+      path="${newpath}"
+      ;;
     *) continue ;; # D (deleted), C (copied) and anything else — ignore
   esac
 
@@ -61,7 +71,7 @@ while IFS=$'\t' read -r status path; do
   [[ -f "${path}" ]] || continue
 
   count="$(wc -l < "${path}" | tr -d '[:space:]')"
-  ceiling="${BASELINE[${path}]:-${THRESHOLD}}"
+  ceiling="${BASELINE[${baseline_key:-${path}}]:-${THRESHOLD}}"
 
   if (( count > ceiling )); then
     echo "::error file=${path}::${path}: ${count} LoC exceeds the allowed ceiling of ${ceiling}"
