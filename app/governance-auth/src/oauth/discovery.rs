@@ -17,12 +17,12 @@ pub struct OidcMetadata {
     /// `Option`, not `String`, and this is load-bearing rather than defensive.
     ///
     /// OIDC Discovery 1.0 §3 marks this REQUIRED, but only for providers that
-    /// actually serve an authorization endpoint. `lightbridge-authz` serves
-    /// none -- it has no `/authorize` route and never redirects a user-agent,
-    /// so it omits the field deliberately and correctly (see its `signing.rs`,
-    /// "Authorization endpoint -- never advertised, in either state").
+    /// actually serve an authorization endpoint -- one that serves none omits
+    /// it deliberately and correctly. `lightbridge-authz` used to be exactly
+    /// that server; since its ADR-0025 moved subject ownership to authz it
+    /// serves `/authorize` and advertises the field. The leniency still holds.
     ///
-    /// Requiring it here meant `--exchange-issuer` could not discover that
+    /// Requiring it here meant `--exchange-issuer` could not discover such a
     /// server AT ALL, failing with a raw serde message
     /// (`missing field 'authorization_endpoint'`) before any request was made.
     /// Token exchange is a direct POST to the token endpoint and never touches
@@ -170,10 +170,10 @@ fn validate(issuer: &str, issuer_url: &Url, metadata: &OidcMetadata) -> Result<(
         );
     }
 
-    // Pinned WHEN PRESENT. Absent is a legitimate state (a server that serves
-    // no authorization endpoint, e.g. lightbridge-authz), not a reason to skip
-    // the check when it IS advertised -- an omitted field must never become a
-    // way to dodge origin pinning.
+    // Pinned WHEN PRESENT. Absent is a legitimate state -- OIDC Discovery §3
+    // requires the field only of providers that actually serve one -- not a
+    // reason to skip the check when it IS advertised: an omitted field must
+    // never become a way to dodge origin pinning.
     if let Some(authorization_endpoint) = &metadata.authorization_endpoint {
         require_same_origin(issuer_url, authorization_endpoint, "authorization_endpoint")?;
     }
