@@ -1,0 +1,43 @@
+name: LoC Gate
+description: >-
+  Fails when a Rust file added or modified in a PR exceeds the 200-LoC ceiling.
+  Files already over the ceiling are grandfathered against a committed baseline:
+  they may be touched but must not grow. See ADORSYS-GIS/lightbridge-governance#172.
+inputs:
+  base-sha:
+    description: >-
+      Commit to diff against (the PR base, or the previous commit on a push).
+      Required so the gate only inspects files this change actually touched.
+    required: true
+  head-sha:
+    description: Commit whose tree is measured (defaults to the current checkout).
+    required: false
+    default: ${{ github.sha }}
+  threshold:
+    description: Maximum allowed lines of code per file.
+    required: false
+    default: "200"
+  baseline-file:
+    description: >-
+      Path to the committed grandfather baseline. Maps each already-over-limit
+      file to the line count it is allowed to keep (but not exceed).
+    required: false
+    default: .github/loc-baseline.json
+  paths:
+    description: >-
+      Space-separated roots to scan for Rust files. Files outside these roots
+      are ignored.
+    required: false
+    default: crates app
+runs:
+  using: composite
+  steps:
+    - name: Run the LoC gate
+      shell: bash
+      env:
+        INPUT_BASE_SHA: ${{ inputs.base-sha }}
+        INPUT_HEAD_SHA: ${{ inputs.head-sha }}
+        INPUT_THRESHOLD: ${{ inputs.threshold }}
+        INPUT_BASELINE_FILE: ${{ inputs.baseline-file }}
+        INPUT_PATHS: ${{ inputs.paths }}
+      run: ${{ github.action_path }}/loc-gate.sh

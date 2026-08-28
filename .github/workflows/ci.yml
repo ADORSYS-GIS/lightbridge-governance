@@ -33,6 +33,24 @@ jobs:
       - run: cargo +nightly fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # Blocks new or changed Rust files over 200 LoC (ADORSYS-GIS/lightbridge-governance#172).
+  # Diff-scoped: only files this change actually touched are measured, and files
+  # already over the ceiling are grandfathered against .github/loc-baseline.json —
+  # they may be touched but must not grow. Runs in parallel with the other checks
+  # so a size violation fails fast without waiting on the full build.
+  loc-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The gate diffs base..head, so the full history must be present to
+          # resolve the merge-base. A shallow (depth: 1) checkout cannot.
+          fetch-depth: 0
+      - uses: ./.github/actions/loc-gate
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+
   test:
     needs: code-checks
     runs-on: ubuntu-latest
