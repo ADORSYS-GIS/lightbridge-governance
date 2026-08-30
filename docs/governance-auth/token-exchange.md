@@ -2,6 +2,22 @@
 
 **Off by default. Opt-in only.** Nothing changes unless you turn it on.
 
+> ⚠️ **Not available against `auth.ai.camer.digital`.** As of 2026-08-31 the
+> `token-exchange` grant is removed from the `governance-auth-cli` client
+> ([`ai-helm-values`#329](https://github.com/ADORSYS-GIS/ai-helm-values/pull/329)), and
+> `governance-auth-exchange-cli` was never registered. Turning this on against our gateway
+> returns `400 unauthorized_client` — *"Client is not authorized to use token_exchange grant
+> type"* (verified against the deployment).
+>
+> The reason is that the premise expired. Exchange exists to trade an identity-provider token
+> for one of ours; since ADR-0025 gave `authz-idp` subject ownership, `governance-auth` logs
+> in against our IdP directly and is handed our token to begin with. There is no second
+> credential to trade for. Use `governance-auth login --device-code`.
+>
+> **This page still documents the feature accurately** — it is a capability of the binary,
+> not of one deployment, and an install that registers an exchange client can still use it.
+> Read it as reference, not as instructions for this gateway.
+
 Some deployments want `token`/`otel-headers` to present a *different*, downstream-minted
 credential rather than the raw token issued by `--issuer` — typically exchanging the
 identity-provider access token for a project-scoped token minted by `lightbridge-authz`'s
@@ -81,18 +97,23 @@ change to the *upstream* client registration, not to anything here. See lightbri
 
 ## An exchange server with no `authorization_endpoint`
 
-`--exchange-issuer` works against a server that serves **no** `authorization_endpoint`.
-`lightbridge-authz` is exactly that: it has no `/authorize` route and omits the field, which
-OIDC Discovery §3 permits for a provider that supports no authorization endpoint.
-
-Requiring the field used to make this exact command fail with
-`missing field 'authorization_endpoint'`
+`--exchange-issuer` tolerates a server that serves **no** `authorization_endpoint`, which
+OIDC Discovery §3 permits for a provider that supports no authorization endpoint. Requiring
+the field used to make this exact command fail with `missing field 'authorization_endpoint'`
 ([#145](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/145)). Fixed, and pinned
-by a test whose mock now reproduces authz's real discovery document.
+by a test.
 
-The practical consequence: the exchange server is **not** a drop-in replacement for
-`--issuer`. Without an authorization endpoint it cannot serve the interactive login at all,
-so the working configuration is *log in at the identity provider, exchange at authz*.
+⚠️ **`lightbridge-authz` is no longer an example of such a server.** This section used to say
+it "has no `/authorize` route and omits the field". Since ADR-0025 moved subject ownership to
+authz, `authz-idp` **does** serve `/authorize` and **does** advertise
+`authorization_endpoint`; `lightbridge-console` runs the browser authorization-code flow
+against it in production. The leniency above is still correct and still wanted -- it just no
+longer describes this deployment.
+
+That also retires the conclusion this section used to draw. "The exchange server cannot serve
+the interactive login, so log in at the IdP and exchange at authz" is obsolete: authz **is**
+the IdP now. For `governance-auth-cli` specifically the token-exchange grant has been removed
+altogether -- see the banner at the top of this page.
 
 ## Verification status
 
