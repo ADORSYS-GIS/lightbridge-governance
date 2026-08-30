@@ -124,9 +124,12 @@ the exchange server checks the audience twice against two different values. See
 
 **`missing field 'authorization_endpoint'`**
 
-An old build refusing a discovery document that legitimately omits the field — which
-`lightbridge-authz` does, having no `/authorize` route. Fixed in
+An old build refusing a discovery document that legitimately omits the field. Fixed in
 [#145](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/145); update.
+
+(This entry used to add "which `lightbridge-authz` does, having no `/authorize` route".
+That is no longer true — `authz-idp` serves `/authorize` and advertises
+`authorization_endpoint`. The fix still stands for issuers that genuinely omit it.)
 
 **Exchange succeeds but the gateway returns 403**
 
