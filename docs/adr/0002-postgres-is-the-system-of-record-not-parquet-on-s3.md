@@ -4,6 +4,12 @@
 - Date: 2026-07-31
 - Decision owners: @stephane-segning
 
+> **Amendment note (2026-08-31, [ADR-0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md)).**
+> For telemetry data, the Postgres in question is now the `lightbridge-authz` usage store, not a
+> governance-owned database in this repo. This ADR's reasoning stands unchanged — Postgres over
+> Parquet-on-S3, with S3 as the raw archive (and, per ADR-0014, as the replay/backfill source).
+> Only its target moved. The body below is left exactly as written.
+
 ## Context
 
 The Copilot source spec specifies "no new database": keep detailed data as partitioned

@@ -4,6 +4,12 @@
 - Date: 2026-07-31
 - Decision owners: @stephane-segning
 
+> **Amendment note (2026-08-31, [ADR-0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md)).**
+> For telemetry data, "the governance database" Grafana reads is now the `lightbridge-authz` usage
+> store. This ADR's reasoning stands unchanged — dashboards read business/reporting data from
+> Postgres rather than from Mimir, and the cardinality argument is unaffected. Only the target
+> moved. The body below is left exactly as written.
+
 > **Amendment note (2026-08-07, ADR-0011).** One sentence in the Decision below is no
 > longer true as written: "Mimir keeps only the ~10 low-cardinality
 > `governance_connector_*` operational metrics ... and nothing else." ADR-0011 adds a
