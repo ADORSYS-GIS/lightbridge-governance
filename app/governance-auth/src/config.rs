@@ -57,9 +57,13 @@ const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS: u64 = 240_000;
 /// not just a unit test.
 #[derive(Debug, Clone, Args)]
 pub struct OauthConfigArgs {
-    /// Base URL of the issuing OIDC realm, e.g.
-    /// `https://auth.ai.camer.digital/realms/platform`. OIDC discovery is
+    /// Base URL of the issuing OIDC provider, e.g.
+    /// `https://auth.ai.camer.digital`. OIDC discovery is
     /// used to find the authorization/token/device endpoints underneath it.
+    /// Note there is no realm path: `authz-idp` is the issuer itself, not a
+    /// Keycloak realm. It brokers to Keycloak internally, but that is its
+    /// business and never appears in this URL -- a `/realms/...` suffix here
+    /// 404s at discovery.
     /// Must be `https://`, unless it's a loopback address
     /// (`127.0.0.1`/`::1`/`localhost`) -- see [`crate::security`]. Validated
     /// here, at parse time, rather than left to fail at first network use:
