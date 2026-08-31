@@ -1,9 +1,20 @@
 //! Authorization Code + PKCE via a localhost loopback redirect (RFC 8252,
-//! the native-app pattern). Default interactive flow: binds an ephemeral
-//! port, prints the authorize URL, and blocks for exactly one HTTP request
-//! -- the redirect back from the authorization server. Launching the system
-//! browser automatically is opt-in (`config.open_browser`, issue #141) --
-//! see that field's doc in `crate::config` for why it isn't the default.
+//! the native-app pattern). Binds one of a small block of **fixed**,
+//! pre-registered ports (see [`crate::oauth::callback_port`]), prints the
+//! authorize URL,
+//! and blocks for exactly one HTTP request -- the redirect back from the
+//! authorization server. Launching the system browser automatically is opt-in
+//! (`config.open_browser`, issue #141) -- see that field's doc in
+//! `crate::config` for why it isn't the default.
+//!
+//! ⚠️ The fixed ports are a **workaround for a server-side spec violation**,
+//! not a design preference. RFC 8252 §7.3 says the authorization server MUST
+//! allow any port for a loopback redirect, precisely so a native app can take
+//! an ephemeral one from the OS. `authkestra-op` matches redirect URIs with a
+//! plain `==`, so an ephemeral port can never match a registration and the
+//! flow fails 100% of the time. Filed upstream as
+//! <https://github.com/marcjazz/authkestra/issues/291>; revert to
+//! `bind(("127.0.0.1", 0))` and delete that module once it is fixed.
 //!
 //! ⚠️ PKCE (`code_challenge`/`code_challenge_method=S256`, below) is
 //! unconditional, not a flag. RFC 8252 / OAuth 2.1 require it for public
@@ -19,7 +30,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use url::Url;
 
-use super::{OidcMetadata, token_endpoint};
+use super::{OidcMetadata, callback_port, token_endpoint};
 use crate::{browser, cache::CachedSession, config::OauthConfig, oauth::pkce};
 
 pub async fn run(
@@ -27,8 +38,7 @@ pub async fn run(
     config: &OauthConfig,
     metadata: &OidcMetadata,
 ) -> Result<CachedSession> {
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).context("binding loopback callback listener")?;
+    let listener = callback_port::bind()?;
     let port = listener
         .local_addr()
         .context("reading loopback listener address")?
