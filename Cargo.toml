@@ -41,6 +41,15 @@ toml_edit = { version = "0.25", features = ["serde"] }
 # pulls `loader` (filesystem template loading), which this binary must not have
 # -- templates are `include_str!`d at compile time so a single shipped file has
 # no runtime template directory to find, or to be swapped.
+# `status`'s human dashboard. Here for `user_attended()` -- TTY detection, not
+# colour: `token` runs as a subprocess every few minutes and must stay silent,
+# and stdout is a parsed contract. Styling is a side benefit.
+#
+# A table crate (comfy-table) was tried and dropped: for a five-row key/value
+# summary every preset drew either an empty header band, a rule between every
+# row, or vertical separators. Hand-aligned columns read better and are one
+# fewer dependency in a binary that holds a refresh token.
+console = "0.16"
 minijinja = { version = "2.24", default-features = false, features = [
   "builtins",
   # Required, not optional: `context!` builds a serde value, and without this
