@@ -20,7 +20,7 @@ pub use discovery::OidcMetadata;
 use crate::{
     cache::{self, CachedSession, FileLock},
     config::OauthConfig,
-    config_file, config_persist, otel,
+    config_file, config_persist, dashboard, otel,
     redacted::Redacted,
 };
 
@@ -322,17 +322,36 @@ pub fn configure(config: &OauthConfig) -> Result<()> {
 }
 
 pub fn status(config: &OauthConfig) -> Result<()> {
-    match cache::load(&config.issuer, &config.client_id)? {
-        Some(session) => {
-            let fresh = session.is_fresh()?;
-            let expires_in = session.seconds_until_expiry()?;
-            eprintln!(
-                "session cached, {}, expires in {expires_in}s",
-                if fresh { "fresh" } else { "needs refresh" },
-            );
-        }
-        None => eprintln!("no cached session"),
+    let state = match cache::load(&config.issuer, &config.client_id)? {
+        Some(session) => dashboard::Session {
+            cached: true,
+            fresh: session.is_fresh()?,
+            expires_in: session.seconds_until_expiry()?,
+        },
+        None => dashboard::Session {
+            cached: false,
+            fresh: false,
+            expires_in: 0,
+        },
+    };
+
+    // Plain line unless a human is looking. The three strings below are a
+    // documented surface (`commands.md`) that a test asserts on, and `status`
+    // may be piped; the table is an addition, never a replacement.
+    if !dashboard::attended() {
+        eprintln!("{}", dashboard::plain(&state));
+        return Ok(());
     }
+
+    let targets = std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(|home| dashboard::targets(std::path::Path::new(&home)))
+        .unwrap_or_default();
+    eprintln!(
+        "{}",
+        dashboard::render(&config.issuer, &config.client_id, &state, &targets)
+    );
     Ok(())
 }
 
