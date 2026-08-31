@@ -38,6 +38,11 @@ use crate::redacted::Redacted;
 /// can't drift to different endpoints or protocols.
 #[derive(Debug, Clone)]
 pub struct OtelSettings {
+    /// The resolved issuer and client id, exported into the developer's shell
+    /// so `governance-auth` itself works from any terminal without flags, and
+    /// so a helper subprocess that does not inherit them can still resolve.
+    pub issuer: String,
+    pub client_id: String,
     /// Collector base URL, e.g. `https://otel.ai.camer.digital`. Signal
     /// suffixes (`/v1/metrics`, `/v1/logs`, `/v1/traces`) are appended by the
     /// SDKs themselves from this base -- do not include one here.
@@ -210,6 +215,48 @@ const BLOCK_END: &str = "# <<< governance-auth otel (managed) <<<";
 /// POSIX rc files, then fish (different syntax, different path).
 const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profile"];
 
+/// Every variable placed in the developer's shell, in a stable order.
+///
+/// ⚠️ This is the ONLY channel some clients have. VS Code Copilot has no
+/// settings key for OTLP headers, and Codex reads OTEL configuration from the
+/// environment rather than from its own config file -- so a value that exists
+/// only in Claude Code's `settings.json` reaches exactly one of the three
+/// tools. Claude Code gets these through `settings.json` too (see
+/// [`claude_code_env`]); the duplication is deliberate, because a developer who
+/// launches Claude Code from a desktop icon has no shell to inherit from.
+///
+/// `GOVERNANCE_AUTH_ISSUER`/`_CLIENT_ID` are here so the binary itself works
+/// from any terminal with no flags, which is the other half of what `login`
+/// persisting its settings buys (see `config_persist`): the file covers this
+/// binary, the environment covers everything that shells out to it.
+fn shell_exports(settings: &OtelSettings) -> Vec<(&'static str, String)> {
+    let mut exports = vec![
+        ("GOVERNANCE_AUTH_ISSUER", settings.issuer.clone()),
+        ("GOVERNANCE_AUTH_CLIENT_ID", settings.client_id.clone()),
+    ];
+    if let Some(base_url) = settings.anthropic_base_url() {
+        exports.push(("ANTHROPIC_BASE_URL", base_url));
+    }
+    if let Some(endpoint) = &settings.endpoint {
+        exports.push(("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()));
+        exports.push(("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()));
+        exports.push(("OTEL_METRICS_EXPORTER", "otlp".to_owned()));
+        exports.push(("OTEL_LOGS_EXPORTER", "otlp".to_owned()));
+        exports.push((
+            "OTEL_RESOURCE_ATTRIBUTES",
+            settings.resource_attributes_value(),
+        ));
+    }
+    // Last, and only with a collector to send it to: an exported Authorization
+    // header with no endpoint authenticates to nothing.
+    if settings.endpoint.is_some()
+        && let Some(headers) = settings.headers_value()
+    {
+        exports.push(("OTEL_EXPORTER_OTLP_HEADERS", headers));
+    }
+    exports
+}
+
 /// Exports the OTLP credential into the developer's shell, which is the only
 /// way VS Code Copilot can be authenticated -- it has no settings key for
 /// OTLP headers (see [`configure_vscode`]).
@@ -229,43 +276,32 @@ const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profi
 /// authenticating Copilot at all, not a choice made here. Callers should say
 /// so out loud.
 pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
-    if settings.endpoint.is_none() {
-        // No telemetry endpoint means an exported OTLP header would
-        // authenticate to nothing -- this writer exists only to carry the
-        // credential VS Code Copilot needs, which is meaningless without a
-        // collector to send it to.
+    let exports = shell_exports(settings);
+    if exports.is_empty() {
+        // Nothing to place, and an rc block that exports nothing is just noise
+        // in someone's shell startup.
         return Ok(Vec::new());
     }
-    let Some(headers) = settings.headers_value() else {
-        // Nothing secret to place, and an rc block that exports nothing is
-        // just noise in someone's shell startup.
-        return Ok(Vec::new());
-    };
 
     let env_dir = home.join(".config").join("governance-auth");
     fs::create_dir_all(&env_dir).with_context(|| format!("creating {}", env_dir.display()))?;
 
     let posix_env = env_dir.join("otel.env");
-    write_atomically(
-        &posix_env,
-        format!(
-            "# Written by `governance-auth`. Mode 0600 on purpose: this file holds a\n\
-             # credential. It is sourced from your shell rc file so the rc file itself\n\
-             # stays safe to commit.\n\
-             export OTEL_EXPORTER_OTLP_HEADERS='{headers}'\n"
-        )
-        .as_bytes(),
-    )?;
+    let mut posix = String::from(
+        "# Written by `governance-auth`. Mode 0600 on purpose: this file can hold a\n\
+         # credential. It is sourced from your shell rc file so the rc file itself\n\
+         # stays safe to commit.\n",
+    );
+    let mut fish =
+        String::from("# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n");
+    for (key, val) in &exports {
+        posix.push_str(&format!("export {key}='{val}'\n"));
+        fish.push_str(&format!("set -gx {key} '{val}'\n"));
+    }
+    write_atomically(&posix_env, posix.as_bytes())?;
 
     let fish_env = env_dir.join("otel.fish");
-    write_atomically(
-        &fish_env,
-        format!(
-            "# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n\
-             set -gx OTEL_EXPORTER_OTLP_HEADERS '{headers}'\n"
-        )
-        .as_bytes(),
-    )?;
+    write_atomically(&fish_env, fish.as_bytes())?;
 
     let mut outcomes = vec![
         Outcome::Written(posix_env.clone()),
@@ -831,6 +867,8 @@ mod tests {
 
     fn settings() -> OtelSettings {
         OtelSettings {
+            issuer: "https://auth.example".to_owned(),
+            client_id: "cli".to_owned(),
             endpoint: Some("https://otel.example.com".to_owned()),
             token: Some(Redacted::new("ingest-token".to_owned())),
             headers_helper: None,
@@ -1312,18 +1350,27 @@ mod tests {
     }
 
     #[test]
-    fn no_token_writes_no_shell_block_at_all() {
+    fn no_token_exports_everything_except_the_header() {
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed");
         let mut without = settings();
         without.token = None;
 
         let outcomes = configure_shell_env(home.path(), &without).expect("configure");
-        assert!(outcomes.is_empty(), "nothing to export, so nothing written");
-        assert_eq!(
-            fs::read_to_string(home.path().join(".bashrc")).expect("read"),
-            "# mine\n",
-            "an rc block exporting nothing is just noise"
+        assert!(
+            !outcomes.is_empty(),
+            "issuer/client-id still belong in the shell so the binary needs no flags"
+        );
+
+        let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
+            .expect("env file");
+        assert!(env.contains("GOVERNANCE_AUTH_ISSUER"), "{env}");
+        assert!(env.contains("OTEL_EXPORTER_OTLP_ENDPOINT"), "{env}");
+        // The point that survived the behaviour change: no credential exists,
+        // so no Authorization header may be exported.
+        assert!(
+            !env.contains("OTEL_EXPORTER_OTLP_HEADERS"),
+            "exported a header with no token: {env}"
         );
     }
 
@@ -1385,6 +1432,8 @@ mod tests {
     /// `OtelSettings`, let alone calling into these writers.
     fn settings_gateway_only() -> OtelSettings {
         OtelSettings {
+            issuer: "https://auth.example".to_owned(),
+            client_id: "cli".to_owned(),
             endpoint: None,
             headers_helper: None,
             ..settings_with_gateway()
@@ -1473,24 +1522,33 @@ mod tests {
     }
 
     #[test]
-    fn shell_env_is_untouched_without_an_otel_endpoint() {
+    fn no_otel_endpoint_exports_no_otel_variables() {
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
 
         let outcomes =
             configure_shell_env(home.path(), &settings_gateway_only()).expect("configure");
         assert!(
-            outcomes.is_empty(),
-            "nothing to export without a telemetry endpoint"
+            !outcomes.is_empty(),
+            "gateway + identity still get exported"
         );
 
-        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
-        assert_eq!(bashrc, "# mine\n", "rc file must be left untouched");
+        let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
+            .expect("env file");
+        assert!(env.contains("ANTHROPIC_BASE_URL"), "{env}");
+        assert!(env.contains("GOVERNANCE_AUTH_CLIENT_ID"), "{env}");
+        // No collector means every OTEL_* variable would point at nothing.
         assert!(
-            !home
-                .path()
-                .join(".config/governance-auth/otel.env")
-                .exists()
+            !env.contains("OTEL_"),
+            "exported OTEL config with no endpoint: {env}"
+        );
+
+        // The rc file is still only ever a `source` line inside the markers.
+        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
+        assert!(bashrc.starts_with("# mine\n"), "clobbered the user's file");
+        assert!(
+            !bashrc.contains("ANTHROPIC_BASE_URL"),
+            "secret-adjacent value inlined into rc"
         );
     }
 
