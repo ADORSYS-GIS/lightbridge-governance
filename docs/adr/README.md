@@ -22,6 +22,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0012](./0012-governance-auth-packaging-and-distribution.md) | `governance-auth` on-disk layout, packaging and distribution | Proposed | 2026-08-14 |
 | [0013](./0013-telemetry-ingest-invariants-and-the-declaration-gate.md) | Bind every telemetry source to six ingest invariants, declared before implementation | Proposed | 2026-08-27 |
 | [0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md) | Usage telemetry consolidates into the authz usage store — this repo keeps the collectors, not the tables | Accepted | 2026-08-31 |
+| [0015](./0015-pin-the-loopback-callback-to-a-registered-port-block.md) | Pin the loopback callback to a registered port block until RFC 8252 §7.3 lands upstream | Accepted | 2026-08-31 |
 
 ⚠️ **Number collision**: `0010` is used by two ADRs. Both are listed above so
 neither is invisible, but the number needs resolving — renumbering changes
