@@ -2,9 +2,9 @@
 //!
 //! State, not cache, for the same reason the session is (see
 //! [`crate::cache`]'s module doc): losing this file does not log anyone out,
-//! but it does mean the next run re-pushes the whole spool, which is
-//! duplicate billing data at the collector. macOS purging
-//! `~/Library/Caches` must not be able to cause that.
+//! but it does mean the next run re-pushes the whole spool, which is duplicate
+//! billing data. macOS purging `~/Library/Caches` must not be able to cause
+//! that.
 //!
 //! ## Why an unparseable checkpoint is fatal
 //!
@@ -23,6 +23,8 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::push::Signal;
+
 /// The file name under the state dir. Sibling of the session files, which are
 /// named by `sha256(issuer + client_id)` -- this one is not, deliberately:
 /// the spool is a property of the *machine's* VS Code install, not of which
@@ -30,19 +32,83 @@ use serde::{Deserialize, Serialize};
 /// each skip the other's bytes.
 pub const FILE_NAME: &str = "copilot-push.json";
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+/// `PartialEq` so a run can compare what it loaded with what it is about to
+/// write and skip the write when nothing moved -- a failed export must not
+/// even create this file, because "no checkpoint" is how a drain that has
+/// never delivered anything is meant to look.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
-    /// Bytes of the spool already transformed and accepted by the collector.
+    /// Bytes both signals have delivered: the smaller of the two below, and
+    /// therefore the byte the next drain starts at. Kept as its own field
+    /// rather than derived on read so `status` and anyone reading the file by
+    /// hand see one obvious number.
     #[serde(default)]
     pub offset: u64,
+    /// Bytes `/v1/metrics` has accepted. `None` on a file written before this
+    /// field existed, where [`Self::signal_offset`] falls back to `offset` --
+    /// defaulting it to 0 would re-export the whole spool after an upgrade.
+    #[serde(default)]
+    pub metrics_offset: Option<u64>,
+    /// Bytes `/v1/logs` has accepted. Separate because a collector can take
+    /// one signal and refuse the other; with a single offset the accepted half
+    /// is rebuilt and re-posted on every later wake.
+    #[serde(default)]
+    pub logs_offset: Option<u64>,
     /// Unix seconds of the last push the collector accepted. `None` until one
-    /// succeeds -- `status` shows "never", which is the point: a timer that
-    /// has been failing since it was installed must not look like a fresh one.
+    /// succeeds -- `status` shows "never", which is the point: a timer failing
+    /// since it was installed must not look like a fresh one.
     #[serde(default)]
     pub last_push_unix: Option<u64>,
     /// Records in that push. Zero is legitimate (a run with nothing new).
     #[serde(default)]
     pub last_push_records: u64,
+    /// Records consumed and never delivered, over the life of this checkpoint.
+    /// The drain is allowed to give up on a record it cannot translate or the
+    /// collector will not take; this is what stops it doing so quietly. The
+    /// timestamp lets `status` tell "broke today" from "lost one last spring".
+    #[serde(default)]
+    pub discarded_total: u64,
+    #[serde(default)]
+    pub last_discard_unix: Option<u64>,
+}
+
+impl Checkpoint {
+    pub fn signal_offset(&self, signal: Signal) -> u64 {
+        match signal {
+            Signal::Metrics => self.metrics_offset,
+            Signal::Logs => self.logs_offset,
+        }
+        .unwrap_or(self.offset)
+    }
+
+    /// Records that `signal` is accepted up to `to`, and re-derives the shared
+    /// `offset` as the smaller of the two -- the only byte both signals agree
+    /// is delivered, and so the only safe place to resume.
+    pub fn advance(&mut self, signal: Signal, to: u64) {
+        match signal {
+            Signal::Metrics => self.metrics_offset = Some(to),
+            Signal::Logs => self.logs_offset = Some(to),
+        }
+        self.offset = self
+            .signal_offset(Signal::Metrics)
+            .min(self.signal_offset(Signal::Logs));
+    }
+
+    /// A rotation invalidates every offset: the file they described is gone.
+    pub fn restart(&mut self) {
+        self.offset = 0;
+        self.metrics_offset = Some(0);
+        self.logs_offset = Some(0);
+    }
+
+    pub fn record_discards(&mut self, count: u64) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        self.discarded_total = self.discarded_total.saturating_add(count);
+        self.last_discard_unix = Some(now_unix()?);
+        Ok(())
+    }
 }
 
 pub fn path(state_dir: &Path) -> PathBuf {

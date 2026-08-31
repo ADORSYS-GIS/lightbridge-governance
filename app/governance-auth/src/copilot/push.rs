@@ -47,15 +47,52 @@ pub fn endpoint(base: &str, signal: Signal) -> String {
     format!("{}{}", base.trim_end_matches('/'), signal.path())
 }
 
-/// Posts one signal's payload. Anything but a 2xx is an error, so the caller
-/// leaves the checkpoint where it is and the same bytes are retried next run.
+/// What the collector said, in the only two categories the drain can act on
+/// differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Accepted,
+    /// The collector will never accept these bytes, however many times they
+    /// are offered. [`super::export`] may isolate and give up on the record
+    /// responsible; every other failure is an `Err` and leaves the offset
+    /// alone.
+    Refused(reqwest::StatusCode),
+}
+
+/// The statuses that mean "this payload", not "this moment" or "this
+/// deployment". Deliberately a short allowlist rather than "any 4xx":
+///
+/// - **401/403** is the token, and discarding telemetry because a credential
+///   expired would be the worst possible reading of a temporary failure.
+/// - **404** is a typo'd `--otel-endpoint`. Treating it as a bad record would
+///   empty the spool into a URL that does not exist.
+/// - **408/429** are explicitly "try again".
+///
+/// What is left is the collector saying the *content* is unacceptable: a
+/// malformed payload (400/422) or one too large for its body limit (413).
+fn is_permanent(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST
+            | reqwest::StatusCode::PAYLOAD_TOO_LARGE
+            | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    )
+}
+
+/// Posts one signal's payload.
+///
+/// A retryable failure is an `Err`, so the caller leaves the checkpoint where
+/// it is and the same bytes go again next run. A permanent refusal comes back
+/// as [`Verdict::Refused`] instead, because retrying it forever is not
+/// "leaving the bytes pending" -- it is stopping the stream at that offset for
+/// good.
 pub async fn post(
     http: &reqwest::Client,
     base: &str,
     signal: Signal,
     bearer: &Redacted<String>,
     payload: &Value,
-) -> Result<()> {
+) -> Result<Verdict> {
     let url = endpoint(base, signal);
     let response = http
         .post(&url)
@@ -67,9 +104,12 @@ pub async fn post(
         .with_context(|| format!("posting {signal} to {url}"))?;
 
     let status = response.status();
-    if !status.is_success() {
-        // Body deliberately omitted -- see the module doc.
-        bail!("the collector rejected the {signal} export at {url} with HTTP {status}");
+    if status.is_success() {
+        return Ok(Verdict::Accepted);
     }
-    Ok(())
+    if is_permanent(status) {
+        return Ok(Verdict::Refused(status));
+    }
+    // Body deliberately omitted -- see the module doc.
+    bail!("the collector rejected the {signal} export at {url} with HTTP {status}");
 }

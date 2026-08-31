@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use super::super::checkpoint;
+use super::super::{checkpoint, push::Signal};
 
 struct TempDir(PathBuf);
 
@@ -41,20 +41,59 @@ fn a_stored_checkpoint_round_trips() {
     let path = checkpoint::path(&dir.0);
     let written = checkpoint::Checkpoint {
         offset: 4096,
+        metrics_offset: Some(8192),
+        logs_offset: Some(4096),
         last_push_unix: Some(1_788_191_916),
         last_push_records: 12,
+        discarded_total: 3,
+        last_discard_unix: Some(1_788_191_900),
     };
 
     checkpoint::store(&path, &written).expect("storing");
     let read = checkpoint::load(&path).expect("loading");
 
     assert_eq!(read.offset, 4096);
+    assert_eq!(read.metrics_offset, Some(8192));
+    assert_eq!(read.logs_offset, Some(4096));
     assert_eq!(read.last_push_unix, Some(1_788_191_916));
     assert_eq!(read.last_push_records, 12);
+    assert_eq!(read.discarded_total, 3);
+    assert_eq!(read.last_discard_unix, Some(1_788_191_900));
     assert!(
         !path.with_extension("json.tmp").exists(),
         "the tmp file must be renamed away, not left behind"
     );
+}
+
+/// A checkpoint written before the per-signal offsets existed carries only
+/// `offset`. Defaulting the two new fields to 0 would make the first run after
+/// an upgrade re-export the entire spool -- duplicated usage data, caused by a
+/// version bump.
+#[test]
+fn a_checkpoint_from_an_older_build_does_not_rewind_either_signal() {
+    let dir = TempDir::new("upgrade");
+    let path = checkpoint::path(&dir.0);
+    std::fs::write(&path, br#"{"offset":4096,"last_push_records":7}"#)
+        .expect("planting a pre-upgrade checkpoint");
+
+    let state = checkpoint::load(&path).expect("loading");
+
+    assert_eq!(state.signal_offset(Signal::Metrics), 4096);
+    assert_eq!(state.signal_offset(Signal::Logs), 4096);
+}
+
+/// The shared offset is the byte BOTH signals have delivered. Taking the
+/// larger, or the most recently advanced, would skip the other signal's
+/// undelivered records on the next drain.
+#[test]
+fn the_shared_offset_is_the_lesser_of_the_two_signals() {
+    let mut state = checkpoint::Checkpoint::default();
+
+    state.advance(Signal::Metrics, 900);
+    assert_eq!(state.offset, 0, "logs have delivered nothing yet");
+
+    state.advance(Signal::Logs, 900);
+    assert_eq!(state.offset, 900, "now both agree");
 }
 
 #[test]

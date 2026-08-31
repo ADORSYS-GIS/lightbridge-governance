@@ -24,9 +24,34 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub enum Behavior {
     Accept,
+    /// Accept, but hold the request open first. Concurrency bugs in the drain
+    /// live in the window between reading the checkpoint and writing it back,
+    /// and that window is dominated by the POST -- against an instant mock it
+    /// is too narrow to hit reliably, so the race passes by luck. This makes
+    /// it wide enough to be a test rather than a coin flip.
+    AcceptSlowly {
+        millis: u64,
+    },
     /// Reject everything -- used to prove the checkpoint does not advance
     /// past a batch the collector never took.
     Reject(u16),
+    /// Reject one signal path and accept the other. Real split deployments
+    /// exist (a metrics backend and a log backend behind one gateway), and
+    /// without this variant a "metrics accepted, logs rejected" run is
+    /// unreachable from a test: `Reject` fails metrics first, so the partial
+    /// case is never exercised.
+    RejectPath {
+        path: &'static str,
+        status: u16,
+    },
+    /// Reject any payload whose body contains `needle`, accept everything
+    /// else. This is what a validating collector does to ONE bad record in an
+    /// otherwise fine batch -- the shape that turns into a permanent poison
+    /// pill if the drain can neither split nor advance past it.
+    RejectContaining {
+        needle: &'static str,
+        status: u16,
+    },
 }
 
 #[derive(Default)]
@@ -122,11 +147,23 @@ async fn receive(
         inner.requests.push((path, had_bearer, payload));
     }
 
-    match collector.behavior {
-        Behavior::Accept => StatusCode::OK,
-        Behavior::Reject(status) => {
-            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+    if let Behavior::AcceptSlowly { millis } = collector.behavior {
+        tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+    }
+
+    let rejection = match collector.behavior {
+        Behavior::Accept | Behavior::AcceptSlowly { .. } => None,
+        Behavior::Reject(status) => Some(status),
+        Behavior::RejectPath {
+            path: rejected,
+            status,
+        } => (uri.path() == rejected).then_some(status),
+        Behavior::RejectContaining { needle, status } => body.contains(needle).then_some(status),
+    };
+
+    match rejection {
+        None => StatusCode::OK,
+        Some(status) => StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 

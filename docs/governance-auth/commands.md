@@ -151,9 +151,15 @@ Drains VS Code Copilot Chat's OTel **spool file** and exports it to the collecto
 OTLP/HTTP.
 
 ```bash
-governance-auth copilot-push
+governance-auth copilot-push --otel-endpoint https://otel.example
 governance-auth copilot-push --dry-run      # parse and report; post nothing, move nothing
 ```
+
+`--otel-endpoint` (or `GOVERNANCE_AUTH_OTEL_ENDPOINT`, or `otel_endpoint` in a config file —
+ADR-0012 Decision 2's usual five layers) is **required**: with no collector configured the
+command errors before it reads anything. `configure --otel-endpoint …` writes it to the
+per-user config file, after which the bare `governance-auth copilot-push` in the timer units
+below works.
 
 ### Why this command exists
 
@@ -183,15 +189,22 @@ line, private `_`-prefixed fields and all — `_body`, `_rawAttributes`, `hrTime
 enum integers, which are not OTLP's. `copilot-push` translates all of it.
 
 None of that is a wire format anybody promised to keep stable, so the parser degrades:
-a record it cannot read is **skipped and counted**, never fatal. Every run prints the tally:
+a record it cannot read is **skipped and counted**, never fatal. Every run that finds
+something to drain prints the tally (a run with nothing new prints `Nothing new in …`
+instead and stops there):
 
 ```
-49 metric record(s), 27 log record(s); skipped 0 unparsable, 22 unrecognised, 0 unsupported metric(s)
+49 metric record(s), 27 log record(s); 22 empty; discarded 0 (0 unparsable, 0 unrecognised, 0 unsupported metric(s), 0 bad data point(s))
 ```
 
-`unrecognised` is normal and not an error — Copilot's exporter really does write empty `{}`
-records (22 of 98 on the file this parser was built against). A number that *starts climbing*
-after a VS Code update is the signal that the shapes moved.
+`empty` is normal and not an error — Copilot's exporter really does write empty `{}` records
+(22 of 98 on the file this parser was built against), and they carry nothing to lose. They are
+counted apart from `discarded` for exactly that reason: if they were folded in, a healthy
+install would show permanent loss and nobody would look at the number again.
+
+**`discarded` is the one that matters.** It counts records that were consumed and will never
+reach the collector, it is persisted in the checkpoint, and `status` shows it — see below. A
+number that *starts climbing* after a VS Code update is the signal that the shapes moved.
 
 ### Fail-closed, stated exactly
 
@@ -210,6 +223,42 @@ collector has returned 2xx. Re-running with nothing new appended posts nothing a
 nothing. A rejected or unreachable collector leaves the offset where it was, so the same
 bytes are retried next run.
 
+There are **two** offsets, one per signal, plus the shared `offset` (the smaller of the two)
+that the next drain starts from. Metrics and logs go to different endpoints and can be
+accepted or refused independently; with a single offset, a run where `/v1/metrics` returned
+200 and `/v1/logs` returned 503 re-posted the *accepted* metrics on every later wake, forever.
+A checkpoint written by an older build carries only `offset`, and both signals resume from it.
+
+Only one drain runs at a time. `<state_dir>/copilot-push.lock` guards the whole
+read → POST → write sequence, because the timer and a developer running the command by hand
+(which the `status` row below tells them to do) otherwise read the same offset and ship the
+same records twice. A run that finds the lock held waits rather than failing.
+
+### When a record is given up on
+
+The drain is allowed to discard a record. It is not allowed to do it quietly, and the two
+places it can happen are:
+
+- **The parser cannot read it** — an unparsable line, an unrecognised shape, a metric kind
+  this build does not translate, or a data point whose value changed type. Counted, the
+  offset moves past it.
+- **The collector permanently refuses it** — HTTP 400, 413 or 422 only. The batch is split in
+  half and re-offered, down to single records, until the one responsible is isolated; it is
+  then dropped and the rest go through. Every other failure (401, 403, 404, 408, 429, any 5xx,
+  any network error) is retried on the next wake and advances nothing, because those say
+  something about the moment or the deployment rather than about the payload.
+
+The guard on the second rule: a record is only dropped once the collector has **accepted
+something else from the same batch**. A collector misconfigured to reject everything is a
+configuration fault, not a spool full of bad records, so that case advances nothing and
+discards nothing. The cost is that a batch of exactly one refused record waits until
+something acceptable arrives beside it — self-healing, not stuck.
+
+Both counts land in the checkpoint as `discarded_total`/`last_discard_unix`, and `status`
+shows them until they age out. The alternative — never advancing — is not the safe option it
+looks like: one record the collector will never take would stop the stream at that byte
+offset permanently, and take every record written after it with it.
+
 The spool itself is never written to. VS Code holds it **open for append** for the life of
 the window; truncating a file another process holds at offset N does not move that process's
 offset, so the next append lands at N and the kernel zero-fills the gap — the file grows a
@@ -219,6 +268,12 @@ job (it rotates its own outfile) or a human's, with VS Code closed.
 
 If the file *is* shorter than the recorded offset, that is a rotation: the drain restarts at
 byte 0 and says so on stderr, so a duplicated push is explicable rather than mysterious.
+
+A spool that is **not there at all** is neither a rotation nor an error. The checkpoint is
+left exactly where it was and the run exits 0 — a path that does not exist says nothing about
+how far the real spool was drained, and the reasons to be pointed at one are mundane (a
+typo'd `--copilot-spool-path`, an edited config, a home directory not mounted yet, a run
+before VS Code has recreated the file).
 
 Only whole lines are consumed. A drain that lands mid-append sees half a JSON object, so the
 offset never advances past the last newline actually read.
@@ -256,8 +311,12 @@ Description=Drain the GitHub Copilot OTel spool every 5 minutes
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=5min
-# Catch up after a suspend/resume rather than skipping the missed wake.
-Persistent=true
+# NOTE: `Persistent=true` does NOT belong here and is not merely redundant —
+# systemd.timer(5) defines it only for calendar (`OnCalendar=`) timers, so on a
+# monotonic timer like this one it is silently ignored. It was here with a comment
+# promising suspend/resume catch-up, which it never delivered. Switch the two
+# monotonic lines above for `OnCalendar=*:0/5` if you want that behaviour, and
+# then `Persistent=true` is real.
 
 [Install]
 WantedBy=timers.target
@@ -270,7 +329,13 @@ systemctl --user list-timers governance-auth-copilot-push.timer
 journalctl --user -u governance-auth-copilot-push.service -n 50
 ```
 
-macOS — `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist`:
+macOS — `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist`.
+
+⚠️ `ProgramArguments` must be the **same** `~/.local/bin` path the systemd unit uses:
+ADR-0012 makes `~/.local/bin` the per-user install location on both platforms, and a plist
+pointing at `/usr/local/bin` fails on every wake for anyone who installed normally. launchd
+does not expand `~`, so it is written out in full below — replace `YOUR-USERNAME`, or generate
+the file with `sed "s|\$HOME|$HOME|"`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -282,15 +347,19 @@ macOS — `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.
   <string>digital.camer.ai.governance-auth.copilot-push</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/governance-auth</string>
+    <string>/Users/YOUR-USERNAME/.local/bin/governance-auth</string>
     <string>copilot-push</string>
   </array>
   <key>StartInterval</key>
   <integer>300</integer>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Not /tmp: that is world-writable, so the name is predictable and another
+       local user can pre-create or replace the file. ~/Library/Logs is the
+       per-user location Console.app already reads. Nothing rotates it, so
+       either trim it occasionally or add a newsyslog.d entry. -->
   <key>StandardErrorPath</key>
-  <string>/tmp/governance-auth-copilot-push.log</string>
+  <string>/Users/YOUR-USERNAME/Library/Logs/governance-auth-copilot-push.log</string>
 </dict>
 </plist>
 ```
@@ -328,17 +397,33 @@ addition for a human and never a replacement, because `status` may be piped.
 
 | Shown | Colour | Means |
 |---|---|---|
+| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
 | `not enabled` | yellow | no spool file — Copilot's file exporter is off |
-| `up to date (<n> bytes)` | green | everything written has been pushed |
+| `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
+| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `up to date (<n> bytes)` | green | everything written has been pushed, and nothing was lost |
 | `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
 | `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
-| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
+| `unknown` | yellow | the state directory could not be resolved at all |
 
-The red row is the one this exists for. A user timer that was never enabled, or a launchd
-agent that fails on every wake, is indistinguishable from a working one everywhere else a
-developer looks — bytes climbing while `last push` stays at `never pushed` is the only
-visible difference. "Pending" after a successful push is *not* red on purpose: it is the
-ordinary state between wakes, and a row that cries wolf is one people stop reading.
+Rows are checked in that order, so a discard outranks a backlog and outranks green.
+
+Two red rows, for the two ways this can fail silently:
+
+- **`<n> bytes pending`, never pushed.** A user timer that was never enabled, or a launchd
+  agent that fails on every wake, is indistinguishable from a working one everywhere else a
+  developer looks — bytes climbing while `last push` stays at `never pushed` is the only
+  visible difference. "Pending" after a successful push is *not* red on purpose: it is the
+  ordinary state between wakes, and a row that cries wolf is one people stop reading.
+- **`<n> record(s) discarded`.** A Copilot release renames the private fields this parser
+  dispatches on; every record classifies as unrecognised, both payloads come out empty, no
+  POST is made, and the checkpoint advances over the lot. Nothing is pending afterwards, so
+  without this row the table said `up to date`, in green, while the whole spool went in the
+  bin. It fades to yellow after a day because the counter is cumulative and there is no
+  command to clear it — recent loss is an alarm, old loss is a note, neither is green.
+
+`copilot-push --dry-run` prints the same tally the discard came from, which is where to look
+for *what* this build cannot read.
 
 ---
 

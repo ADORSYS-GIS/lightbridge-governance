@@ -19,12 +19,16 @@
 //! than anything Copilot has been observed to emit, and a guessed mapping
 //! would ship wrong numbers rather than no numbers. It is skipped and
 //! counted, like any other unknown type.
+//!
+//! Everything below the metric -- the data points themselves -- lives in
+//! [`super::points`], because that is where a record can be *partly* wrong and
+//! where the counting has to be exact.
 
 use serde_json::{Map, Value, json};
 
 use super::{
-    otlp,
-    record::{DataPoint, HistogramValue, Metric, MetricsRecord},
+    otlp, points,
+    record::{Metric, MetricsRecord},
 };
 
 const JS_HISTOGRAM: i64 = 0;
@@ -38,25 +42,37 @@ const OTLP_UNSPECIFIED: i64 = 0;
 const OTLP_DELTA: i64 = 1;
 const OTLP_CUMULATIVE: i64 = 2;
 
-/// The JS SDK's `ValueType::INT`. Anything else (including absent) is treated
-/// as DOUBLE, matching what the SDK actually writes -- every metric on the
-/// observed spool carries `valueType: 1`, counters included.
-const JS_INT: i64 = 0;
+/// What one line cost, at the two levels loss can happen at. Reported
+/// separately because they mean different things to whoever reads the tally:
+/// `unsupported` is a metric kind this build never claimed to handle, while
+/// `points` is a shape that changed under a metric kind it does.
+#[derive(Debug, Default)]
+pub struct Skipped {
+    pub unsupported: usize,
+    pub points: usize,
+}
 
-/// Transforms one metrics line. Returns the `(resource, scope, metrics)`
-/// triples for [`otlp::group`] and the number of metrics skipped because
-/// their `dataPointType` is one this build does not translate.
-pub fn transform(record: &MetricsRecord) -> (Vec<otlp::Grouped>, usize) {
+/// Transforms one metrics line into the `(resource, scope, metrics)` triples
+/// [`otlp::group`] folds, plus everything the line lost on the way.
+pub fn transform(record: &MetricsRecord) -> (Vec<otlp::Grouped>, Skipped) {
     let resource = otlp::resource(&record.resource);
-    let mut skipped: usize = 0;
+    let mut skipped = Skipped::default();
     let mut groups = Vec::new();
 
     for scope_metrics in &record.scope_metrics {
         let mut metrics = Vec::new();
         for source in &scope_metrics.metrics {
             match metric(source) {
-                Some(value) => metrics.push(value),
-                None => skipped = skipped.saturating_add(1),
+                Translated::Metric(value, dropped) => {
+                    skipped.points = skipped.points.saturating_add(dropped);
+                    metrics.push(value);
+                }
+                Translated::NoPoints(dropped) => {
+                    skipped.points = skipped.points.saturating_add(dropped);
+                }
+                Translated::Unsupported => {
+                    skipped.unsupported = skipped.unsupported.saturating_add(1);
+                }
             }
         }
         groups.push((resource.clone(), otlp::scope(&scope_metrics.scope), metrics));
@@ -65,27 +81,57 @@ pub fn transform(record: &MetricsRecord) -> (Vec<otlp::Grouped>, usize) {
     (groups, skipped)
 }
 
-/// One `Metric`, or `None` when its `dataPointType` is absent or unsupported.
-fn metric(metric: &Metric) -> Option<Value> {
-    let (field, data) = match metric.data_point_type? {
-        JS_HISTOGRAM => (
-            "histogram",
-            json!({
-                "dataPoints": histogram_points(metric),
-                "aggregationTemporality": temporality(metric.aggregation_temporality),
-            }),
-        ),
-        JS_GAUGE => ("gauge", json!({ "dataPoints": number_points(metric) })),
-        JS_SUM => (
-            "sum",
-            json!({
-                "dataPoints": number_points(metric),
-                "aggregationTemporality": temporality(metric.aggregation_temporality),
-                "isMonotonic": metric.is_monotonic.unwrap_or(false),
-            }),
-        ),
-        _ => return None,
+/// What one metric came to. The empty case is spelled out rather than folded
+/// into `Unsupported` because the two are different diagnoses: one says this
+/// build never handled that metric kind, the other says the points inside a
+/// kind it does handle have changed shape -- and the second is the one that
+/// means "a VS Code update moved the spool under us".
+enum Translated {
+    Metric(Value, usize),
+    /// Every point was dropped. Nothing to post -- an OTLP metric with an
+    /// empty `dataPoints` is a round trip that tells the collector nothing --
+    /// but the points still count as lost.
+    NoPoints(usize),
+    Unsupported,
+}
+
+/// One `Metric`, the data points it dropped, or the reason there is no metric.
+fn metric(metric: &Metric) -> Translated {
+    let temporality = temporality(metric.aggregation_temporality);
+    let Some(kind) = metric.data_point_type else {
+        return Translated::Unsupported;
     };
+    let (field, data, dropped, kept) = match kind {
+        JS_HISTOGRAM => {
+            let (data_points, dropped) = points::histogram(metric);
+            let kept = data_points.len();
+            let data = json!({
+                "dataPoints": data_points,
+                "aggregationTemporality": temporality,
+            });
+            ("histogram", data, dropped, kept)
+        }
+        JS_GAUGE => {
+            let (data_points, dropped) = points::number(metric);
+            let kept = data_points.len();
+            ("gauge", json!({ "dataPoints": data_points }), dropped, kept)
+        }
+        JS_SUM => {
+            let (data_points, dropped) = points::number(metric);
+            let kept = data_points.len();
+            let data = json!({
+                "dataPoints": data_points,
+                "aggregationTemporality": temporality,
+                "isMonotonic": metric.is_monotonic.unwrap_or(false),
+            });
+            ("sum", data, dropped, kept)
+        }
+        _ => return Translated::Unsupported,
+    };
+
+    if kept == 0 {
+        return Translated::NoPoints(dropped);
+    }
 
     let mut object = Map::new();
     object.insert(
@@ -101,7 +147,7 @@ fn metric(metric: &Metric) -> Option<Value> {
         Value::String(metric.descriptor.unit.clone()),
     );
     object.insert(field.to_owned(), data);
-    Some(Value::Object(object))
+    Translated::Metric(Value::Object(object), dropped)
 }
 
 /// JS `AggregationTemporality` -> OTLP's. An unrecognised or absent value
@@ -114,69 +160,4 @@ fn temporality(js: Option<i64>) -> i64 {
         Some(JS_CUMULATIVE) => OTLP_CUMULATIVE,
         _ => OTLP_UNSPECIFIED,
     }
-}
-
-/// Common `attributes`/`startTimeUnixNano`/`timeUnixNano` for either point
-/// kind.
-fn base_point(point: &DataPoint) -> Map<String, Value> {
-    let mut object = Map::new();
-    object.insert(
-        "attributes".to_owned(),
-        Value::Array(otlp::attributes(&point.attributes)),
-    );
-    otlp::insert_time(&mut object, "startTimeUnixNano", point.start_time.as_ref());
-    otlp::insert_time(&mut object, "timeUnixNano", point.end_time.as_ref());
-    object
-}
-
-fn number_points(metric: &Metric) -> Vec<Value> {
-    let as_int = metric.descriptor.value_type == Some(JS_INT);
-    metric
-        .data_points
-        .iter()
-        .filter_map(|point| {
-            let mut object = base_point(point);
-            if as_int {
-                // `asInt` is a proto3 int64, so it travels as a string.
-                let integer = point.value.as_i64()?;
-                object.insert("asInt".to_owned(), Value::String(integer.to_string()));
-            } else {
-                object.insert("asDouble".to_owned(), json!(point.value.as_f64()?));
-            }
-            Some(Value::Object(object))
-        })
-        .collect()
-}
-
-fn histogram_points(metric: &Metric) -> Vec<Value> {
-    metric
-        .data_points
-        .iter()
-        .filter_map(|point| {
-            let value: HistogramValue = serde_json::from_value(point.value.clone()).ok()?;
-            let mut object = base_point(point);
-            object.insert(
-                "count".to_owned(),
-                Value::String(value.count.unwrap_or_default().to_string()),
-            );
-            if let Some(sum) = value.sum {
-                object.insert("sum".to_owned(), json!(sum));
-            }
-            if let Some(min) = value.min {
-                object.insert("min".to_owned(), json!(min));
-            }
-            if let Some(max) = value.max {
-                object.insert("max".to_owned(), json!(max));
-            }
-            let counts: Vec<Value> = value
-                .buckets
-                .counts
-                .iter()
-                .map(|count| Value::String(count.to_string()))
-                .collect();
-            object.insert("bucketCounts".to_owned(), Value::Array(counts));
-            object.insert("explicitBounds".to_owned(), json!(value.buckets.boundaries));
-            Some(Value::Object(object))
-        })
-        .collect()
 }

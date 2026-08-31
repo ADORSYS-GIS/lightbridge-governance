@@ -12,6 +12,7 @@ use super::{batch, record, spool};
 
 mod checkpoint;
 mod drain;
+mod points;
 mod transform;
 
 /// A metrics line carrying one SUM and one HISTOGRAM, in the exact nesting
@@ -123,6 +124,26 @@ pub fn unknown_data_point_type_line() -> String {
                 "aggregationTemporality": 1,
                 "dataPointType": 1,
                 "dataPoints": [{ "attributes": {}, "value": { "scale": 2 } }],
+            }],
+        }],
+    })
+    .to_string()
+}
+
+/// A metrics line carrying one metric, built to order. Lets a test vary the
+/// one field it is about (a data point's `value`, a descriptor's `valueType`)
+/// without restating the whole nesting Copilot writes.
+pub fn metric_line(descriptor: Value, data_point_type: i64, value: Value) -> String {
+    json!({
+        "resource": { "_rawAttributes": [["service.name", "copilot-chat"]] },
+        "scopeMetrics": [{
+            "scope": { "name": "copilot-chat" },
+            "metrics": [{
+                "descriptor": descriptor,
+                "aggregationTemporality": 1,
+                "dataPointType": data_point_type,
+                "dataPoints": [{ "attributes": {}, "value": value }],
+                "isMonotonic": true,
             }],
         }],
     })

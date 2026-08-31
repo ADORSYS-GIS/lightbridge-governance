@@ -25,19 +25,32 @@
 //! starts with authentication" is a far easier property to keep true than "all
 //! the paths that read the spool are safe for their own reasons".
 //!
-//! ## And the second: the checkpoint only moves after a 2xx
+//! ## And the second: nothing is lost quietly
 //!
-//! The offset advances after the collector has accepted the batch, never
-//! before. A rejected or unreachable collector leaves the offset where it was,
-//! so the same bytes are re-read next run. The spool itself is never written
-//! to at all -- see [`spool`]'s module doc for why truncating a file VS Code
-//! holds open is unsafe on both target platforms.
+//! An offset advances only over records that were delivered *or* recorded as
+//! lost. Those are the two outcomes; there is no third one where bytes go past
+//! the checkpoint unaccounted for. The reason it is stated as "or recorded"
+//! rather than "only when delivered" is that pure refusal-to-advance is not
+//! safe either: one record the collector will never take would stop the stream
+//! at that byte offset for good, and every record written after it with it. So
+//! the drain is allowed to give up -- and every time it does, the count and
+//! the time land in the checkpoint and `status` stops being green. See
+//! [`export`] for the rule that keeps a misconfigured collector from using
+//! that permission to empty the whole spool.
+//!
+//! The spool itself is never written to at all -- see [`spool`]'s module doc
+//! for why truncating a file VS Code holds open is unsafe on both target
+//! platforms.
 
 mod batch;
 mod checkpoint;
+mod drain;
+mod export;
+mod lock;
 mod logs;
 mod metrics;
 mod otlp;
+mod points;
 mod push;
 mod record;
 mod spool;
@@ -46,10 +59,9 @@ mod status;
 #[cfg(test)]
 mod tests;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use checkpoint::Checkpoint;
 pub use status::SpoolStatus;
 
 use crate::{config::OauthConfig, oauth};
@@ -76,85 +88,7 @@ pub async fn run(http: &reqwest::Client, config: &OauthConfig, dry_run: bool) ->
          the checkpoint was not moved",
     )?;
 
-    let checkpoint_path = checkpoint::path(&crate::cache::state_dir()?);
-    let mut state = checkpoint::load(&checkpoint_path)?;
-
-    let drained = spool::drain(&spool_path, state.offset)?;
-    if drained.restarted {
-        eprintln!(
-            "The spool at {} is shorter than the recorded offset ({} bytes): it was truncated or \
-             rotated, so the drain restarted at byte 0.",
-            spool_path.display(),
-            state.offset
-        );
-    }
-
-    if drained.lines.is_empty() {
-        eprintln!(
-            "Nothing new in {} ({} bytes, offset {}).",
-            spool_path.display(),
-            drained.size,
-            drained.next_offset
-        );
-        // Still record a restart, so the next run does not re-detect it.
-        return finish(
-            &checkpoint_path,
-            &mut state,
-            drained.next_offset,
-            0,
-            dry_run,
-        );
-    }
-
-    let batch = batch::build(&drained.lines);
-    eprintln!("{}", batch.counts.describe());
-
-    if dry_run {
-        eprintln!(
-            "--dry-run: nothing was posted and the checkpoint stays at byte {}.",
-            state.offset
-        );
-        return Ok(());
-    }
-
-    if let Some(payload) = &batch.metrics {
-        push::post(http, endpoint, push::Signal::Metrics, &bearer, payload).await?;
-    }
-    if let Some(payload) = &batch.logs {
-        push::post(http, endpoint, push::Signal::Logs, &bearer, payload).await?;
-    }
-
-    finish(
-        &checkpoint_path,
-        &mut state,
-        drained.next_offset,
-        batch.counts.total_pushed(),
-        dry_run,
-    )
-}
-
-/// Advances and persists the checkpoint. Reached only after every POST that
-/// was going to happen has returned 2xx.
-fn finish(
-    path: &Path,
-    state: &mut Checkpoint,
-    next_offset: u64,
-    pushed: u64,
-    dry_run: bool,
-) -> Result<()> {
-    if dry_run {
-        return Ok(());
-    }
-    state.offset = next_offset;
-    state.last_push_records = pushed;
-    if pushed > 0 {
-        state.last_push_unix = Some(checkpoint::now_unix()?);
-    }
-    checkpoint::store(path, state)?;
-    if pushed > 0 {
-        eprintln!("Pushed {pushed} record(s); checkpoint at byte {next_offset}.");
-    }
-    Ok(())
+    drain::once(http, endpoint, &bearer, &spool_path, dry_run).await
 }
 
 /// ADR-0012 Decision 2's five layers for the spool path. The first four are

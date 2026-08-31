@@ -121,8 +121,17 @@ fn a_malformed_line_is_counted_and_skipped_not_fatal() {
     ]);
 
     assert_eq!(built.counts.unparsable, 1, "{}", built.counts.describe());
-    // The literal `{}` records Copilot really writes: JSON, but neither shape.
-    assert_eq!(built.counts.unknown, 1, "{}", built.counts.describe());
+    // The literal `{}` records Copilot really writes: JSON, neither shape, and
+    // carrying nothing -- counted apart from loss so a healthy spool's 22-in-98
+    // of them do not drown the counter that matters.
+    assert_eq!(built.counts.empty, 1, "{}", built.counts.describe());
+    assert_eq!(built.counts.unknown, 0, "{}", built.counts.describe());
+    assert_eq!(
+        built.counts.discarded(),
+        1,
+        "only the unparsable line is loss: {}",
+        built.counts.describe()
+    );
     assert_eq!(built.counts.metrics, 1);
     assert_eq!(built.counts.logs, 1);
     assert!(
@@ -175,7 +184,10 @@ fn classify_does_not_mistake_an_empty_object_for_metrics() {
     // 22 of the 98 records on the observed spool are a literal `{}`. A
     // `#[serde(untagged)]` enum would classify every one of them as metrics,
     // because both record types deserialise from `{}` successfully.
-    assert_eq!(record::classify(&json!({})), record::Kind::Unknown);
+    //
+    // `Empty`, not `Unknown`: they carry nothing, so they are not loss. See
+    // `record::classify` for why that distinction is load-bearing.
+    assert_eq!(record::classify(&json!({})), record::Kind::Empty);
     assert_eq!(record::classify(&json!([])), record::Kind::Unknown);
     assert_eq!(
         record::classify(&json!({ "scopeMetrics": [] })),

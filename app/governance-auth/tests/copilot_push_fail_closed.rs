@@ -50,15 +50,23 @@ async fn no_cached_session_consumes_nothing() -> Result<()> {
     Ok(())
 }
 
-/// The ordering assertion, and the reason it is a *separate* test.
+/// A run with nothing to do still has to fail closed rather than exit 0.
 ///
-/// With records waiting, every ordering of "authenticate" and "read the
-/// spool" produces the same observable failure, so the test above passes
-/// against code that reads first and authenticates second. An **empty** spool
-/// is what separates them: the "nothing new" branch still writes a checkpoint,
-/// so code that authenticates late exits 0 and persists state having never
-/// presented a credential. Verified by injection -- moving the auth block
-/// below the drain makes exactly this test fail, and no other.
+/// ⚠️ What this test pins, measured rather than assumed -- an earlier comment
+/// here claimed moving the auth block below the drain "makes exactly this test
+/// fail, and no other". Both halves of that were false. Injected into the code
+/// as it stood before this file's fixes:
+///
+/// - auth moved to just before the POSTs: **two** pre-existing tests failed --
+///   this one and `dry_run_still_requires_a_valid_session`.
+/// - auth moved to just after the drain: **none** failed. Every assertion here
+///   was on a request count, a checkpoint file or the spool's bytes, and none
+///   changes when the read happens first and the credential check second.
+///
+/// The read half is now pinned by
+/// `the_spool_is_not_even_opened_before_authentication` below, the only test
+/// that second injection reaches. This one covers the write half: no state may
+/// be written by a run that never presented a credential.
 #[tokio::test]
 async fn an_empty_spool_still_authenticates_before_writing_any_state() -> Result<()> {
     let harness = Harness::new("https://unreachable.invalid.example")?;
@@ -75,6 +83,41 @@ async fn an_empty_spool_still_authenticates_before_writing_any_state() -> Result
     assert!(
         !fixture::checkpoint_path(&harness).exists(),
         "no credential was ever presented, so no state may be written"
+    );
+    Ok(())
+}
+
+/// The ordering assertion that actually pins "**does not read the spool**".
+///
+/// Every other test here asserts on a request count, a checkpoint file or the
+/// spool's bytes, and none of those changes when the read happens first and
+/// authentication fails second -- the run still exits non-zero having exported
+/// nothing. They pin the weaker "no export and no checkpoint write without a
+/// token", and an auth block moved below the drain leaves them all green.
+///
+/// A directory as the spool path separates them. `File::open` succeeds on it
+/// and the `read` fails with `EISDIR` -- for any user, root included, which a
+/// mode-000 file would not. So a run that reads first dies complaining about
+/// the path and a run that authenticates first dies complaining about the
+/// credential, and only one of those can be true at a time.
+#[tokio::test]
+async fn the_spool_is_not_even_opened_before_authentication() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    let collector = MockCollector::start(Behavior::Accept).await?;
+    let unreadable = harness.state_dir().join("spool-that-is-a-directory");
+    std::fs::create_dir_all(&unreadable).context("creating the unreadable spool path")?;
+
+    let output = fixture::push(&harness, &collector.base_url, &unreadable, &[]).await?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("without a valid session"),
+        "the credential must be the reason this run stopped, got: {stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("is a directory"),
+        "reaching an EISDIR means the spool was opened before the token was obtained: {stderr}"
     );
     Ok(())
 }

@@ -129,6 +129,31 @@ pub fn metrics_line() -> Value {
     })
 }
 
+/// A log record as it would look after a Copilot release renamed the private
+/// fields this parser dispatches on (`_body` -> `body`, `hrTime` -> `time`).
+/// Neither key is present, so `classify` cannot place it: this is exactly the
+/// drift `record.rs`'s module doc anticipates, and the whole point is that it
+/// must not vanish quietly.
+pub fn drifted_line() -> Value {
+    json!({
+        "time": [1788191912, 613000000],
+        "instrumentationScope": { "name": "copilot-chat", "version": "0.62.0" },
+        "resource": { "_rawAttributes": [["service.name", "copilot-chat"]] },
+        "attributes": { "event.name": "copilot_chat.tool.call" },
+        "body": "copilot_chat.tool.call: manage_todo_list",
+    })
+}
+
+/// A well-formed log record carrying `marker` in its body, so a mock collector
+/// can reject exactly the batches that contain it.
+pub fn marked_log_line(marker: &str) -> Value {
+    let mut line = log_line();
+    if let Some(object) = line.as_object_mut() {
+        object.insert("_body".to_owned(), Value::String(marker.to_owned()));
+    }
+    line
+}
+
 pub fn log_line() -> Value {
     json!({
         "hrTime": [1788191912, 613000000],

@@ -156,7 +156,7 @@ pub struct SpanContext {
     pub trace_flags: Option<u32>,
 }
 
-/// Which of the two record shapes a line carries.
+/// Which of the record shapes a line carries.
 ///
 /// Dispatched on *key presence* rather than a `#[serde(untagged)]` enum:
 /// untagged tries each variant and reports only "data did not match any
@@ -164,10 +164,21 @@ pub struct SpanContext {
 /// field is optional), so untagged would silently classify empty and unknown
 /// records as metrics. The live spool contains 22 literal `{}` lines out of
 /// 98, so that is not a hypothetical.
+///
+/// ⚠️ [`Kind::Empty`] is separate from [`Kind::Unknown`] on purpose, and the
+/// distinction is load-bearing rather than tidy. An unrecognised record is
+/// **lost data** and `status` colours it accordingly; a `{}` record carries
+/// nothing to lose. Folding the two together would put 22 of every 98 records
+/// into the loss counter on a perfectly healthy install, and a row that is
+/// always red is a row nobody reads -- which is exactly how a real parser
+/// regression stays invisible.
 pub fn classify(line: &Value) -> Kind {
     let Some(object) = line.as_object() else {
         return Kind::Unknown;
     };
+    if object.is_empty() {
+        return Kind::Empty;
+    }
     if object.contains_key("scopeMetrics") {
         return Kind::Metrics;
     }
@@ -181,5 +192,7 @@ pub fn classify(line: &Value) -> Kind {
 pub enum Kind {
     Metrics,
     Log,
+    /// A literal `{}`: known-benign, carries nothing, counted apart from loss.
+    Empty,
     Unknown,
 }

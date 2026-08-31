@@ -13,8 +13,7 @@ mod telemetry;
 
 /// [`render`] with the Copilot spool row fixed at "nothing surveyed", so the
 /// tests that predate that row keep asserting on exactly what they did before
-/// and never touch `$HOME`. The row's own four states are covered in
-/// [`spool`].
+/// and never touch `$HOME`. The row's own states are covered in [`spool`].
 fn table(
     issuer: &str,
     client_id: &str,
@@ -30,6 +29,7 @@ fn table(
         &Spool {
             inner: None,
             last_push_age: None,
+            last_discard_age: None,
         },
         targets,
     )

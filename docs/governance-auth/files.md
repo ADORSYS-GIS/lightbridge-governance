@@ -72,8 +72,28 @@ The lock file records the holder's PID. Two failure modes were paid for here:
 ```
 
 Mode `0600`, written tmp-then-rename. Records how far into the Copilot spool
-[`copilot-push`](./commands.md#copilot-push) has got: `offset`, `last_push_unix`,
-`last_push_records`.
+[`copilot-push`](./commands.md#copilot-push) has got:
+
+| Key | Meaning |
+|---|---|
+| `offset` | the byte the next drain starts at: the lesser of the two below |
+| `metrics_offset` | bytes `/v1/metrics` has accepted |
+| `logs_offset` | bytes `/v1/logs` has accepted |
+| `last_push_unix`, `last_push_records` | the last delivery; untouched by a run that delivered nothing |
+| `discarded_total`, `last_discard_unix` | records consumed that will never reach the collector |
+
+Two offsets rather than one because the signals go to different endpoints and are accepted
+independently; a single offset re-posted an accepted metrics batch on every wake for as long
+as logs kept failing. A file written by an older build has neither key, and both signals
+resume from `offset` — defaulting them to 0 would re-export the whole spool after an upgrade.
+
+`discarded_total` is what makes loss visible rather than merely logged: the drain is allowed
+to give up on a record it cannot translate or the collector will not take (otherwise one bad
+record stops the stream permanently), and this is the count `status` turns non-green on.
+
+A sibling `copilot-push.lock` guards the whole read-drain-post-write sequence, so the timer
+and a hand-run command cannot both ship the same records. Same PID-liveness stale-lock
+recovery as the session lock above.
 
 State, not cache, for the same reason the session is — losing it does not log anyone out, but
 it does mean the next run re-pushes the whole spool, which is duplicate usage data at the

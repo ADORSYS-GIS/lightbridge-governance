@@ -25,6 +25,12 @@ pub struct SpoolStatus {
     /// under a stale checkpoint reads 0 rather than underflowing.
     pub pending: u64,
     pub last_push_unix: Option<u64>,
+    /// Records consumed that never reached the collector. Non-zero is the one
+    /// thing that stops this row being green even with nothing pending: a
+    /// parser regression drains the spool into nowhere, and `pending == 0`
+    /// afterwards is indistinguishable from a healthy install.
+    pub discarded_total: u64,
+    pub last_discard_unix: Option<u64>,
     /// The checkpoint file could not be read. Distinct from "no checkpoint
     /// yet": one is a fresh install, the other is a drain that is failing
     /// every run and would otherwise be indistinguishable from it.
@@ -51,6 +57,8 @@ impl SpoolStatus {
             offset: state.offset,
             pending: size.unwrap_or_default().saturating_sub(state.offset),
             last_push_unix: state.last_push_unix,
+            discarded_total: state.discarded_total,
+            last_discard_unix: state.last_discard_unix,
             checkpoint_unreadable,
         })
     }

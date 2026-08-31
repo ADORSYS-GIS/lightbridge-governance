@@ -107,7 +107,7 @@ fn json(drained: &spool::Drain) -> Value {
     drained
         .lines
         .first()
-        .and_then(|line| serde_json::from_str(line).ok())
+        .and_then(|line| serde_json::from_str(&line.text).ok())
         .unwrap_or(Value::Null)
 }
 
