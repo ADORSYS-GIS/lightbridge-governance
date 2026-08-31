@@ -6,7 +6,6 @@
     "lib": ["ES2023"],
     "outDir": "dist",
     "sourceMap": true,
-    "rootDir": "src",
     "strict": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,

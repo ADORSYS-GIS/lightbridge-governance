@@ -84,14 +84,53 @@ a Copilot-hosted model produces nothing for this row. It measures what flows
 through us, which is a different population from "what the team did in the IDE",
 and any KPI built on it has to say which.
 
+## Measured facts that correct RFC-0003
+
+All three were verified against the live system on 2026-08-31, not inferred.
+
+**1. RFC-0003's *Risks* section is wrong about OTLP headers.** It states VS Code
+"exposes no settings key for OTLP headers — authentication is only possible
+through an environment variable". `github.copilot.chat.otel.headers` **exists**
+(`{ "key": "value" }` map, "Applied directly to the OTLP exporter"), alongside
+`exporterType` (enum including `file`), `outfile`, `captureContent` and
+`otlpEndpoint`. It does not rescue that row, because the header is *static* and
+settings.json is covered by Settings Sync — a long-lived bearer there would sync
+off-machine — but the stated fact needs correcting.
+
+**2. Copilot's OTel does not meter turns served by this provider.** With the
+file exporter enabled and a chat turn sent through `governed-sonnet`, every
+`gen_ai.client.token.usage` datapoint was tagged
+`gen_ai.provider.name=github` / `gen_ai.request.model=gpt-4o-mini-…` — Copilot's
+own utility calls — while the gateway logged the actual turn. **Copilot
+instruments what it serves, not what it delegates.** So this row and the
+`GitHub Copilot (IDE)` row do not double-count usage, which was the concern that
+made open decision 1 look urgent.
+
+**3. The Copilot OTel spool carries no acceptance signal.** In 38 records the
+emitted names were `copilot_chat.session.start`, `copilot_chat.agent.turn`,
+`copilot_chat.tool.call`, and latency/usage metrics. There was **no**
+accept/reject/dismiss/undo/edit-distance event of any kind. So routing that
+spool to the collector does not, on this evidence, deliver the editor-native
+signal [#105](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/105)
+is about — that gap remains open, for both this row and that one.
+
+Two incidental notes from the same run: `captureContent: false` held (no prompt
+or completion text in 73KB, only event names and token counts), and the file
+exporter writes the OpenTelemetry **JS SDK's internal object graph**
+(`_rawAttributes`, `hrTime` pairs, `dataPointType` enums), not OTLP — so any
+pusher must transform rather than relay, against a private shape that can change
+between Copilot releases.
+
 ## Open decisions
 
 Reserved for a maintainer; none of them are settled by this scaffold.
 
 1. **Does this row replace the `GitHub Copilot (IDE)` row, or sit beside it?**
-   Both measure IDE activity and summing them would double-count a developer who
-   uses both. RFC-0003's rule that GitHub Copilot "appears twice and must stay
-   twice" is about grain, not about this.
+   Measurement above says they do not overlap on usage — Copilot meters only what
+   it serves — so "beside it" is now the cheap answer. What still needs deciding
+   is whether the Copilot row is worth keeping at all, given finding 3: its spool
+   carries usage and orchestration, not the acceptance signal that was its
+   justification.
 2. **Does a fourth `Direction` value exist?** "Push, in-band" is not push-as-
    export. Either the axis gains a value or this row is documented as an
    exception.

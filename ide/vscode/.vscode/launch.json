@@ -1,0 +1,15 @@
+{
+  // Run `just ext-build` first — there is deliberately no preLaunchTask, so a
+  // stale dist/ is your problem to notice rather than a silent rebuild that
+  // hides a compile error behind an F5.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"]
+    }
+  ]
+}

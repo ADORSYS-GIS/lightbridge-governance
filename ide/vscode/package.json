@@ -76,7 +76,7 @@
         "lightbridge.modelOptionDefaults": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Sampling parameters merged into every request — `temperature`, `top_p`, `top_k`, `seed`, and so on. This setting exists because VS Code has no UI for them: `modelOptions` on the provider API is inbound-only and Copilot Chat never populates it, so a value set here is the only way a developer can tune sampling. Anything a caller *does* pass in `modelOptions` wins over these defaults.",
+          "markdownDescription": "Sampling parameters merged into every request — `temperature`, `top_p`, `top_k`, `seed`. Only parameters the model declares in the gateway catalogue's `supported_parameters` are forwarded; anything else is dropped. Copilot Chat *does* populate `modelOptions`, but with its own internal fields (`_otelTraceContext`, `_telemetryTurn` and similar) rather than sampling values, which is why the allowlist exists. A caller's `modelOptions` wins over these defaults.",
           "additionalProperties": true
         }
       }
@@ -85,8 +85,10 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && node --test --experimental-strip-types src/test/*.test.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
+    "test:unit": "node --test --experimental-strip-types src/test/*.test.ts",
+    "test:integration": "node tests/run.mjs",
+    "test": "npm run typecheck && npm run test:unit && npm run test:integration",
     "package": "npm run typecheck && npm run build && vsce package --out lightbridge-governance.vsix"
   },
   "devDependencies": {

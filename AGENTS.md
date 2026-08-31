@@ -27,7 +27,18 @@ just up             # local Postgres
 just migrate
 ```
 
-There is no `npm` and no Python here. `cargo` and `cratestack` are the toolchain.
+`cargo` and `cratestack` are the toolchain for everything that ships in the image.
+
+Two exceptions, both fenced, both deliberate — and neither is reachable from the Rust gate:
+
+- **npm, in `ide/vscode` only** — the VS Code extension (`just ext-check`, `just ext-build`).
+  `just all-checks` does not run it and `ci.yml` does not know it exists; it has its own
+  workflow (`vscode-extension.yml`), path-filtered so a Rust-only PR never starts a node job.
+- **Python, for `scripts/generate_dashboards.py`** — a dev-time generator whose *output* (the
+  dashboard JSON) is committed and is what the chart ships. Nothing at deploy or CI time runs it.
+
+The rule is not "no other toolchain". It is: **nothing outside `cargo` may become a dependency
+of building, testing or deploying the server image.** Check that before adding a third.
 
 ## Conventions that are not negotiable
 

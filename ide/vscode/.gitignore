@@ -1,9 +1,9 @@
-# npm and the bundler live entirely inside this directory. Nothing at CI or
-# deploy time for the Rust workspace runs either -- the same fencing the
-# dashboard generator gets in the root .gitignore. If a release job is ever
-# added for this extension, that fence stops holding and the claim in
-# CLAUDE.md ("there is no npm here") needs revisiting rather than quietly
-# becoming false.
+# npm and the bundler live entirely inside this directory. The Rust workspace
+# does not depend on either: `just all-checks` never runs them and ci.yml does
+# not know they exist. The extension has its own path-filtered workflow
+# (.github/workflows/vscode-extension.yml), so a Rust-only PR still starts no
+# node job. CLAUDE.md states the rule this fence enforces.
 node_modules/
 dist/
+dist-test/
 *.vsix

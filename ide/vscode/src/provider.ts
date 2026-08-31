@@ -78,11 +78,19 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
 
     const url = `${config.gatewayUrl}/v1/chat/completions`;
     const body = {
-      // Caller-supplied modelOptions win over the configured defaults. VS Code
-      // never populates modelOptions from its own UI, so in the Copilot Chat
-      // path this is settings-only — see lightbridge.modelOptionDefaults.
-      ...config.modelOptionDefaults,
-      ...(options.modelOptions ?? {}),
+      // Caller-supplied modelOptions win over the configured defaults, and the
+      // result is filtered against what the model declares it accepts.
+      //
+      // The filter is not tidiness. Copilot Chat DOES populate modelOptions —
+      // observed on the wire carrying `_capturingTokenCorrelationId`,
+      // `_otelTraceContext`, `_telemetryTurn` and `_enableThinking`. Spreading
+      // those verbatim relayed Copilot's internal telemetry correlation ids and
+      // OTel trace context to our gateway, which is both junk to the upstream
+      // API and data nobody decided to collect.
+      ...pickSupported(
+        { ...config.modelOptionDefaults, ...(options.modelOptions ?? {}) },
+        model.supportedParameters,
+      ),
       model: model.upstreamId,
       messages: toWireMessages(messages),
       stream: true,
@@ -152,6 +160,39 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     const value = typeof text === 'string' ? text : extractText(text);
     return Math.ceil(value.length / 3.5);
   }
+}
+
+/**
+ * Keep only the parameters the model's catalogue entry declares support for.
+ *
+ * An empty allowlist forwards nothing. That is the deliberate direction: a
+ * catalogue that does not say which parameters a model accepts is unknown, and
+ * unknown routes to the strictest branch rather than to passthrough.
+ *
+ * Dropped keys are logged by NAME only — never their values, which are request
+ * data.
+ */
+function pickSupported(
+  options: Readonly<Record<string, unknown>>,
+  supported: readonly string[],
+): Record<string, unknown> {
+  const allowed = new Set(supported);
+  const kept: Record<string, unknown> = {};
+  const dropped: string[] = [];
+
+  for (const [key, value] of Object.entries(options)) {
+    if (allowed.has(key)) {
+      kept[key] = value;
+    } else {
+      dropped.push(key);
+    }
+  }
+
+  if (dropped.length > 0) {
+    log().debug(`Dropped ${dropped.length} unsupported model option(s): ${dropped.join(', ')}`);
+  }
+
+  return kept;
 }
 
 function extractText(message: vscode.LanguageModelChatRequestMessage): string {

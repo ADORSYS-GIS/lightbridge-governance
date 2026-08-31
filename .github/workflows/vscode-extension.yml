@@ -1,0 +1,126 @@
+name: VS Code extension
+
+# The extension is distributed to developer editors, not bundled into the
+# server image — so like `governance-auth` (ADR-0010) it needs its own build
+# and its own asset. This is the first workflow in the repository that runs
+# npm; see the note in ide/vscode/.gitignore and CLAUDE.md.
+on:
+  push:
+    paths: ['ide/vscode/**', '.github/workflows/vscode-extension.yml']
+  pull_request:
+    paths: ['ide/vscode/**', '.github/workflows/vscode-extension.yml']
+  release:
+    types: [published]
+  # Lets a release cut before this workflow existed, or one whose upload
+  # failed, be backfilled without re-tagging.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach the .vsix to
+        required: true
+
+concurrency:
+  group: vscode-ext-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: ide/vscode
+
+jobs:
+  check:
+    # Skipped on release/dispatch: those go straight to `release`, which runs
+    # the same gate itself rather than trusting a green from another event.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ide/vscode/package-lock.json
+      # `npm ci` not `npm install`: the lockfile is the input, and install
+      # would silently accept a drifted tree.
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Package
+        run: npx vsce package --out lightbridge-governance.vsix --allow-missing-repository
+
+      # Refuse to ship source or test doubles. `.vscodeignore` is an allowlist,
+      # but an allowlist that nobody checks is a comment — this asserts the
+      # actual archive contents, which is what a publish would upload.
+      - name: Assert the archive contains only what should ship
+        run: |
+          set -euo pipefail
+          files=$(unzip -Z1 lightbridge-governance.vsix | grep '^extension/' | sort)
+          echo "$files"
+          unexpected=$(echo "$files" | grep -vE '^extension/(package\.json|readme\.md|README\.md|dist/extension\.js)$' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::unexpected files in the .vsix:"; echo "$unexpected"; exit 1
+          fi
+          for forbidden in 'extension/src/' 'extension/tests/' '.sh$' '\.map$'; do
+            if echo "$files" | grep -qE "$forbidden"; then
+              echo "::error::forbidden entry matching '$forbidden' in the .vsix"; exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightbridge-governance-vsix
+          path: ide/vscode/lightbridge-governance.vsix
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ide/vscode/package-lock.json
+      - run: npm ci
+      # The gate runs here too. A release must not inherit a green from a
+      # different commit or a cancelled run.
+      - run: npm test
+      - run: npm run build
+
+      - name: Package at the release version
+        env:
+          # Routed through an env var and validated before use rather than
+          # interpolated into `run:` via `${{ }}` — the workflow_dispatch input
+          # is attacker-controlled in the script-injection sense. Mirrors
+          # release-governance-auth.yml.
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *[!A-Za-z0-9._-]*) echo "refusing unsafe tag: $TAG" >&2; exit 1 ;;
+          esac
+          version="${TAG#v}"
+          # package.json carries 0.0.0 in-tree: release-please does not bump it
+          # (release-type `simple` touches the manifest and Chart.yaml only), so
+          # the tag is the only source of truth for the shipped version. Same
+          # reasoning as GOVERNANCE_AUTH_RELEASE_VERSION.
+          npm version --no-git-tag-version --allow-same-version "$version"
+          npx vsce package --out "lightbridge-governance-${version}.vsix" --allow-missing-repository
+          # An extension whose manifest version does not match its filename is
+          # the kind of mismatch nobody notices until an install reports the
+          # wrong version.
+          test "$(node -p 'require("./package.json").version')" = "$version"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *[!A-Za-z0-9._-]*) echo "refusing unsafe tag: $TAG" >&2; exit 1 ;;
+          esac
+          gh release upload "$TAG" "lightbridge-governance-${TAG#v}.vsix" --clobber

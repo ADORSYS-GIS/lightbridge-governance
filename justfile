@@ -91,13 +91,13 @@ redact-test-live:
 #
 # npm lives entirely inside ide/vscode and nothing in the Rust workspace depends
 # on it. `just all-checks` deliberately does NOT run these: the Rust gate must
-# not start requiring a node toolchain, and no CI job invokes them today. That
-# fence is the same one scripts/generate_dashboards.py gets, and it stops
-# holding the moment a release job is added -- see ide/vscode/README.md.
+# not start requiring a node toolchain. The extension has its own PATH-FILTERED
+# workflow (.github/workflows/vscode-extension.yml), so a Rust-only PR still
+# starts no node job. AGENTS.md states the rule this fence enforces.
 
-# Install the extension's dev dependencies
+# Install the extension's dev dependencies (lockfile is the input, like CI)
 ext-install:
-	npm --prefix ide/vscode install
+	npm --prefix ide/vscode ci
 
 # Typecheck and unit-test the extension
 ext-check:

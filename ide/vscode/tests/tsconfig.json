@@ -1,0 +1,13 @@
+{
+  // The tests are ESM with top-level await and are bundled by esbuild, not by
+  // tsc. The extension itself ships as CommonJS (VS Code requires the main
+  // file), so the two cannot share one module setting — hence a second config
+  // rather than loosening the one that governs shipped code.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"]
+  },
+  "include": [".", "../src"]
+}
