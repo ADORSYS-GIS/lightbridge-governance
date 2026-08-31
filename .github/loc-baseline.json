@@ -6,7 +6,7 @@
   "app/governance-auth/src/oauth/mod.rs": 464,
   "app/governance-auth/src/otel.rs": 1580,
   "app/governance-auth/src/update.rs": 630,
-  "app/governance-auth/tests/support/harness.rs": 418,
+  "app/governance-auth/tests/support/harness.rs": 429,
   "app/governance-auth/tests/support/mock_idp.rs": 313,
   "app/governance-auth/tests/token_exchange.rs": 438,
   "app/governance-ctl/src/archive.rs": 231,
