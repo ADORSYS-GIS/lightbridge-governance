@@ -208,4 +208,32 @@ spec:
               on a fresh deployment before the first sync; otherwise suspect a
               wrong TENANT_ID (an empty one used to write rows no scoped query
               could find) or a connector that has never completed a run.
+
+    # ---------------------------------------------------------------------
+    # Raw CronJob health, from kube-state-metrics rather than this API's own
+    # Postgres-derived gauges (#181). `copilot-verify` ran on the chart's
+    # unpinned `0.1.0` default image for its entire life before
+    # ai-helm-values#996 pinned it to the fixed binary — every scheduled run
+    # failed, silently, because nothing here alerted on a raw Job failure the
+    # way it does on a stale/absent `governance_connector_*` series. This
+    # group exists specifically so that class of failure (the collector runs
+    # and exits non-zero, rather than never running or going stale) is never
+    # silent again, independent of whether the container ever gets far enough
+    # to emit its own metrics.
+    - name: {{ .Values.name }}.jobs
+      rules:
+        - alert: CopilotVerifyJobFailed
+          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}", job_name=~"copilot-verify-.*"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "copilot-verify CronJob run failed"
+            description: >-
+              {{ "{{ $labels.job_name }}" }} exited non-zero. This job reconciles
+              stored Copilot rows against their ingest manifests — a failing run
+              means drift is going unchecked, not merely that data is stale (see
+              CopilotSyncStale for that case). Check the `verify` container's
+              logs first: `kubectl -n {{ .Release.Namespace }} logs
+              {{ "{{ $labels.job_name }}" }}-<pod-suffix> -c verify`.
 {{- end }}
