@@ -52,9 +52,7 @@ pub fn remember(config: &OauthConfig, path: &Path) -> Result<()> {
     if doc.as_table().is_empty() {
         // Only on a file we are creating: never prepend to someone else's.
         doc.decor_mut().set_prefix(
-            "# Written by `governance-auth login`. Edit freely -- later logins\n\
-             # update only the keys they set and leave the rest, comments included.\n\
-             # Secrets are NOT stored here; see `otel_token_file` in the docs.\n\n",
+            crate::templates::config_header().context("rendering the config-file header")?,
         );
     }
 

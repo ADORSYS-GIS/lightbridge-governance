@@ -287,20 +287,13 @@ pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<O
     fs::create_dir_all(&env_dir).with_context(|| format!("creating {}", env_dir.display()))?;
 
     let posix_env = env_dir.join("otel.env");
-    let mut posix = String::from(
-        "# Written by `governance-auth`. Mode 0600 on purpose: this file can hold a\n\
-         # credential. It is sourced from your shell rc file so the rc file itself\n\
-         # stays safe to commit.\n",
-    );
-    let mut fish =
-        String::from("# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n");
-    for (key, val) in &exports {
-        posix.push_str(&format!("export {key}='{val}'\n"));
-        fish.push_str(&format!("set -gx {key} '{val}'\n"));
-    }
+    let posix =
+        crate::templates::shell_env_sh(&exports).context("rendering the POSIX shell env file")?;
     write_atomically(&posix_env, posix.as_bytes())?;
 
     let fish_env = env_dir.join("otel.fish");
+    let fish =
+        crate::templates::shell_env_fish(&exports).context("rendering the fish shell env file")?;
     write_atomically(&fish_env, fish.as_bytes())?;
 
     let mut outcomes = vec![
@@ -805,13 +798,7 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         // is no shape of this block that reaches a chat-completions gateway.
         provider.insert("wire_api", toml_edit::value("responses"));
         provider.decor_mut().set_prefix(
-            "\n# Written by `governance-auth configure --gateway-url`, and made the\n\
-             # default by `model_provider` at the top of this file.\n\
-             # \u{26a0} The gateway routes and auth-gates /v1/responses (401, where an\n\
-             # absent path 404s). Whether UPSTREAM serves it was not re-verified --\n\
-             # that needs an authenticated request, and a well-formed body used to\n\
-             # 404 from upstream. If Codex errors on every call, that is the first\n\
-             # thing to check; `--config model_provider=openai` reverts for a run.\n",
+            crate::templates::codex_provider_banner().context("rendering the Codex banner")?,
         );
 
         let auth = table_entry(provider, "auth")?;

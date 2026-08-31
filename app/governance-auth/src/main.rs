@@ -24,6 +24,7 @@ mod oauth;
 mod otel;
 mod redacted;
 mod security;
+mod templates;
 mod update;
 
 use anyhow::{Context, Result};
