@@ -7,6 +7,31 @@ use std::path::Path;
 
 /// Right-pads to `width` counting CHARACTERS, not bytes -- a path with a
 /// non-ASCII character would otherwise be padded short.
+/// Renders a remaining lifetime for a human.
+///
+/// ⚠️ `expires_in` goes NEGATIVE once the token is past its `exp`, which is the
+/// normal state for a session waiting to be refreshed. Printed raw that reads
+/// `needs refresh, -8338s` -- arithmetic, not information. Seen on the test VM;
+/// every unit fixture used a positive value, so nothing caught it.
+///
+/// The plain single-line output keeps the raw seconds: it is a documented
+/// surface (`commands.md`) that a test asserts on, and changing it would break
+/// anyone parsing it.
+pub(super) fn ago(seconds: i64) -> String {
+    let past = seconds < 0;
+    let s = seconds.unsigned_abs();
+    let text = match s {
+        0..=90 => format!("{s}s"),
+        91..=5400 => format!("{}m", s.div_ceil(60)),
+        _ => format!("{}h", s.div_ceil(3600)),
+    };
+    if past {
+        format!("expired {text} ago")
+    } else {
+        format!("{text} left")
+    }
+}
+
 pub(super) fn pad(text: &str, width: usize) -> String {
     let len = text.chars().count();
     format!("{text}{}", " ".repeat(width.saturating_sub(len)))
