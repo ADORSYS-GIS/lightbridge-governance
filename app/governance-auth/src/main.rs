@@ -144,6 +144,27 @@ async fn main() -> Result<()> {
     // Every other command still resolves before it does any work, so a missing
     // value is still reported immediately with no partial work done.
     let http = reqwest::Client::builder()
+        // ⚠️ Without these, a server that accepts the connection and then says
+        // nothing blocks the process for ever. That is not a lost wake: the
+        // drain holds `copilot-push.lock` across its POSTs, so one stuck
+        // `copilot-push` wedges every later one behind it, and the sample
+        // systemd unit (`Type=oneshot`) defaults `TimeoutStartSec=` to
+        // infinity so nothing kills it either. Measured: a healthy collector
+        // received zero requests from the wake after a stuck one.
+        //
+        // A READ timeout, not a total `timeout()`: read_timeout resets after
+        // every successful read, so it catches a silent peer without putting a
+        // deadline on a large body. `self-update` streams a release binary
+        // over this same client and a total deadline would fail that on a slow
+        // link.
+        //
+        // 15s is half again the OpenTelemetry SDKs' own default OTLP exporter
+        // timeout, and the cost of it firing early is asymmetric in the safe
+        // direction: a timed-out POST advances nothing, so the bytes stay
+        // pending and go again on the next wake. Nothing is ever lost by
+        // being impatient here.
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(15))
         // `--issuer`/discovery already reject an insecure *initial* request
         // URL (config::parse_issuer, oauth::discovery::require_same_origin)
         // -- this redirect policy is the other half: it re-checks every hop

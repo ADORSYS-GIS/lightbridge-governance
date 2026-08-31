@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use super::super::{checkpoint, push::Signal};
+use super::super::{checkpoint, push::Signal, quarantine};
 
 struct TempDir(PathBuf);
 
@@ -47,6 +47,7 @@ fn a_stored_checkpoint_round_trips() {
         last_push_records: 12,
         discarded_total: 3,
         last_discard_unix: Some(1_788_191_900),
+        quarantine: quarantine::Quarantine::default(),
     };
 
     checkpoint::store(&path, &written).expect("storing");

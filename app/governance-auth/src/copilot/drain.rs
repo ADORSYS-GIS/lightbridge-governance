@@ -16,14 +16,22 @@
 //! simply failed. Both are attempted every run for the same reason: a failure
 //! on one says nothing about the other.
 //!
+//! ## Why a failed pass still moves an offset
+//!
+//! [`export::signal`] resolves a range left to right and reports the prefix it
+//! got through, so "the pass failed" and "the pass delivered nothing" are
+//! different answers. Advancing over the prefix regardless is the whole fix
+//! for the duplicate-delivery defect: what the collector took is recorded the
+//! moment the pass ends, however it ends.
+//!
 //! ## When the loss counter moves
 //!
-//! Records lost in the transform are attributed to the range the **shared**
-//! offset advances over -- the byte both signals agree on. Counting them when
-//! either signal advanced would count them again on the next run, which
-//! re-reads the same lines because the shared offset did not move. Records the
-//! collector refused are counted immediately instead: they are per-signal and
-//! that signal's offset has moved past them, so nothing will re-discover them.
+//! Records lost in the transform are attributed to the bytes the **shared**
+//! offset just advanced over -- the range both signals now agree on. Counting
+//! them over the whole drain would count them again on the next run, which
+//! re-reads whatever the shared offset did not cover. Records the collector
+//! refused are counted immediately instead: that signal's offset has moved
+//! past them, so nothing will re-discover them.
 
 use std::path::Path;
 
@@ -32,8 +40,8 @@ use anyhow::{Context, Result};
 use super::{
     batch, checkpoint,
     checkpoint::Checkpoint,
-    export, lock,
-    push::Signal,
+    lock,
+    pass::{self, Endpoint, Outcome, Target},
     spool::{self, Line},
 };
 use crate::redacted::Redacted;
@@ -88,9 +96,7 @@ pub async fn once(
         return Ok(());
     }
 
-    let counts = batch::build(&drained.lines).counts;
-    eprintln!("{}", counts.describe());
-    let lost_in_transform = counts.discarded();
+    eprintln!("{}", batch::build(&drained.lines).counts.describe());
 
     if dry_run {
         eprintln!(
@@ -105,66 +111,60 @@ pub async fn once(
     // no checkpoint" is what a drain that has never delivered anything looks
     // like, and `status` says so.
     let before = state.clone();
-    let mut failures = Vec::new();
-    let mut pushed: u64 = 0;
-    let mut refused: u64 = 0;
+    let now = checkpoint::now_unix()?;
+    let target = Target {
+        lines: &drained.lines,
+        end_offset: drained.next_offset,
+        now,
+    };
+    let to = Endpoint {
+        http,
+        base: endpoint,
+        bearer,
+    };
+    let outcome = pass::both(&to, &mut state, target).await;
 
-    for signal in [Signal::Metrics, Signal::Logs] {
-        let pending = pending_for(&state, signal, &drained.lines);
-        match export::signal(http, endpoint, signal, bearer, &pending).await {
-            Ok(done) => {
-                state.advance(signal, drained.next_offset);
-                pushed = pushed.saturating_add(u64::try_from(done.accepted).unwrap_or(u64::MAX));
-                refused = refused.saturating_add(u64::try_from(done.refused).unwrap_or(u64::MAX));
-            }
-            Err(error) => failures.push(format!("{error:#}")),
-        }
-    }
-
-    // Only once BOTH signals have cleared the range is the transform's loss
-    // final; until then the next run re-reads these lines and re-counts them.
-    let settled = state.offset >= drained.next_offset;
-    state.record_discards(refused.saturating_add(if settled { lost_in_transform } else { 0 }))?;
+    // The transform's loss is final only for the bytes the SHARED offset just
+    // covered; anything past it is re-read, and re-counted, next run.
+    let delivered: Vec<&Line> = drained
+        .lines
+        .iter()
+        .filter(|line| line.offset < state.offset)
+        .collect();
+    let lost_in_transform = batch::build(&delivered).counts.discarded();
+    state.record_discards(outcome.discarded.saturating_add(lost_in_transform))?;
     // Only on an actual push: these two describe the last delivery, and a run
     // that delivered nothing did not make one. Overwriting them with zeros
     // would erase the evidence that a push ever succeeded, which is exactly
     // what `status` uses to tell a stalled timer from a fresh install.
-    if pushed > 0 {
-        state.last_push_records = pushed;
-        state.last_push_unix = Some(checkpoint::now_unix()?);
+    if outcome.pushed > 0 {
+        state.last_push_records = outcome.pushed;
+        state.last_push_unix = Some(now);
     }
     if state != before {
         checkpoint::store(&checkpoint_path, &state)?;
     }
-    report(
-        &state,
-        pushed,
-        refused,
-        settled.then_some(lost_in_transform),
-    );
+    report(&state, &outcome, lost_in_transform);
 
-    if failures.is_empty() {
-        return Ok(());
-    }
-    Err(anyhow::anyhow!(failures.join("; ")))
+    pass::settled(&outcome)
         .context("the collector did not accept every signal; those bytes stay pending")
 }
 
-/// The lines one signal has not yet delivered. Borrowed, not cloned: a full
-/// drain is megabytes of strings and this runs twice per pass.
-fn pending_for<'a>(state: &Checkpoint, signal: Signal, lines: &'a [Line]) -> Vec<&'a Line> {
-    let from = state.signal_offset(signal);
-    lines.iter().filter(|line| line.offset >= from).collect()
-}
-
-fn report(state: &Checkpoint, pushed: u64, refused: u64, lost: Option<u64>) {
-    if pushed > 0 {
+fn report(state: &Checkpoint, outcome: &Outcome, lost: u64) {
+    if outcome.pushed > 0 {
         eprintln!(
-            "Pushed {pushed} record(s); checkpoint at byte {}.",
-            state.offset
+            "Pushed {} record(s); checkpoint at byte {}.",
+            outcome.pushed, state.offset
         );
     }
-    let discarded = refused.saturating_add(lost.unwrap_or_default());
+    if outcome.held > 0 {
+        eprintln!(
+            "{} record(s) the collector refused on their own are held, not discarded: a single \
+             400 can come from a proxy rather than from the payload. The next wake decides.",
+            outcome.held
+        );
+    }
+    let discarded = outcome.discarded.saturating_add(lost);
     if discarded > 0 {
         eprintln!(
             "⚠️  discarded {discarded} record(s) that will never reach the collector ({} in \

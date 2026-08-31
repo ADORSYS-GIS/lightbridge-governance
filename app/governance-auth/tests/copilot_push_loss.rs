@@ -83,6 +83,48 @@ async fn records_the_parser_cannot_place_are_counted_as_lost_not_swallowed() -> 
     Ok(())
 }
 
+/// The third outcome the invariant has no room for: **delivered empty**.
+///
+/// Only `_body` is renamed here, so the record still parses and still looks
+/// like a log line. It used to be exported with a timestamp, some attributes
+/// and nothing else -- a request the collector answered 200 to, a run that
+/// printed "Pushed 2 record(s)", and a green `status` row. Recorded as
+/// delivered, and the content gone.
+#[tokio::test]
+async fn a_record_that_would_be_exported_empty_is_counted_as_lost_not_delivered() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    let collector = MockCollector::start(Behavior::Accept).await?;
+    let spool = fixture::seed_spool(&harness)?;
+    fixture::write_spool(
+        &spool,
+        &[fixture::body_renamed_line(), fixture::body_renamed_line()],
+    )?;
+    harness.seed_session(&fixture::fresh_session(harness.issuer())?)?;
+
+    let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    assert_eq!(
+        collector.request_count()?,
+        0,
+        "an empty envelope is not a delivery; posting it is what made this look successful. \
+         Payloads: {:?}",
+        collector.payloads()?
+    );
+    let state = checkpoint(&harness)?;
+    assert_eq!(
+        field(&state, "discarded_total"),
+        Some(2),
+        "both records were consumed and carried nothing to the collector: {state:?}, stderr: \
+         {stderr}"
+    );
+    assert!(
+        !stderr.contains("Pushed"),
+        "a run that delivered nothing must not report a push: {stderr}"
+    );
+    Ok(())
+}
+
 /// A run pointed at a path that does not exist must leave the checkpoint
 /// exactly where it was. Rewinding to 0 makes the next *correct* run re-export
 /// the entire spool, which is duplicated billing data at the collector.

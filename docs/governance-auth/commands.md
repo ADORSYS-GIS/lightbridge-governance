@@ -232,7 +232,21 @@ A checkpoint written by an older build carries only `offset`, and both signals r
 Only one drain runs at a time. `<state_dir>/copilot-push.lock` guards the whole
 read → POST → write sequence, because the timer and a developer running the command by hand
 (which the `status` row below tells them to do) otherwise read the same offset and ship the
-same records twice. A run that finds the lock held waits rather than failing.
+same records twice. A run that finds the lock held waits rather than failing — but not for
+ever: after **two minutes** behind a drain that is still running it gives up on that wake and
+says so, rather than queueing behind a process that may be stuck. It never steals a valid
+lock.
+
+### Progress is monotonic, even when a wake fails
+
+An offset moves over the records a wake **resolved**, counted from the front, whether or not
+the wake as a whole succeeded. That is not a detail: what the collector accepted is recorded
+the moment the wake ends, so a wake that stops half way costs a wake and never a duplicate.
+The split below therefore works strictly left to right, because a byte offset can only ever
+say "everything up to here is done".
+
+Work per wake is bounded (512 requests per signal). Reaching that bound is not a failure of
+the batch — the wake stops, the offset stands where it got to, and the next wake continues.
 
 ### When a record is given up on
 
@@ -240,19 +254,27 @@ The drain is allowed to discard a record. It is not allowed to do it quietly, an
 places it can happen are:
 
 - **The parser cannot read it** — an unparsable line, an unrecognised shape, a metric kind
-  this build does not translate, or a data point whose value changed type. Counted, the
-  offset moves past it.
+  this build does not translate, a data point whose value changed type, or a record that
+  parses but carries nothing this build can export (a log line with no `_body`, a metrics
+  line that declared a metric and produced no data points). Counted, the offset moves past it.
 - **The collector permanently refuses it** — HTTP 400, 413 or 422 only. The batch is split in
   half and re-offered, down to single records, until the one responsible is isolated; it is
   then dropped and the rest go through. Every other failure (401, 403, 404, 408, 429, any 5xx,
   any network error) is retried on the next wake and advances nothing, because those say
   something about the moment or the deployment rather than about the payload.
 
-The guard on the second rule: a record is only dropped once the collector has **accepted
-something else from the same batch**. A collector misconfigured to reject everything is a
-configuration fault, not a spool full of bad records, so that case advances nothing and
-discards nothing. The cost is that a batch of exactly one refused record waits until
-something acceptable arrives beside it — self-healing, not stuck.
+Two guards on the second rule:
+
+- **A refusal is evidence, not a verdict.** A record is only given up on once it has been
+  refused on its own across **two separate wakes**. An HTTP 400 is a deterministic function of
+  the payload only if nothing sits in front of the collector; a WAF, a proxy or an upstream
+  restart returns 400 for reasons of its own, and a drain that trusted a single one deleted
+  valid telemetry. The first refusal *holds* the record and stops that wake there — everything
+  before it is already delivered and recorded. On a five-minute timer a bad record therefore
+  costs one extra wake, and a batch with several costs one wake each.
+- **And only once the collector has been shown to accept something** — earlier in the same
+  wake, or within the last hour (`last_push_unix`). A collector misconfigured to reject
+  everything has never accepted anything, so that case advances nothing and discards nothing.
 
 Both counts land in the checkpoint as `discarded_total`/`last_discard_unix`, and `status`
 shows them until they age out. The alternative — never advancing — is not the safe option it
@@ -300,6 +322,13 @@ Description=Drain the GitHub Copilot OTel spool to the governed collector
 Type=oneshot
 # Absolute path: a user timer does not inherit your shell's PATH.
 ExecStart=%h/.local/bin/governance-auth copilot-push
+# ⚠️ NOT optional. systemd.service(5) defaults `TimeoutStartSec=` for a
+# `Type=oneshot` unit to *infinity*, so without this line a wake that gets
+# stuck is never killed — it just sits there. The command has its own HTTP
+# read timeout and its own lock ceiling, so it should never come close to
+# this; the value is a backstop for the case those two do not cover, and it
+# is deliberately shorter than the timer interval so wakes cannot pile up.
+TimeoutStartSec=240
 ```
 
 `~/.config/systemd/user/governance-auth-copilot-push.timer`:
@@ -354,6 +383,20 @@ the file with `sed "s|\$HOME|$HOME|"`.
   <integer>300</integer>
   <key>RunAtLoad</key>
   <true/>
+  <!-- ⚠️ launchd has NO equivalent of systemd's TimeoutStartSec=, and the
+       plausible-looking keys are not it: ExitTimeOut bounds how long launchd
+       waits after SIGTERM before SIGKILL, not how long the job may run.
+       A StartInterval job that is still running when the interval fires is
+       simply skipped, so a wedged wake does not pile up — it silently stops
+       the drain instead, which is worse. On macOS the guarantee therefore
+       comes entirely from the command itself: the HTTP read timeout and the
+       copilot-push lock ceiling. Both are in-process, so they apply here
+       exactly as they do under systemd.
+       If you want an external backstop as well, install GNU coreutils and
+       wrap the two ProgramArguments strings in
+       `gtimeout 240 <path> copilot-push`. -->
+  <key>AbandonProcessGroup</key>
+  <false/>
   <!-- Not /tmp: that is world-writable, so the name is predictable and another
        local user can pre-create or replace the file. ~/Library/Logs is the
        per-user location Console.app already reads. Nothing rotates it, so

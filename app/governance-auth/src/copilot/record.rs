@@ -19,6 +19,11 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+/// Which shape a line carries. Lives in [`super::classify`] only because this
+/// file would otherwise be over the 200-LoC ceiling; it is *about* the shapes
+/// below, so it stays reachable as `record::classify`.
+pub use super::classify::{Kind, classify};
+
 /// The JS SDK's `HrTime`: `[seconds, nanoseconds]`. A `Vec`, not `[i64; 2]`,
 /// so a record carrying a differently-shaped array degrades to "no timestamp"
 /// instead of failing the whole line's parse.
@@ -154,45 +159,4 @@ pub struct SpanContext {
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub trace_flags: Option<u32>,
-}
-
-/// Which of the record shapes a line carries.
-///
-/// Dispatched on *key presence* rather than a `#[serde(untagged)]` enum:
-/// untagged tries each variant and reports only "data did not match any
-/// variant", and both variants here deserialise successfully from `{}` (every
-/// field is optional), so untagged would silently classify empty and unknown
-/// records as metrics. The live spool contains 22 literal `{}` lines out of
-/// 98, so that is not a hypothetical.
-///
-/// ⚠️ [`Kind::Empty`] is separate from [`Kind::Unknown`] on purpose, and the
-/// distinction is load-bearing rather than tidy. An unrecognised record is
-/// **lost data** and `status` colours it accordingly; a `{}` record carries
-/// nothing to lose. Folding the two together would put 22 of every 98 records
-/// into the loss counter on a perfectly healthy install, and a row that is
-/// always red is a row nobody reads -- which is exactly how a real parser
-/// regression stays invisible.
-pub fn classify(line: &Value) -> Kind {
-    let Some(object) = line.as_object() else {
-        return Kind::Unknown;
-    };
-    if object.is_empty() {
-        return Kind::Empty;
-    }
-    if object.contains_key("scopeMetrics") {
-        return Kind::Metrics;
-    }
-    if object.contains_key("_body") || object.contains_key("hrTime") {
-        return Kind::Log;
-    }
-    Kind::Unknown
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Kind {
-    Metrics,
-    Log,
-    /// A literal `{}`: known-benign, carries nothing, counted apart from loss.
-    Empty,
-    Unknown,
 }

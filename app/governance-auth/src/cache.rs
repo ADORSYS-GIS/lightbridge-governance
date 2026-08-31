@@ -351,6 +351,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 /// not timeout-based: a lock whose recorded PID is no longer running is
 /// reclaimed immediately, so a legitimately slow holder (an interactive
 /// `login` waiting on a human) is never preempted just because time passed.
+#[derive(Debug)]
 pub struct FileLock {
     path: PathBuf,
     pid: u32,
@@ -358,21 +359,31 @@ pub struct FileLock {
 
 impl FileLock {
     pub fn acquire(issuer: &str, client_id: &str) -> Result<Self> {
-        Self::acquire_at(lock_path(issuer, client_id)?)
+        Self::acquire_at(lock_path(issuer, client_id)?, None)
     }
 
     /// The same lock over an arbitrary state file. Exists so `copilot-push`
     /// can hold ONE writer over its own read-drain-post-write critical
     /// section without a second, subtly different implementation of stale-lock
     /// recovery -- that logic is the part worth having exactly one of.
-    pub fn acquire_at(path: PathBuf) -> Result<Self> {
+    ///
+    /// `live_holder_ceiling` is how long to keep waiting on a holder that is
+    /// **confirmed alive**. `None` -- what `login`/`token` pass -- waits
+    /// indefinitely, because an interactive login legitimately runs for as
+    /// long as a human takes and preempting it would break the single-writer
+    /// guarantee. A caller on a timer wants a ceiling instead: a wake that
+    /// gives up is one lost wake, whereas a wake that waits for ever behind a
+    /// stuck peer is a permanently stuck drain. Reaching the ceiling is an
+    /// ERROR, never a reclaim -- the holder is alive and its lock is valid.
+    pub fn acquire_at(path: PathBuf, live_holder_ceiling: Option<Duration>) -> Result<Self> {
         // Must be the STATE dir, not the cache dir: every lock this takes
         // lives beside the file it guards, and creating the wrong directory
         // here would leave the lock's own parent missing.
         let dir = state_dir()?;
         create_state_dir(&dir)?;
         let pid = std::process::id();
-        let deadline = Instant::now() + LOCK_MAX_WAIT;
+        let started = Instant::now();
+        let deadline = started + LOCK_MAX_WAIT;
 
         loop {
             match fs::OpenOptions::new()
@@ -422,12 +433,29 @@ impl FileLock {
                             continue;
                         }
                         Some(true) => {
-                            // Confirmed alive -- keep waiting, no timeout.
-                            // An interactive `login` can legitimately run
-                            // for minutes; preempting it here would break
-                            // the single-writer guarantee this lock exists
-                            // for, on a real cadence (an automated `token`
-                            // re-invoke racing a slow human login).
+                            // Confirmed alive -- keep waiting. The lock is
+                            // NEVER stolen here: an interactive `login` can
+                            // legitimately run for minutes, and preempting it
+                            // would break the single-writer guarantee this
+                            // lock exists for, on a real cadence (an
+                            // automated `token` re-invoke racing a slow human
+                            // login).
+                            //
+                            // A caller that supplied a ceiling gives up
+                            // instead, and says so. That is the difference
+                            // between one lost wake and a drain wedged for
+                            // ever behind a peer stuck on a socket.
+                            if let Some(ceiling) = live_holder_ceiling
+                                && started.elapsed() >= ceiling
+                            {
+                                return Err(anyhow::anyhow!(
+                                    "{} is still held by a live process after {}s. Giving up \
+                                     rather than waiting indefinitely -- the lock is valid, so it \
+                                     was not taken. Check whether an earlier run is stuck.",
+                                    path.display(),
+                                    ceiling.as_secs()
+                                ));
+                            }
                             std::thread::sleep(LOCK_POLL_INTERVAL);
                         }
                         None => {
@@ -643,6 +671,32 @@ mod tests {
     fn a_lock_held_by_this_live_process_is_reported_alive() {
         let (_s, path) = lock_containing("live", &std::process::id().to_string());
         assert_eq!(holder_liveness(&path), Some(true));
+    }
+
+    /// A confirmed-live holder is never preempted, so a caller with nothing to
+    /// wait for -- `copilot-push` on a timer -- has to be able to give up
+    /// instead. Without a ceiling, one drain stuck on a socket wedges every
+    /// later wake behind it for ever, which is a permanently stuck drain
+    /// rather than one lost wake.
+    #[test]
+    fn a_ceiling_gives_up_on_a_live_holder_rather_than_waiting_for_ever() {
+        let (_s, path) = lock_containing("ceiling", &std::process::id().to_string());
+        let started = Instant::now();
+        let error = FileLock::acquire_at(path.clone(), Some(Duration::from_millis(300)))
+            .expect_err("a live holder must not be preempted, so this cannot succeed");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "waited {:?}; with no ceiling this blocks until the holder exits",
+            started.elapsed()
+        );
+        assert!(
+            error.to_string().contains("still held by a live process"),
+            "the error must say what happened: {error:#}"
+        );
+        assert!(
+            path.exists(),
+            "giving up must NOT delete a valid lock -- the holder is alive and still writing"
+        );
     }
 
     /// A failed session write must not strand a `.json.tmp` in the credential

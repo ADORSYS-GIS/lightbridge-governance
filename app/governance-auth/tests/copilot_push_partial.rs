@@ -77,8 +77,17 @@ async fn an_accepted_signal_is_not_re_sent_when_the_other_one_fails() -> Result<
 
 /// One record the collector will never accept must not stop every record
 /// behind it. The bytes may be given up on -- but only after the collector has
-/// demonstrably taken others from the same batch, and only with the loss
+/// demonstrably taken others from the same batch, only once **two separate
+/// wakes** have each refused that record on its own, and only with the loss
 /// recorded.
+///
+/// ⚠️ The second-wake requirement is not padding, and this test used to assert
+/// the opposite (one wake, one discard). An audit against a gateway answering
+/// 400 for reasons of its own -- a WAF, a proxy, an upstream hiccup -- had one
+/// round in twelve permanently discard four *valid* records and exit 0,
+/// because a single 400 was read as a property of the payload. So the
+/// assertions below are strictly stronger than the one they replace: nothing
+/// may be discarded on wake 1, and the same end state must still be reached.
 #[tokio::test]
 async fn a_permanently_rejected_record_does_not_block_the_stream_forever() -> Result<()> {
     let harness = Harness::new("https://unreachable.invalid.example")?;
@@ -98,6 +107,27 @@ async fn a_permanently_rejected_record_does_not_block_the_stream_forever() -> Re
         ],
     )?;
     let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
+
+    let first = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
+    let after_first = checkpoint(&harness)?;
+    assert_eq!(
+        after_first
+            .as_ref()
+            .and_then(|s| s.get("discarded_total")?.as_u64())
+            .unwrap_or_default(),
+        0,
+        "one wake's 400 is not evidence that a record is bad: {after_first:?}, stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        after_first
+            .as_ref()
+            .and_then(|s| s.get("offset")?.as_u64())
+            .unwrap_or_default()
+            > 0,
+        "the records before it were delivered, so the offset must have moved past them: \
+         {after_first:?}"
+    );
 
     let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

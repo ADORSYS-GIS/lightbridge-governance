@@ -22,7 +22,7 @@
 //! two different locks. This one is keyed on the checkpoint, like the
 //! checkpoint file itself.
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 
@@ -32,7 +32,22 @@ use crate::cache::FileLock;
 /// the thing being guarded is the spool's progress, not a session.
 const FILE_NAME: &str = "copilot-push.lock";
 
-/// Blocks until no other drain is running.
+/// How long to wait on a drain that is confirmed still running before giving
+/// up on this wake.
+///
+/// ⚠️ Unlike `login`, this caller is on a timer and there is no human to wait
+/// for, so "wait indefinitely on a live holder" is the wrong default here: one
+/// `copilot-push` stuck on a socket would hold the lock for ever and every
+/// later wake would queue behind it -- a permanently stuck drain rather than
+/// one lost wake. That was measured: a healthy collector received zero
+/// requests from the wake after a stuck one.
+///
+/// Two minutes is far above any healthy drain (the HTTP client's own read
+/// timeout is 30s, so a legitimate wake cannot approach this) and far below a
+/// five-minute timer interval, so at most one wake is ever queued.
+const HELD_BY_A_LIVE_DRAIN: Duration = Duration::from_secs(120);
+
+/// Blocks until no other drain is running, or until [`HELD_BY_A_LIVE_DRAIN`].
 ///
 /// Waiting rather than exiting is deliberate. The overlapping cases are a
 /// timer wake and an impatient human, and for both the useful outcome is "your
@@ -41,6 +56,6 @@ const FILE_NAME: &str = "copilot-push.lock";
 /// seconds. Stale locks are reclaimed by PID liveness, so a crashed drain does
 /// not block the next one; see [`FileLock`].
 pub fn acquire(state_dir: &Path) -> Result<FileLock> {
-    FileLock::acquire_at(state_dir.join(FILE_NAME))
+    FileLock::acquire_at(state_dir.join(FILE_NAME), Some(HELD_BY_A_LIVE_DRAIN))
         .context("waiting for another `copilot-push` to finish")
 }

@@ -123,13 +123,26 @@ pub fn build<S: AsRef<str>>(lines: &[S]) -> Batch {
         match record::classify(&value) {
             Kind::Metrics => match serde_json::from_value::<MetricsRecord>(value) {
                 Ok(parsed) => {
+                    let declared = parsed
+                        .scope_metrics
+                        .iter()
+                        .any(|scope| !scope.metrics.is_empty());
                     let (groups, skipped) = metrics::transform(&parsed);
                     counts.unsupported_metrics = counts
                         .unsupported_metrics
                         .saturating_add(skipped.unsupported);
                     counts.dropped_points = counts.dropped_points.saturating_add(skipped.points);
-                    if groups.iter().any(|(_, _, items)| !items.is_empty()) {
+                    let produced = groups.iter().any(|(_, _, items)| !items.is_empty());
+                    if produced {
                         counts.metrics = counts.metrics.saturating_add(1);
+                    } else if declared && skipped.unsupported == 0 && skipped.points == 0 {
+                        // The logs-side twin of the renamed `_body`: a line
+                        // that declared a metric and produced nothing, with
+                        // nothing counted on the way. `dataPoints` moving is
+                        // enough to do it -- the per-point counters only move
+                        // for points that were present and bad, so an empty
+                        // list slipped through as a silent no-op.
+                        counts.unknown = counts.unknown.saturating_add(1);
                     }
                     metric_groups.extend(groups);
                 }

@@ -81,19 +81,30 @@ Mode `0600`, written tmp-then-rename. Records how far into the Copilot spool
 | `logs_offset` | bytes `/v1/logs` has accepted |
 | `last_push_unix`, `last_push_records` | the last delivery; untouched by a run that delivered nothing |
 | `discarded_total`, `last_discard_unix` | records consumed that will never reach the collector |
+| `quarantine` | records the collector refused on their own, keyed by a truncated SHA-256 of the line |
 
 Two offsets rather than one because the signals go to different endpoints and are accepted
 independently; a single offset re-posted an accepted metrics batch on every wake for as long
 as logs kept failing. A file written by an older build has neither key, and both signals
 resume from `offset` — defaulting them to 0 would re-export the whole spool after an upgrade.
+`quarantine` is likewise absent from an older file and defaults to empty.
 
 `discarded_total` is what makes loss visible rather than merely logged: the drain is allowed
 to give up on a record it cannot translate or the collector will not take (otherwise one bad
 record stops the stream permanently), and this is the count `status` turns non-green on.
 
+`quarantine` is what stops a *single* refusal being enough to give up on a record — a 400 from
+a proxy is not a statement about the payload, and a drain that treated it as one deleted valid
+telemetry. Each entry counts the separate wakes that refused one record and whether the
+collector has been shown to accept anything meanwhile; entries expire after a week and the
+table is capped, so it cannot grow without bound. **The key is a digest, never the record**:
+`AGENTS.md` bans writing a payload anywhere, and this one is prompt-adjacent telemetry.
+
 A sibling `copilot-push.lock` guards the whole read-drain-post-write sequence, so the timer
 and a hand-run command cannot both ship the same records. Same PID-liveness stale-lock
-recovery as the session lock above.
+recovery as the session lock above, plus a two-minute ceiling on waiting for a drain that is
+still running — a timer has nothing to wait for, and one stuck process must not wedge every
+later wake behind it. The ceiling gives up; it never steals a valid lock.
 
 State, not cache, for the same reason the session is — losing it does not log anyone out, but
 it does mean the next run re-pushes the whole spool, which is duplicate usage data at the

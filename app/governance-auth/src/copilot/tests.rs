@@ -11,8 +11,10 @@ use serde_json::{Value, json};
 use super::{batch, record, spool};
 
 mod checkpoint;
+mod content;
 mod drain;
 mod points;
+mod quarantine;
 mod transform;
 
 /// A metrics line carrying one SUM and one HISTOGRAM, in the exact nesting

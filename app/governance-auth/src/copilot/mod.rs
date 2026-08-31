@@ -44,14 +44,18 @@
 
 mod batch;
 mod checkpoint;
+mod classify;
 mod drain;
 mod export;
 mod lock;
 mod logs;
 mod metrics;
 mod otlp;
+mod pass;
 mod points;
+mod private_file;
 mod push;
+mod quarantine;
 mod record;
 mod spool;
 mod status;

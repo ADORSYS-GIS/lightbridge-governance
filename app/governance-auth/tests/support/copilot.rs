@@ -144,6 +144,25 @@ pub fn drifted_line() -> Value {
     })
 }
 
+/// The *smaller* drift, and therefore the likelier one: a Copilot release
+/// renames only `_body` -> `body` and leaves `hrTime` alone.
+///
+/// This used to be exported anyway. The classifier matched on `hrTime`, every
+/// field of the log shape is optional so it parsed, and what reached the
+/// collector was a log record with a timestamp, some attributes and no body at
+/// all -- delivered empty, counted nowhere, `status` green. That is a third
+/// outcome the stated invariant ("delivered or recorded as lost") does not
+/// have room for.
+pub fn body_renamed_line() -> Value {
+    let mut line = log_line();
+    if let Some(object) = line.as_object_mut()
+        && let Some(body) = object.remove("_body")
+    {
+        object.insert("body".to_owned(), body);
+    }
+    line
+}
+
 /// A well-formed log record carrying `marker` in its body, so a mock collector
 /// can reject exactly the batches that contain it.
 pub fn marked_log_line(marker: &str) -> Value {

@@ -1,5 +1,5 @@
 {
-  "app/governance-auth/src/cache.rs": 665,
+  "app/governance-auth/src/cache.rs": 719,
   "app/governance-auth/src/config_file.rs": 471,
   "app/governance-auth/src/config.rs": 1408,
   "app/governance-auth/src/oauth/discovery.rs": 296,

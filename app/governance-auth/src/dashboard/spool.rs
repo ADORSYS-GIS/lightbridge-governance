@@ -37,7 +37,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::style::{Colour, ago};
+use super::style::{Colour, since};
 use crate::{config::OauthConfig, copilot::SpoolStatus};
 
 /// How recent a discard has to be to still be an alarm. One day: long enough
@@ -110,13 +110,7 @@ impl Spool {
         }
 
         let last = match (status.last_push_unix.is_some(), self.last_push_age) {
-            // `ago` renders a *remaining* lifetime, so elapsed time is passed
-            // as a negative and comes back as "expired <n> ago" -- the same
-            // convention the session row's expiry already uses.
-            (true, Some(age)) => format!(
-                "last push {}",
-                ago(i64::try_from(age).unwrap_or(i64::MAX).saturating_neg())
-            ),
+            (true, Some(age)) => format!("last push {}", since(age)),
             (true, None) => "last push at an unknown time".to_owned(),
             (false, _) => "never pushed".to_owned(),
         };
@@ -151,10 +145,7 @@ impl Spool {
             .is_none_or(|age| age < FRESH_DISCARD_SECONDS);
         let colour = if recent { Colour::Red } else { Colour::Yellow };
         let when = match self.last_discard_age {
-            Some(age) => format!(
-                "last {}",
-                ago(i64::try_from(age).unwrap_or(i64::MAX).saturating_neg())
-            ),
+            Some(age) => format!("last {}", since(age)),
             None => "at an unknown time".to_owned(),
         };
         (

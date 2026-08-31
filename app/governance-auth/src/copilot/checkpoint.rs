@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::push::Signal;
+use super::{private_file, push::Signal, quarantine::Quarantine};
 
 /// The file name under the state dir. Sibling of the session files, which are
 /// named by `sha256(issuer + client_id)` -- this one is not, deliberately:
@@ -70,6 +70,12 @@ pub struct Checkpoint {
     pub discarded_total: u64,
     #[serde(default)]
     pub last_discard_unix: Option<u64>,
+    /// Records the collector has refused on their own, and on how many wakes.
+    /// Persisted rather than held per run because "refused twice, on separate
+    /// wakes" is the whole distinction between a bad payload and a flaky
+    /// gateway -- see [`Quarantine`].
+    #[serde(default)]
+    pub quarantine: Quarantine,
 }
 
 impl Checkpoint {
@@ -141,11 +147,11 @@ pub fn store(path: &Path, checkpoint: &Checkpoint) -> Result<()> {
     let dir = path
         .parent()
         .context("the checkpoint path has no parent directory")?;
-    create_private_dir(dir)?;
+    private_file::create_dir(dir)?;
 
     let bytes = serde_json::to_vec(checkpoint).context("serialising the push checkpoint")?;
     let tmp = path.with_extension("json.tmp");
-    write_private(&tmp, &bytes)?;
+    private_file::write(&tmp, &bytes)?;
     fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
@@ -155,46 +161,4 @@ pub fn now_unix() -> Result<u64> {
         .duration_since(UNIX_EPOCH)
         .context("reading the system clock")?
         .as_secs())
-}
-
-#[cfg(unix)]
-fn create_private_dir(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    if dir.is_dir() {
-        return Ok(());
-    }
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("creating state directory {}", dir.display()))
-}
-
-#[cfg(not(unix))]
-fn create_private_dir(dir: &Path) -> Result<()> {
-    fs::create_dir_all(dir).with_context(|| format!("creating state directory {}", dir.display()))
-}
-
-/// `0600` even though an offset is not secret: the state directory holds
-/// session files and this one sits beside them, so it inherits their
-/// permissions rather than introducing the one world-readable file in it.
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("opening {} for writing", path.display()))?;
-    file.write_all(bytes)
-        .with_context(|| format!("writing {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
 }
