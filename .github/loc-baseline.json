@@ -30,7 +30,7 @@
   "crates/governance-copilot/tests/store.rs": 484,
   "crates/governance-copilot/tests/support/mock_github.rs": 432,
   "crates/governance-core/src/connector_metrics.rs": 294,
-  "crates/governance-core/src/credential.rs": 286,
+  "crates/governance-core/src/credential.rs": 288,
   "crates/governance-core/src/identity.rs": 390,
   "crates/governance-core/src/ingest.rs": 1278,
   "crates/governance-core/src/migrate.rs": 241,
