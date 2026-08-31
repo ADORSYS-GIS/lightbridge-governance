@@ -145,6 +145,166 @@ Which files, and which keys inside them, is [`files.md`](./files.md).
 
 ---
 
+## `copilot-push`
+
+Drains VS Code Copilot Chat's OTel **spool file** and exports it to the collector over
+OTLP/HTTP.
+
+```bash
+governance-auth copilot-push
+governance-auth copilot-push --dry-run      # parse and report; post nothing, move nothing
+```
+
+### Why this command exists
+
+Claude Code and Codex export telemetry themselves. Copilot Chat can too — but through an
+HTTP exporter it only re-reads at window start, with no credential-helper hook, so a
+300-second bearer stops working minutes into a session and fails silently. Its *file*
+exporter has no such problem: it appends records to disk and something else ships them.
+Nothing in VS Code is that something else. This is.
+
+Turn it on in VS Code's `settings.json`:
+
+```jsonc
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.exporterType": "file",
+"github.copilot.chat.otel.outfile": "~/.local/state/governance-auth/copilot-otel.jsonl"
+```
+
+`configure` does **not** write `exporterType: "file"` — it writes `otlp-http`, which is the
+right default for anyone who has exported `OTEL_EXPORTER_OTLP_HEADERS` by hand. This command
+is opt-in.
+
+### ⚠️ The file is not OTLP
+
+It is the OpenTelemetry **JS SDK's internal object graph**, serialised one JSON object per
+line, private `_`-prefixed fields and all — `_body`, `_rawAttributes`, `hrTime` as
+`[seconds, nanoseconds]`, and `dataPointType`/`aggregationTemporality` as the *JS SDK's*
+enum integers, which are not OTLP's. `copilot-push` translates all of it.
+
+None of that is a wire format anybody promised to keep stable, so the parser degrades:
+a record it cannot read is **skipped and counted**, never fatal. Every run prints the tally:
+
+```
+49 metric record(s), 27 log record(s); skipped 0 unparsable, 22 unrecognised, 0 unsupported metric(s)
+```
+
+`unrecognised` is normal and not an error — Copilot's exporter really does write empty `{}`
+records (22 of 98 on the file this parser was built against). A number that *starts climbing*
+after a VS Code update is the signal that the shapes moved.
+
+### Fail-closed, stated exactly
+
+**No valid token means no data is consumed.** The bearer is obtained first — before the spool
+is opened, before the checkpoint is read, and including under `--dry-run`. A run that cannot
+authenticate exits non-zero having advanced nothing, discarded nothing, and posted nothing.
+
+`--dry-run` is deliberately *not* an offline preview. An offline mode would be a second path
+that reads the spool without a credential, and "there is exactly one such path and it starts
+with authentication" is a far easier property to keep true.
+
+### Idempotency, and why the spool is never truncated
+
+Progress is a **byte offset** in `<state_dir>/copilot-push.json`, advanced only after the
+collector has returned 2xx. Re-running with nothing new appended posts nothing and changes
+nothing. A rejected or unreachable collector leaves the offset where it was, so the same
+bytes are retried next run.
+
+The spool itself is never written to. VS Code holds it **open for append** for the life of
+the window; truncating a file another process holds at offset N does not move that process's
+offset, so the next append lands at N and the kernel zero-fills the gap — the file grows a
+hole of NUL bytes and every later parse is garbage. That is true on Linux and macOS alike, so
+there is no safe truncation to implement and none is attempted. Reclaiming disk is Copilot's
+job (it rotates its own outfile) or a human's, with VS Code closed.
+
+If the file *is* shorter than the recorded offset, that is a rotation: the drain restarts at
+byte 0 and says so on stderr, so a duplicated push is explicable rather than mysterious.
+
+Only whole lines are consumed. A drain that lands mid-append sees half a JSON object, so the
+offset never advances past the last newline actually read.
+
+### Where the spool lives
+
+Five layers, same precedence as everything else (ADR-0012 Decision 2): `--copilot-spool-path`
+→ `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` → per-user config `copilot_spool_path` → machine-wide
+config → `<state_dir>/copilot-otel.jsonl`.
+
+### Running it on a timer
+
+**This binary does not install these, deliberately** — writing to a developer's systemd or
+launchd tree is a bigger claim on their machine than writing a dotfile, and it is out of
+scope for this command. Copy them yourself.
+
+`~/.config/systemd/user/governance-auth-copilot-push.service`:
+
+```ini
+[Unit]
+Description=Drain the GitHub Copilot OTel spool to the governed collector
+
+[Service]
+Type=oneshot
+# Absolute path: a user timer does not inherit your shell's PATH.
+ExecStart=%h/.local/bin/governance-auth copilot-push
+```
+
+`~/.config/systemd/user/governance-auth-copilot-push.timer`:
+
+```ini
+[Unit]
+Description=Drain the GitHub Copilot OTel spool every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Catch up after a suspend/resume rather than skipping the missed wake.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now governance-auth-copilot-push.timer
+systemctl --user list-timers governance-auth-copilot-push.timer
+journalctl --user -u governance-auth-copilot-push.service -n 50
+```
+
+macOS — `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>digital.camer.ai.governance-auth.copilot-push</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/governance-auth</string>
+    <string>copilot-push</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/tmp/governance-auth-copilot-push.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist
+launchctl print gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
+```
+
+⚠️ A timer you installed is a timer nothing monitors. `status` carries a **copilot spool**
+row for exactly that reason — see below.
+
+---
+
 ## `status`
 
 ```bash
@@ -160,6 +320,25 @@ Prints to **stderr**, one line:
 Exit status is 0 in all three cases — this reports state, it does not assert it. A real
 request from Claude Code or Codex is the actual proof that onboarding worked; `status`
 rules out half the failure modes before you go looking at the tools.
+
+At a terminal it also prints a table. Those three lines are the contract; the table is an
+addition for a human and never a replacement, because `status` may be piped.
+
+### The `copilot spool` row
+
+| Shown | Colour | Means |
+|---|---|---|
+| `not enabled` | yellow | no spool file — Copilot's file exporter is off |
+| `up to date (<n> bytes)` | green | everything written has been pushed |
+| `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
+| `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
+| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
+
+The red row is the one this exists for. A user timer that was never enabled, or a launchd
+agent that fails on every wake, is indistinguishable from a working one everywhere else a
+developer looks — bytes climbing while `last push` stays at `never pushed` is the only
+visible difference. "Pending" after a successful push is *not* red on purpose: it is the
+ordinary state between wakes, and a row that cries wolf is one people stop reading.
 
 ---
 

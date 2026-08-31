@@ -20,7 +20,7 @@ pub use discovery::OidcMetadata;
 use crate::{
     cache::{self, CachedSession, FileLock},
     config::OauthConfig,
-    config_file, config_persist, dashboard, otel,
+    config_file, config_persist, otel,
     redacted::Redacted,
 };
 
@@ -231,7 +231,7 @@ pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
 /// used to `session.access_token.clone()` a `Redacted<String>` for no
 /// reason a borrow wouldn't have avoided. Moving `session.access_token` out
 /// instead means that branch is a move, not a clone.
-async fn emit_token(
+pub(crate) async fn emit_token(
     http: &reqwest::Client,
     config: &OauthConfig,
     session: CachedSession,
@@ -273,7 +273,10 @@ pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Resul
 /// Loads the cached session, refreshing it if it's within the expiry skew.
 /// Shared by `token` and `otel-headers` so the two can't drift on when a
 /// refresh happens or on what "fails closed" means.
-async fn current_session(http: &reqwest::Client, config: &OauthConfig) -> Result<CachedSession> {
+pub(crate) async fn current_session(
+    http: &reqwest::Client,
+    config: &OauthConfig,
+) -> Result<CachedSession> {
     let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
 
     let Some(session) = cache::load(&config.issuer, &config.client_id)? else {
@@ -335,50 +338,6 @@ fn remember_settings(config: &OauthConfig) {
         },
         Err(error) => eprintln!("warning: could not locate the config file: {error:#}"),
     }
-}
-
-pub fn status(config: &OauthConfig) -> Result<()> {
-    let state = match cache::load(&config.issuer, &config.client_id)? {
-        Some(session) => dashboard::Session {
-            cached: true,
-            fresh: session.is_fresh()?,
-            expires_in: session.seconds_until_expiry()?,
-        },
-        None => dashboard::Session {
-            cached: false,
-            fresh: false,
-            expires_in: 0,
-        },
-    };
-
-    // Plain line unless a human is looking. The three strings below are a
-    // documented surface (`commands.md`) that a test asserts on, and `status`
-    // may be piped; the table is an addition, never a replacement.
-    if !dashboard::attended() {
-        eprintln!("{}", dashboard::plain(&state));
-        return Ok(());
-    }
-
-    let home = std::env::var("HOME")
-        .ok()
-        .filter(|home| !home.is_empty())
-        .map(std::path::PathBuf::from);
-    let targets = home.as_deref().map(dashboard::targets).unwrap_or_default();
-    // Endpoint from the resolved config (it is persisted); everything else from
-    // what was actually written -- see `dashboard::telemetry`'s module doc for
-    // why the token cannot be read back off the config.
-    let telemetry = dashboard::Telemetry::survey(home.as_deref(), config.otel_endpoint.clone());
-    eprintln!(
-        "{}",
-        dashboard::render(
-            &config.issuer,
-            &config.client_id,
-            &state,
-            &telemetry,
-            &targets
-        )
-    );
-    Ok(())
 }
 
 /// Revokes the refresh token at the authorization server, THEN clears local
@@ -479,6 +438,7 @@ mod tests {
             otel_endpoint: None,
             otel_token: None,
             gateway_url: None,
+            copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,
             token_exchange: None,

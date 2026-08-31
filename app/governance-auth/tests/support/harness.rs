@@ -319,7 +319,7 @@ impl Harness {
     /// Where the session lives now. Mirrors `cache::state_dir`: a refresh
     /// token is STATE, not cache -- see that module's doc for why the
     /// distinction is load-bearing rather than cosmetic.
-    fn state_dir(&self) -> PathBuf {
+    pub fn state_dir(&self) -> PathBuf {
         let base = if cfg!(target_os = "macos") {
             self.home.path.join("Library").join("Application Support")
         } else {

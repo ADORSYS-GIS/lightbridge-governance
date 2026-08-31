@@ -125,7 +125,7 @@ pub fn cache_dir() -> Result<PathBuf> {
 /// non-purgeable per-user location is Application Support. (Config stays at
 /// `~/.config` on both platforms -- see `crate::otel`, which already writes
 /// there on macOS. One convention per KIND of data, not one per platform.)
-fn state_dir() -> Result<PathBuf> {
+pub(crate) fn state_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_STATE_HOME")
         && !xdg.is_empty()
     {

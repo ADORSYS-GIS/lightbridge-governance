@@ -65,6 +65,43 @@ The lock file records the holder's PID. Two failure modes were paid for here:
 - Non-empty garbage stays undeterminable, which is the correct conservative answer for a
   file that might belong to a live process.
 
+### Copilot drain checkpoint
+
+```
+<state dir>/governance-auth/copilot-push.json
+```
+
+Mode `0600`, written tmp-then-rename. Records how far into the Copilot spool
+[`copilot-push`](./commands.md#copilot-push) has got: `offset`, `last_push_unix`,
+`last_push_records`.
+
+State, not cache, for the same reason the session is — losing it does not log anyone out, but
+it does mean the next run re-pushes the whole spool, which is duplicate usage data at the
+collector.
+
+Deliberately **not** named by `sha256(issuer\0client_id)` the way session files are. The spool
+belongs to this machine's VS Code install, not to whichever identity happens to be pushing it;
+two checkpoints against one spool would each skip the other's bytes.
+
+An unparseable checkpoint is a **hard error**, not a silent restart. Defaulting to offset 0
+would re-push everything already sent; defaulting to the current size would discard everything
+not yet sent. Both are wrong in a way nobody would notice, so the command names the file and
+stops — deleting it is a decision for whoever is looking.
+
+### Copilot OTel spool
+
+```
+<state dir>/governance-auth/copilot-otel.jsonl      # the compiled default
+```
+
+**Written by VS Code, never by this binary.** It is only the default location; the path comes
+from `--copilot-spool-path` / `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` / `copilot_spool_path` /
+this default, and must match `github.copilot.chat.otel.outfile` in VS Code's settings.
+
+`copilot-push` opens it **read-only** and never truncates it — VS Code holds it open for
+append, and truncating underneath a live writer makes the next append land at the old offset
+with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
+
 ### OTLP credential for the shell
 
 ```

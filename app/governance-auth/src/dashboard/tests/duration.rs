@@ -9,7 +9,7 @@ use super::*;
 /// positive value, so nothing caught it.
 #[test]
 fn an_expired_session_does_not_print_negative_seconds() {
-    let out = render(
+    let out = table(
         "i",
         "c",
         &expiring(true, false, -8338),

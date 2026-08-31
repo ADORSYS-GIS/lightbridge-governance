@@ -115,6 +115,19 @@ pub struct OauthConfigArgs {
     #[arg(long, env = "GOVERNANCE_AUTH_GATEWAY_URL", value_parser = parse_issuer, global = true)]
     gateway_url: Option<String>,
 
+    /// Where VS Code Copilot Chat's file exporter writes its OTel records,
+    /// which `copilot-push` drains. Defaults to `copilot-otel.jsonl` in the
+    /// state directory -- resolved in `crate::copilot::resolve_spool_path`,
+    /// NOT as a clap `default_value`, because the default depends on `$HOME`
+    /// and a `default_value` fires before either config-file layer is read
+    /// (this module's doc).
+    ///
+    /// Deliberately NOT validated as a path that exists: Copilot creates the
+    /// file on its first export, so a developer configuring this before
+    /// restarting VS Code would otherwise be told their correct path is wrong.
+    #[arg(long, env = "GOVERNANCE_AUTH_COPILOT_SPOOL_PATH", global = true)]
+    copilot_spool_path: Option<String>,
+
     /// How often Claude Code re-runs `otel-headers` for fresh OTLP headers.
     /// Default 240s, deliberately under Keycloak's 300s access-token
     /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
@@ -329,6 +342,19 @@ impl OauthConfigArgs {
             .map(|value| parse_issuer(&value).map_err(|error| anyhow::anyhow!(error)))
             .transpose()?;
 
+        let copilot_spool_path = self
+            .copilot_spool_path
+            .or_else(|| {
+                per_user
+                    .as_ref()
+                    .and_then(|file| file.copilot_spool_path.clone())
+            })
+            .or_else(|| {
+                machine
+                    .as_ref()
+                    .and_then(|file| file.copilot_spool_path.clone())
+            });
+
         let otel_headers_debounce_ms = self
             .otel_headers_debounce_ms
             .or_else(|| {
@@ -367,6 +393,7 @@ impl OauthConfigArgs {
             otel_endpoint,
             otel_token,
             gateway_url,
+            copilot_spool_path,
             otel_headers_debounce_ms,
             open_browser,
             token_exchange,
@@ -461,6 +488,10 @@ pub struct OauthConfig {
     pub otel_endpoint: Option<String>,
     pub otel_token: Option<String>,
     pub gateway_url: Option<String>,
+    /// `None` means "use the compiled default under the state directory" --
+    /// see `crate::copilot::resolve_spool_path`, which is where the fifth
+    /// layer is applied.
+    pub copilot_spool_path: Option<String>,
     pub otel_headers_debounce_ms: u64,
     /// Whether `login`'s loopback flow launches the system browser
     /// automatically. See `OauthConfigArgs::open_browser`'s doc for why this
@@ -649,6 +680,7 @@ mod tests {
                 otel_endpoint: None,
                 otel_token: None,
                 gateway_url: None,
+                copilot_spool_path: None,
                 otel_headers_debounce_ms: None,
                 open_browser: None,
                 token_exchange: None,

@@ -20,6 +20,7 @@ mod cache;
 mod config;
 mod config_file;
 mod config_persist;
+mod copilot;
 mod dashboard;
 mod managed;
 mod oauth;
@@ -87,6 +88,22 @@ enum Command {
     /// changed, and it's the command to re-run after installing one of the
     /// two tools for the first time.
     Configure,
+    /// Drain VS Code Copilot Chat's OTel spool file and export it to the
+    /// collector over OTLP/HTTP.
+    ///
+    /// Fails closed: with no valid session it exits non-zero WITHOUT reading
+    /// the spool, advancing the checkpoint, or discarding anything. Meant to
+    /// be run on a timer -- `docs/governance-auth/commands.md` carries sample
+    /// systemd and launchd units, which this binary deliberately does not
+    /// install for you.
+    CopilotPush {
+        /// Parse and report what would be sent, then stop. Posts nothing and
+        /// leaves the checkpoint alone. Still requires a valid session --
+        /// see `crate::copilot`'s module doc for why there is no offline
+        /// path that reads the spool.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print whether a cached session exists and its freshness.
     Status,
     /// Remove the cached session.
@@ -145,7 +162,10 @@ async fn main() -> Result<()> {
         Command::Token => oauth::token(&http, &cli.oauth.resolve()?).await,
         Command::OtelHeaders => oauth::otel_headers(&http, &cli.oauth.resolve()?).await,
         Command::Configure => oauth::configure(&cli.oauth.resolve()?),
-        Command::Status => oauth::status(&cli.oauth.resolve()?),
+        Command::CopilotPush { dry_run } => {
+            copilot::run(&http, &cli.oauth.resolve()?, dry_run).await
+        }
+        Command::Status => dashboard::status(&cli.oauth.resolve()?),
         Command::Logout => oauth::logout(&http, &cli.oauth.resolve()?).await,
         // Deliberately does NOT resolve: see the comment above.
         Command::SelfUpdate { check } => update::run(&http, check).await,

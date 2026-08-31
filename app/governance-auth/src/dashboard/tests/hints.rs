@@ -8,7 +8,7 @@ use super::*;
 /// the flags that make the command RUN, not merely that it says "configure".
 #[test]
 fn nothing_configured_names_a_command_that_actually_runs() {
-    let out = render(
+    let out = table(
         "https://auth.example",
         "cli",
         &session(true, true),
@@ -30,7 +30,7 @@ fn nothing_configured_names_a_command_that_actually_runs() {
 /// any login. Naming `configure` there is still a dead end.
 #[test]
 fn with_no_session_the_nothing_configured_hint_is_login() {
-    let out = render(
+    let out = table(
         "https://auth.example",
         "cli",
         &session(false, false),
