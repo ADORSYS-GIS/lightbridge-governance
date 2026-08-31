@@ -19,10 +19,6 @@
 //! by you" falls out of the same digest comparison that decides whether a key
 //! may be retracted -- see [`crate::managed`]'s module doc.
 
-use std::path::Path;
-
-use crate::managed::{self, Format};
-
 /// Whether a human is looking. Extracted so tests can render both branches
 /// without a terminal.
 pub fn attended() -> bool {
@@ -33,50 +29,6 @@ pub struct Session {
     pub cached: bool,
     pub fresh: bool,
     pub expires_in: i64,
-}
-
-/// One configured tool: how many keys we manage in it, and how many of those
-/// the developer has since changed.
-pub struct Target {
-    pub path: String,
-    pub managed: usize,
-    pub edited: usize,
-}
-
-/// Reads the manifest and reports, per target, how many managed keys are still
-/// ours and how many have drifted.
-///
-/// A file that has been deleted since we wrote it is reported with `managed`
-/// intact and `edited` zero rather than being dropped: "the tool is gone" is
-/// something the reader should see, not something to hide by omission.
-pub fn targets(home: &Path) -> Vec<Target> {
-    let manifest = managed::load(&managed::manifest_path(home));
-    let mut out = Vec::new();
-    for (target, keys) in &manifest.targets {
-        let path = Path::new(target);
-        let mut edited = 0;
-        if let Some(format) = Format::of(path)
-            && path.is_file()
-            && let Ok(document) = format.read(path)
-        {
-            for (key, recorded) in keys {
-                match document.get(key) {
-                    Some(current) if &managed::digest(&current) == recorded => {}
-                    // Absent or changed: either way it is no longer the value
-                    // we wrote, which is what the reader needs to know.
-                    _ => edited += 1,
-                }
-            }
-        }
-        out.push(Target {
-            // Shortened here, where `home` is already known, so `render` needs
-            // no process state at all.
-            path: short(target, home),
-            managed: keys.len(),
-            edited,
-        });
-    }
-    out
 }
 
 /// The single line `status` has always printed. Unchanged on purpose.
@@ -97,7 +49,13 @@ pub fn plain(session: &Session) -> String {
 
 /// The table, for a human. Returns a `String` rather than printing so it can be
 /// asserted on without a terminal.
-pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Target]) -> String {
+pub fn render(
+    issuer: &str,
+    client_id: &str,
+    session: &Session,
+    telemetry: &Telemetry,
+    targets: &[Target],
+) -> String {
     let (state, colour) = match (session.cached, session.fresh) {
         (false, _) => ("no cached session".to_owned(), Colour::Red),
         (true, true) => (format!("fresh, {}", ago(session.expires_in)), Colour::Green),
@@ -126,6 +84,11 @@ pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Targe
         ),
     ];
 
+    // Telemetry sits with the identity rows, not with the per-file rows: it is
+    // configuration state, not something we manage inside someone's file.
+    let (value, colour, note) = telemetry.row(session);
+    rows.push(("telemetry".to_owned(), value, colour, note));
+
     if targets.is_empty() {
         rows.push((
             "configured".to_owned(),
@@ -136,7 +99,16 @@ pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Targe
             // with "nothing to configure: supply --otel-endpoint and/or
             // --gateway-url" -- so the dashboard sent a first-time user
             // straight into an error. Reported from a real install.
-            "configure --gateway-url <url> --otel-endpoint <url>".to_owned(),
+            //
+            // The flags were fixed then; the COMMAND still wasn't. `configure`
+            // also refuses without a cached session ("no cached session for
+            // this issuer/client; run `governance-auth login` first"), which is
+            // precisely the state this row appears in on a first run. Same
+            // session-aware choice as the telemetry row above.
+            format!(
+                "{} --gateway-url <url> --otel-endpoint <url>",
+                if session.cached { "configure" } else { "login" }
+            ),
         ));
     } else {
         for target in targets {
@@ -196,4 +168,8 @@ pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Targe
 mod tests;
 
 mod style;
-use style::{Colour, ago, pad, short};
+mod targets;
+mod telemetry;
+use style::{Colour, ago, pad};
+pub use targets::{Target, targets};
+pub use telemetry::Telemetry;

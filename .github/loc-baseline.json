@@ -3,7 +3,7 @@
   "app/governance-auth/src/config_file.rs": 469,
   "app/governance-auth/src/config.rs": 1376,
   "app/governance-auth/src/oauth/discovery.rs": 296,
-  "app/governance-auth/src/oauth/mod.rs": 499,
+  "app/governance-auth/src/oauth/mod.rs": 509,
   "app/governance-auth/src/otel.rs": 1837,
   "app/governance-auth/src/update.rs": 630,
   "app/governance-auth/tests/support/harness.rs": 429,

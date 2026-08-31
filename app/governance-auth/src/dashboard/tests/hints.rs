@@ -8,7 +8,13 @@ use super::*;
 /// the flags that make the command RUN, not merely that it says "configure".
 #[test]
 fn nothing_configured_names_a_command_that_actually_runs() {
-    let out = render("https://auth.example", "cli", &session(true, true), &[]);
+    let out = render(
+        "https://auth.example",
+        "cli",
+        &session(true, true),
+        &otel(None, false),
+        &[],
+    );
     assert!(
         out.contains("nothing yet") && out.contains("configure"),
         "{out}"
@@ -16,5 +22,29 @@ fn nothing_configured_names_a_command_that_actually_runs() {
     assert!(
         out.contains("--gateway-url") || out.contains("--otel-endpoint"),
         "hint lacks the flags `configure` requires -- a dead end:\n{out}"
+    );
+}
+
+/// The half of that report the flag fix missed: `configure` ALSO refuses
+/// without a cached session, and this row is what a first-time user sees before
+/// any login. Naming `configure` there is still a dead end.
+#[test]
+fn with_no_session_the_nothing_configured_hint_is_login() {
+    let out = render(
+        "https://auth.example",
+        "cli",
+        &session(false, false),
+        &otel(None, false),
+        &[],
+    );
+    let line = strip_ansi(
+        out.lines()
+            .find(|l| l.contains("nothing yet"))
+            .expect("the empty-state row"),
+    );
+    assert!(line.contains("login --gateway-url"), "{line}");
+    assert!(
+        !line.contains("configure --"),
+        "configure errors without a session: {line}"
     );
 }
