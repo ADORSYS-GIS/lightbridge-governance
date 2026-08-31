@@ -11,12 +11,40 @@ on:
 jobs:
   governance-check:
     runs-on: ubuntu-latest
+    # ⚠️ Declaring this block at all sets every scope NOT listed to `none`, so
+    # it cannot be narrowed to `pull-requests` while an `actions/checkout` step
+    # still needs `contents: read`. That checkout is gone: this job reads the
+    # body over the API and never touches the working tree, so the repo does not
+    # need to be on disk at all. Adding a step back here means adding the scope
+    # it needs.
+    permissions:
+      pull-requests: read
     steps:
-      - uses: actions/checkout@v7
       - name: Check PR body for required sections
         env:
-          BODY: ${{ github.event.pull_request.body }}
+          # ⚠️ The body is fetched here, NOT taken from
+          # `github.event.pull_request.body`. `github.event` is the payload
+          # frozen when the run was created, and a re-run replays it -- so
+          # correcting the description and pressing "Re-run" re-checked the OLD
+          # text and failed again, while the error message pointed the
+          # contributor straight at the one thing not being re-read. Observed on
+          # #214: a PR that had genuinely passed was left red by a re-run.
+          #
+          # The PR *number* is stable across re-runs in a way the body is not,
+          # so taking that from the payload is safe. Everything mutable is
+          # fetched. See #219.
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          BODY=$(gh api "repos/$REPO/pulls/$PR" --jq .body)
+          export BODY
+          # So a stale evaluation is visible in the log rather than inferred:
+          # the digest changes when the description does, even though the run
+          # id and SHA do not.
+          echo "head $SHA, body as of $(date -u +%FT%TZ), sha256 $(printf '%s' "$BODY" | sha256sum | cut -c1-12)"
+
           fail=0
           for section in "## Summary" "## Intent" "## Verification" "## AI Usage Declaration"; do
             case "$BODY" in
