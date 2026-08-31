@@ -86,3 +86,28 @@ redact-test:
 # Requires: just redact-up (stack must be running)
 redact-test-live:
 	/usr/bin/env bash scripts/test-redact-live.sh
+
+# --- VS Code extension (ide/vscode) ------------------------------------------
+#
+# npm lives entirely inside ide/vscode and nothing in the Rust workspace depends
+# on it. `just all-checks` deliberately does NOT run these: the Rust gate must
+# not start requiring a node toolchain, and no CI job invokes them today. That
+# fence is the same one scripts/generate_dashboards.py gets, and it stops
+# holding the moment a release job is added -- see ide/vscode/README.md.
+
+# Install the extension's dev dependencies
+ext-install:
+	npm --prefix ide/vscode install
+
+# Typecheck and unit-test the extension
+ext-check:
+	npm --prefix ide/vscode run typecheck
+	npm --prefix ide/vscode test
+
+# Bundle the extension into ide/vscode/dist
+ext-build:
+	npm --prefix ide/vscode run build
+
+# Produce a .vsix
+ext-package:
+	npm --prefix ide/vscode run package
