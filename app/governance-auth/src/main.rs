@@ -20,10 +20,12 @@ mod cache;
 mod config;
 mod config_file;
 mod config_persist;
+mod managed;
 mod oauth;
 mod otel;
 mod redacted;
 mod security;
+mod templates;
 mod update;
 
 use anyhow::{Context, Result};

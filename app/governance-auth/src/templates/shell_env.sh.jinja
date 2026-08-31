@@ -1,0 +1,15 @@
+{#
+  Sourced from the developer's shell rc file. Written 0600 because it can hold
+  the OTLP bearer; the rc file itself only ever gains a `.` line, so a
+  committed dotfiles repo leaks nothing.
+
+  `sh_quote` is not decoration: values include identity attributes taken from
+  the access token, so an apostrophe in a display name would otherwise close
+  the quote and leave the shell parsing the rest as code.
+-#}
+# Written by `governance-auth`. Mode 0600 on purpose: this file can hold a
+# credential. It is sourced from your shell rc file so the rc file itself
+# stays safe to commit.
+{% for name, value in exports -%}
+export {{ name }}={{ value | sh_quote }}
+{% endfor -%}

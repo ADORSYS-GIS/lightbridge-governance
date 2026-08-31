@@ -195,13 +195,128 @@ pub enum Outcome {
 /// someone who doesn't use Codex would be surprising, and an empty config
 /// directory changes how some tools behave on first run.
 pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    let previous = crate::managed::load(&crate::managed::manifest_path(home));
+
     let mut outcomes = vec![
         configure_claude_code(home, settings)?,
         configure_codex(home, settings)?,
     ];
     outcomes.extend(configure_vscode(home, settings)?);
     outcomes.extend(configure_shell_env(home, settings)?);
+
+    // Retract anything we wrote last time and did not write now, then record
+    // what we own for next time. Non-fatal by design: a failure here leaves a
+    // stale key, which is what happens today anyway -- it must never undo a
+    // successful configure. See `managed`.
+    let now = managed_now(home, settings);
+    match crate::managed::retract_stale(&previous, &now) {
+        Ok(removed) => {
+            for entry in removed {
+                eprintln!("Removed (no longer managed): {entry}");
+            }
+        }
+        Err(error) => eprintln!("warning: could not retract stale config keys: {error:#}"),
+    }
+    let manifest = crate::managed::Manifest {
+        version: 1,
+        targets: now,
+    };
+    if let Err(error) = crate::managed::save(&crate::managed::manifest_path(home), &manifest) {
+        eprintln!("warning: could not record managed keys: {error:#}");
+    }
+
     Ok(outcomes)
+}
+
+/// The keys this run owns, per target, with a digest of each current value.
+///
+/// Derived from the same conditionals the writers use rather than by reading
+/// the files back: a key merely *present* might be the developer's, and
+/// recording it as ours would let a later run delete their work.
+///
+/// Only string values are recorded. `managed::Document::get` returns strings
+/// only -- a digest of a rendered number would depend on formatting -- so
+/// numeric keys like `log_user_prompt` are never retracted. Accepted: they are
+/// few, and the alternative is a digest that changes when nothing did.
+fn managed_now(home: &Path, settings: &OtelSettings) -> BTreeMap<String, BTreeMap<String, String>> {
+    use crate::managed::{Format, digest};
+
+    let telemetry = settings.endpoint.is_some();
+    let inference = settings.gateway_url.is_some();
+
+    let mut claude: Vec<String> = Vec::new();
+    if inference {
+        claude.push("apiKeyHelper".to_owned());
+        claude.push("env.ANTHROPIC_BASE_URL".to_owned());
+    }
+    if settings.headers_helper.is_some() {
+        claude.push("otelHeadersHelper".to_owned());
+    }
+    for (key, _) in claude_code_env(settings) {
+        claude.push(format!("env.{key}"));
+    }
+
+    let mut codex: Vec<String> = Vec::new();
+    if inference {
+        codex.push("model_provider".to_owned());
+        for leaf in ["name", "base_url", "wire_api"] {
+            codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.{leaf}"));
+        }
+        codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.auth.command"));
+    }
+    if telemetry {
+        codex.push("otel.environment".to_owned());
+        for kind in ["exporter", "metrics_exporter"] {
+            codex.push(format!("otel.{kind}.otlp-http.endpoint"));
+            codex.push(format!("otel.{kind}.otlp-http.protocol"));
+            codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+        }
+    }
+
+    let vscode: Vec<String> = if telemetry {
+        vscode_settings(settings.endpoint.as_deref().unwrap_or_default())
+            .into_iter()
+            .map(|(key, _)| key.to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // VS Code ships under several flavour directories and any subset may exist,
+    // so each is its own target rather than one path.
+    let mut targets = vec![
+        (home.join(".claude").join("settings.json"), claude),
+        (home.join(".codex").join("config.toml"), codex),
+    ];
+    for flavour in VSCODE_FLAVOURS {
+        targets.push((
+            vscode_user_dir(home, flavour).join("settings.json"),
+            vscode.clone(),
+        ));
+    }
+
+    let mut out = BTreeMap::new();
+    for (path, keys) in targets {
+        if keys.is_empty() || !path.is_file() {
+            continue;
+        }
+        let Some(format) = Format::of(&path) else {
+            continue;
+        };
+        let Ok(document) = format.read(&path) else {
+            continue;
+        };
+        let mut recorded = BTreeMap::new();
+        for key in keys {
+            if let Some(value) = document.get(&key) {
+                recorded.insert(key, digest(&value));
+            }
+        }
+        if !recorded.is_empty() {
+            out.insert(path.display().to_string(), recorded);
+        }
+    }
+    out
 }
 
 /// Marker pair delimiting the block this binary owns in a shell rc file.
@@ -287,20 +402,13 @@ pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<O
     fs::create_dir_all(&env_dir).with_context(|| format!("creating {}", env_dir.display()))?;
 
     let posix_env = env_dir.join("otel.env");
-    let mut posix = String::from(
-        "# Written by `governance-auth`. Mode 0600 on purpose: this file can hold a\n\
-         # credential. It is sourced from your shell rc file so the rc file itself\n\
-         # stays safe to commit.\n",
-    );
-    let mut fish =
-        String::from("# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n");
-    for (key, val) in &exports {
-        posix.push_str(&format!("export {key}='{val}'\n"));
-        fish.push_str(&format!("set -gx {key} '{val}'\n"));
-    }
+    let posix =
+        crate::templates::shell_env_sh(&exports).context("rendering the POSIX shell env file")?;
     write_atomically(&posix_env, posix.as_bytes())?;
 
     let fish_env = env_dir.join("otel.fish");
+    let fish =
+        crate::templates::shell_env_fish(&exports).context("rendering the fish shell env file")?;
     write_atomically(&fish_env, fish.as_bytes())?;
 
     let mut outcomes = vec![
@@ -805,13 +913,7 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         // is no shape of this block that reaches a chat-completions gateway.
         provider.insert("wire_api", toml_edit::value("responses"));
         provider.decor_mut().set_prefix(
-            "\n# Written by `governance-auth configure --gateway-url`, and made the\n\
-             # default by `model_provider` at the top of this file.\n\
-             # \u{26a0} The gateway routes and auth-gates /v1/responses (401, where an\n\
-             # absent path 404s). Whether UPSTREAM serves it was not re-verified --\n\
-             # that needs an authenticated request, and a well-formed body used to\n\
-             # 404 from upstream. If Codex errors on every call, that is the first\n\
-             # thing to check; `--config model_provider=openai` reverts for a run.\n",
+            crate::templates::codex_provider_banner().context("rendering the Codex banner")?,
         );
 
         let auth = table_entry(provider, "auth")?;
@@ -927,6 +1029,70 @@ mod tests {
     }
 
     /// `settings()` plus the gateway, i.e. what `--gateway-url` turns on.
+    /// Every file, byte-identical after a second run.
+    ///
+    /// Not a nicety: `configure` runs on every `login`, and anything that
+    /// churns here shows up as a spurious diff in a developer's dotfiles --
+    /// or, for the managed manifest, as a retraction that deletes and rewrites
+    /// the same key forever.
+    #[test]
+    fn configure_all_is_idempotent() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude")).expect("claude dir");
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        fs::create_dir_all(vscode_user_dir(home.path(), VSCODE_FLAVOURS[0])).expect("vscode dir");
+        fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
+
+        let settings = settings_with_gateway();
+        configure_all(home.path(), &settings).expect("first run");
+        let first = snapshot(home.path());
+        assert!(
+            first.len() >= 5,
+            "expected several files to be written, got {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            first.keys().any(|k| k.ends_with("managed.json")),
+            "the manifest must be among them: {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+
+        configure_all(home.path(), &settings).expect("second run");
+        let second = snapshot(home.path());
+
+        for (path, before) in &first {
+            let after = second
+                .get(path)
+                .expect("file disappeared on the second run");
+            assert_eq!(before, after, "second run changed {path}");
+        }
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "second run added or removed a file"
+        );
+    }
+
+    /// path -> contents, for every file under `root`.
+    fn snapshot(root: &Path) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(text) = fs::read_to_string(&path) {
+                    out.insert(path.display().to_string(), text);
+                }
+            }
+        }
+        out
+    }
+
     fn settings_with_gateway() -> OtelSettings {
         OtelSettings {
             gateway_url: Some("https://api.example.com".to_owned()),

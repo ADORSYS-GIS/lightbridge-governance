@@ -1,0 +1,15 @@
+{#- Placed above [model_providers.<id>] in Codex's config.
+
+     The newline immediately after this tag is LOAD-BEARING: it separates the
+     block from whatever precedes it. Closing this tag with a whitespace-
+     trimming form would swallow that newline, gluing the first comment onto
+     the previous line and breaking the TOML. Pinned by
+     codex_banner_starts_on_its_own_line.
+#}
+# Written by `governance-auth configure --gateway-url`, and made the
+# default by `model_provider` at the top of this file.
+# ⚠ The gateway routes and auth-gates /v1/responses (401, where an
+# absent path 404s). Whether UPSTREAM serves it was not re-verified --
+# that needs an authenticated request, and a well-formed body used to
+# 404 from upstream. If Codex errors on every call, that is the first
+# thing to check; `--config model_provider=openai` reverts for a run.
