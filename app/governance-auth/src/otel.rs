@@ -779,6 +779,23 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
     }
 
     if let Some(base_url) = settings.openai_base_url() {
+        // Take over the default. Writing the provider block alone leaves Codex
+        // pointed at whatever it used before, so the wiring existed and did
+        // nothing -- this key is what selects it. Set here only because
+        // `model_providers` is borrowed below; placement in the output is
+        // `toml_edit`'s job, see `set_root_scalar`.
+        //
+        // Deliberately authoritative: it overwrites an existing value rather
+        // than deferring to it. Someone who wants another provider for a
+        // session has `--config model_provider=...`; someone still talking to
+        // api.openai.com while believing they are on the gateway gets no
+        // signal at all, and that is the failure this prevents.
+        set_root_scalar(
+            document.as_table_mut(),
+            "model_provider",
+            toml_edit::value(CODEX_PROVIDER_ID),
+        );
+
         let providers = table_entry(document.as_table_mut(), "model_providers")?;
         let provider = table_entry(providers, CODEX_PROVIDER_ID)?;
         provider.insert("name", toml_edit::value(CODEX_PROVIDER_ID));
@@ -787,9 +804,15 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         // rejected outright at config load ("no longer supported"), so there
         // is no shape of this block that reaches a chat-completions gateway.
         provider.insert("wire_api", toml_edit::value("responses"));
-        provider
-            .decor_mut()
-            .set_prefix("\n# Written by `governance-auth configure --gateway-url`.\n# \u{26a0} INERT until the gateway serves /v1/responses: codex-cli requires\n# wire_api = \"responses\" and this gateway implements /v1/chat/completions\n# (verified: /v1/responses 404s upstream, /v1/chat/completions 200s). The\n# auth wiring below is correct and tested; only the endpoint is missing.\n");
+        provider.decor_mut().set_prefix(
+            "\n# Written by `governance-auth configure --gateway-url`, and made the\n\
+             # default by `model_provider` at the top of this file.\n\
+             # \u{26a0} The gateway routes and auth-gates /v1/responses (401, where an\n\
+             # absent path 404s). Whether UPSTREAM serves it was not re-verified --\n\
+             # that needs an authenticated request, and a well-formed body used to\n\
+             # 404 from upstream. If Codex errors on every call, that is the first\n\
+             # thing to check; `--config model_provider=openai` reverts for a run.\n",
+        );
 
         let auth = table_entry(provider, "auth")?;
         // Absolute path, deliberately -- see OtelSettings::token_command.
@@ -813,6 +836,25 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
 /// re-running `configure` updates the same block instead of accumulating one
 /// per run; any differently-named provider a developer wrote by hand is left
 /// strictly alone.
+/// Sets a top-level scalar, replacing in place so an existing key keeps its
+/// comment (see `config_persist::set` for why `Table::insert` alone loses it).
+///
+/// A bare TOML key must precede the first table header or it belongs to that
+/// table instead -- but `toml_edit` handles this for us: it emits root scalars
+/// ahead of tables no matter when they were inserted. Checked by moving this
+/// call after `[model_providers]` was built and confirming the output was still
+/// a root key, so the call site's ordering is a borrow-checker constraint, not
+/// a correctness one. `codex_default_provider_is_a_root_key` pins the result
+/// regardless, because it is what Codex actually reads.
+fn set_root_scalar(table: &mut toml_edit::Table, key: &str, item: toml_edit::Item) {
+    match table.get_mut(key) {
+        Some(slot) => *slot = item,
+        None => {
+            table.insert(key, item);
+        }
+    }
+}
+
 const CODEX_PROVIDER_ID: &str = "governance";
 
 /// `table[key]` on a `toml_edit` table panics when the key exists but holds a
@@ -959,6 +1001,55 @@ mod tests {
         assert_ne!(
             path, "governance-auth",
             "the bare-name fallback means Codex gets `No such file or directory`"
+        );
+    }
+
+    /// Codex reads `model_provider` from the document root; the same text
+    /// nested under `[model_providers]` is valid TOML with the wrong meaning
+    /// and would silently leave the old default in place. Parse rather than
+    /// grep, because both forms contain the same substring.
+    #[test]
+    fn codex_default_provider_is_a_root_key() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        configure_codex(home.path(), &settings_with_gateway()).expect("configure");
+
+        let text = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read");
+        let doc: toml_edit::DocumentMut = text.parse().expect("valid TOML");
+
+        assert_eq!(
+            doc.as_table()
+                .get("model_provider")
+                .and_then(|item| item.as_str()),
+            Some(CODEX_PROVIDER_ID),
+            "default provider must be a ROOT key, got:\n{text}"
+        );
+        assert!(
+            doc["model_providers"].get("model_provider").is_none(),
+            "key nested under [model_providers] -- Codex would ignore it:\n{text}"
+        );
+    }
+
+    /// Authoritative means authoritative: an existing choice is replaced.
+    #[test]
+    fn codex_default_provider_overwrites_an_existing_choice() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        fs::write(
+            home.path().join(".codex/config.toml"),
+            "model_provider = \"openai\"\n",
+        )
+        .expect("seed");
+
+        configure_codex(home.path(), &settings_with_gateway()).expect("configure");
+        let text = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read");
+        let doc: toml_edit::DocumentMut = text.parse().expect("valid TOML");
+        assert_eq!(
+            doc.as_table()
+                .get("model_provider")
+                .and_then(|item| item.as_str()),
+            Some(CODEX_PROVIDER_ID),
+            "must take over, got:\n{text}"
         );
     }
 

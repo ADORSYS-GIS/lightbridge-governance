@@ -22,7 +22,7 @@ capability works per client; that one says *how*, and exactly where it breaks.
 |---|---|---|---|---|
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
 | **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
-| **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url` (block is inert) | ❌ not configured here | ⚠️ telemetry only |
+| **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
 | **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ `github.copilot.chat.otel.otlpEndpoint` |
 | **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ❌ static only |
 | **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | ⚠️ env var only — no setting exists |
@@ -76,7 +76,17 @@ doesn't implement it** and 404s. Earlier notes here said "the gateway 404s
 it"; that's imprecise — the gateway routes it, the upstream refuses it. The
 practical outcome is unchanged: Codex inference is blocked.
 
-So the provider block is written but **inert**, and `governance-auth` marks
+⚠️ **Re-probed 2026-08-31 and the gateway side has changed.** `POST /v1/responses` now
+returns **401**, while near-miss paths (`/v1/responses-nope`, `/v1/respons`) return **404** —
+so the route is served and auth-gated rather than absent. `governance-auth` therefore now sets
+this provider as Codex's default (`model_provider`).
+
+The **upstream** half below was NOT re-verified: a `401` is returned before upstream is
+reached, so an unauthenticated probe cannot reproduce the well-formed-body case. Treat the
+paragraph that follows as the last confirmed upstream behaviour, not as current fact — it needs
+one authenticated request to settle.
+
+Historically: the provider block was written but **inert**, and `governance-auth` marked
 it as such with an inline comment when it writes one. Nothing in
 `governance-auth` can fix this; it needs either upstream support for
 `/v1/responses` or a Codex version that accepts chat-completions again.

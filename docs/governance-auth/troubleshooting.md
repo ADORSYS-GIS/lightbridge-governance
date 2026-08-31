@@ -201,8 +201,18 @@ load time. The current writer emits the correct shape; a hand-edit may not.
 
 **Codex talks to the gateway but nothing works**
 
-The provider block is currently **inert**: codex-cli requires `wire_api = "responses"` and
-this gateway implements `/v1/chat/completions` (`/v1/responses` 404s upstream). The auth
+⚠️ This entry previously said the provider block was **inert** because `/v1/responses` 404d.
+That is no longer the whole picture: as of 2026-08-31 the gateway **routes and auth-gates**
+`/v1/responses` (it returns `401`, where a genuinely absent path returns `404`), and
+`governance-auth` now makes this provider the default via `model_provider`.
+
+What is **not** verified is whether the *upstream* serves it. The `401` is returned before
+upstream is reached, so an unauthenticated probe cannot tell; the previously-recorded failure
+was a well-formed body 404ing **from upstream**. If every Codex call errors, check that first,
+and `--config model_provider=openai` reverts for a single run.
+
+Historical detail, still useful: codex-cli requires `wire_api = "responses"` and this gateway
+implements `/v1/chat/completions`. The auth
 wiring is correct and tested; the endpoint is the missing piece —
 [#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144).
 
