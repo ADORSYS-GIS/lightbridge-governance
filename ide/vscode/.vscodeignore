@@ -1,0 +1,16 @@
+# Deny by default, then re-include exactly what ships. The previous version
+# listed things to exclude and shipped `.gitignore` inside the .vsix as a
+# result — an allowlist cannot leak a file nobody thought to name.
+**
+
+!package.json
+!README.md
+!dist/extension.js
+
+# Never, even if a rule above is later loosened. Test doubles and the auth
+# stubs must not reach a published artifact.
+tests/**
+src/**
+dist-test/**
+**/*.map
+**/*.vsix

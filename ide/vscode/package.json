@@ -1,0 +1,101 @@
+{
+  "name": "lightbridge-governance",
+  "displayName": "Lightbridge Governance",
+  "description": "Serves governed language models to VS Code chat through the Lightbridge AI gateway.",
+  "version": "0.0.0",
+  "publisher": "adorsys-gis",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ADORSYS-GIS/lightbridge-governance.git",
+    "directory": "ide/vscode"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "lightbridge",
+        "displayName": "Lightbridge Governance",
+        "managementCommand": "lightbridge.manage"
+      }
+    ],
+    "commands": [
+      {
+        "command": "lightbridge.manage",
+        "title": "Manage models and sign-in",
+        "category": "Lightbridge"
+      },
+      {
+        "command": "lightbridge.showLog",
+        "title": "Show log",
+        "category": "Lightbridge"
+      },
+      {
+        "command": "lightbridge.refreshCatalogue",
+        "title": "Refresh model catalogue",
+        "category": "Lightbridge"
+      }
+    ],
+    "configuration": {
+      "title": "Lightbridge Governance",
+      "properties": {
+        "lightbridge.gatewayUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "markdownDescription": "Base URL of the AI gateway, e.g. `https://api.ai.camer.digital`. Unset, the extension contributes no models at all — it never falls back to a default endpoint. Mirrors `gateway_url` in `governance-auth`'s config; leave unset to inherit that value instead of restating it here."
+        },
+        "lightbridge.governanceAuthPath": {
+          "type": "string",
+          "default": "governance-auth",
+          "markdownDescription": "Path to the `governance-auth` binary. The extension shells out to `governance-auth token` for every request rather than holding a credential of its own (ADR-0010, ADR-0012). An absolute path is safer: this is spawned without a shell, so `PATH` resolution depends on the environment VS Code was launched from."
+        },
+        "lightbridge.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "description": "Abort a chat request that has produced no further output within this many milliseconds."
+        },
+        "lightbridge.catalogueTtlMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "How long the model catalogue fetched from the gateway is reused before being re-fetched."
+        },
+        "lightbridge.modelOptionDefaults": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Sampling parameters merged into every request — `temperature`, `top_p`, `top_k`, `seed`. Only parameters the model declares in the gateway catalogue's `supported_parameters` are forwarded; anything else is dropped. Copilot Chat *does* populate `modelOptions`, but with its own internal fields (`_otelTraceContext`, `_telemetryTurn` and similar) rather than sampling values, which is why the allowlist exists. A caller's `modelOptions` wins over these defaults.",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
+    "test:unit": "node --test --experimental-strip-types src/test/*.test.ts",
+    "test:integration": "node tests/run.mjs",
+    "test": "npm run typecheck && npm run test:unit && npm run test:integration",
+    "package": "npm run typecheck && npm run build && vsce package --out lightbridge-governance.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.104.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}
