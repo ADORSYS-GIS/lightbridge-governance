@@ -131,7 +131,12 @@ pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Targe
             "configured".to_owned(),
             "nothing yet".to_owned(),
             Colour::Yellow,
-            "run `governance-auth configure`".to_owned(),
+            // ⚠️ Must name a command that RUNS. This said
+            // "run `governance-auth configure`", and bare `configure` exits
+            // with "nothing to configure: supply --otel-endpoint and/or
+            // --gateway-url" -- so the dashboard sent a first-time user
+            // straight into an error. Reported from a real install.
+            "configure --gateway-url <url> --otel-endpoint <url>".to_owned(),
         ));
     } else {
         for target in targets {

@@ -43,13 +43,7 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
     // non-fatal posture as `apply_telemetry` below and for the same reason:
     // the credential is already cached and usable, so a read-only config
     // directory must not turn a successful login into a failed command.
-    match config_file::per_user_config_path() {
-        Ok(path) => match config_persist::remember(config, &path) {
-            Ok(()) => eprintln!("Settings saved to {}.", path.display()),
-            Err(error) => eprintln!("warning: could not save settings: {error:#}"),
-        },
-        Err(error) => eprintln!("warning: could not locate the config file: {error:#}"),
-    }
+    remember_settings(config);
 
     // Deliberately not `?`: the session is already cached and valid by this
     // point, and failing `login` because a dotfile couldn't be written would
@@ -318,7 +312,29 @@ async fn refresh_or_fail(
 pub fn configure(config: &OauthConfig) -> Result<()> {
     let session = cache::load(&config.issuer, &config.client_id)?
         .context("no cached session for this issuer/client; run `governance-auth login` first")?;
-    apply_telemetry(config, &session)
+    apply_telemetry(config, &session)?;
+    // Persist here as well as on `login`. Writing only on `login` meant an
+    // existing install never got a config file: upgrading keeps a valid cached
+    // session, so `login` is never run again, so every later command kept
+    // demanding --issuer/--client-id. Observed on a real upgrade.
+    remember_settings(config);
+    Ok(())
+}
+
+/// Writes the resolved settings to the per-user config file, reporting rather
+/// than failing.
+///
+/// Non-fatal by design, in both callers: the credential is already cached and
+/// usable by this point, so a read-only config directory must not turn a
+/// successful command into a failed one.
+fn remember_settings(config: &OauthConfig) {
+    match config_file::per_user_config_path() {
+        Ok(path) => match config_persist::remember(config, &path) {
+            Ok(()) => eprintln!("Settings saved to {}.", path.display()),
+            Err(error) => eprintln!("warning: could not save settings: {error:#}"),
+        },
+        Err(error) => eprintln!("warning: could not locate the config file: {error:#}"),
+    }
 }
 
 pub fn status(config: &OauthConfig) -> Result<()> {
