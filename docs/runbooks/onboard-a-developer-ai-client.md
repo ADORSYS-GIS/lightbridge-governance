@@ -3,12 +3,15 @@
 **When:** a developer wants Claude Code and/or Codex pointed at `api.ai.camer.digital`
 with real per-developer OAuth2 (ADR-0010), instead of a manually-issued static key.
 
-⚠️ **Partially operational.** Split by half, as of 2026-08-31:
+✅ **Operational, both login flows, as of 2026-08-31.** Each was completed end to end against
+the live deployment -- browser sign-in included, not just the endpoints:
 
-- **The gateway half is live and verified.** All three paths return 200:
-  `POST /v1/chat/completions`, `POST /anthropic/v1/messages`, and `POST /otel/v1/traces`.
-- **`login --device-code` works.** The client registration landed on 2026-08-31.
-- **Plain `login` (browser) does not**, and it is not a config gap -- see below.
+- **The gateway half.** All three paths return 200: `POST /v1/chat/completions`,
+  `POST /anthropic/v1/messages`, and `POST /otel/v1/traces`.
+- **`login --device-code`** -- works. No local listener, so it is also the answer on a
+  headless box or when the callback ports are taken.
+- **Plain `login` (browser)** -- works, via a pinned port block. Read the note on it below
+  before changing anything about the ports; they are a contract with `ai-helm-values`.
 
 **`authz-idp` is now a full OpenID Provider, and `auth.ai.camer.digital` is it.**
 `GET https://auth.ai.camer.digital/.well-known/openid-configuration` returns 200 and
@@ -25,22 +28,22 @@ internally*. Keycloak is still there; it is no longer something you point a flag
 
 Which login paths actually work:
 
-- **`--device-code` -- USE THIS.** The `device_code` grant was added to the
-  `governance-auth-cli` registration
-  ([`ai-helm-values`#327](https://github.com/ADORSYS-GIS/ai-helm-values/pull/327)) and
-  verified against the deployment: `POST /oauth2/device_authorization` returns 200 with a
-  real `user_code`. It needs no Keycloak realm changes -- you are verified through
-  authz-idp's own relying-party leg, and the CLI never presents a subject token.
-- **Plain `login` (browser) -- works from a build of `main`, via pinned ports.** It used to be
-  impossible: `governance-auth` took an *ephemeral* loopback port, while authz matches
-  `redirect_uri` by exact string equality with no RFC 8252 §7.3 loopback exemption, so no
-  registration could ever match a port the kernel picks at runtime.
+- **`--device-code`** -- the `device_code` grant on the `governance-auth-cli` registration
+  ([`ai-helm-values`#327](https://github.com/ADORSYS-GIS/ai-helm-values/pull/327)). Needs no
+  Keycloak realm changes: you are verified through authz-idp's own relying-party leg, and the
+  CLI never presents a subject token. No local listener either, so this is the flow for a
+  headless box -- or for when all five callback ports below are occupied.
+- **Plain `login` (browser) -- via pinned ports.** It used to be impossible:
+  `governance-auth` took an *ephemeral* loopback port, while authz matches `redirect_uri` by
+  exact string equality with no RFC 8252 §7.3 loopback exemption, so no registration could
+  ever match a port the kernel picks at runtime.
 
   The CLI now binds the first free port of a fixed, pre-registered block --
   `17452-17456` -- and every one of them is registered as a `redirect_uri`
   ([`ai-helm-values`#331](https://github.com/ADORSYS-GIS/ai-helm-values/pull/331)).
 
-  ⚠️ **This is a workaround for a spec violation on the server, not a design choice.**
+  ⚠️ **This is a workaround for a spec violation on the server, not a design choice**
+  ([ADR-0015](../adr/0015-pin-the-loopback-callback-to-a-registered-port-block.md)).
   §7.3 says an authorization server **MUST** allow any port for a loopback redirect,
   precisely so a native app can take an ephemeral one. Filed upstream as
   [marcjazz/authkestra#291](https://github.com/marcjazz/authkestra/issues/291); when it
@@ -82,16 +85,25 @@ governance-auth login \
   --client-id governance-auth-cli
 ```
 
-⚠️ **`--device-code` is not optional here, despite its name suggesting a headless-only
-convenience.** It is the only login flow this deployment can complete. Dropping it runs the
-browser authorization-code flow, which is refused -- see the banner above and
-[#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84). Use it on your
-laptop too, not just over SSH.
-
 It prints a verification URL and an 8-character code to stderr, then polls until you
-complete it in a browser -- on any machine, which is exactly why the loopback-port problem
-does not apply. `--open-browser` has no effect on this path; there is no local redirect to
-open.
+complete it in a browser -- on any machine, which is why it needs no local listener and
+cannot hit a port collision. `--open-browser` has no effect on this path; there is no local
+redirect to open.
+
+**Both flows work; `--device-code` is the one to reach for by default.** Dropping the flag
+runs the browser authorization-code flow instead, which binds a local callback port:
+
+```bash
+governance-auth login \
+  --issuer https://auth.ai.camer.digital \
+  --client-id governance-auth-cli
+```
+
+That is a smoother desktop experience -- no code to retype -- and it is the right choice when
+you are at a machine with a browser. Prefer `--device-code` when you are on a headless box,
+when something else on your machine is holding `17452-17456`, or when you want the flow with
+the fewest moving parts. The banner above explains why those ports are pinned and why that is
+temporary.
 
 `--issuer` is resolved through plain OIDC discovery, so this works against any
 RFC 8414-compliant issuer -- `authz-idp` here, but nothing about `governance-auth` assumes

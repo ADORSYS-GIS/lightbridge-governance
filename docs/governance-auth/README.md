@@ -34,7 +34,7 @@ Decisions and background live elsewhere and are not repeated here:
 ```
 governance-auth login                       # once, interactively
   ├─ OIDC discovery against --issuer
-  ├─ authorization code + PKCE  (or --device-code)
+  ├─ authorization code + PKCE  (loopback :17452-17456)  or --device-code
   ├─ session → <state>/governance-auth/<hash>.json, mode 0600
   └─ configure: writes Claude Code / Codex / VS Code / shell rc
 
