@@ -4,6 +4,8 @@ use std::path::Path;
 
 use super::*;
 
+mod duration;
+
 fn target(path: &str, managed: usize, edited: usize) -> Target {
     Target {
         path: path.to_owned(),
@@ -13,10 +15,14 @@ fn target(path: &str, managed: usize, edited: usize) -> Target {
 }
 
 fn session(cached: bool, fresh: bool) -> Session {
+    expiring(cached, fresh, 900)
+}
+
+fn expiring(cached: bool, fresh: bool, expires_in: i64) -> Session {
     Session {
         cached,
         fresh,
-        expires_in: 900,
+        expires_in,
     }
 }
 
@@ -40,7 +46,7 @@ fn plain_output_is_unchanged() {
 fn the_table_reports_the_session_state() {
     let fresh = render("https://auth.example", "cli", &session(true, true), &[]);
     assert!(fresh.contains("fresh"), "{fresh}");
-    assert!(fresh.contains("900s left"), "{fresh}");
+    assert!(fresh.contains("15m left"), "{fresh}");
 
     let none = render("https://auth.example", "cli", &session(false, false), &[]);
     assert!(none.contains("no cached session"), "{none}");

@@ -100,15 +100,12 @@ pub fn plain(session: &Session) -> String {
 pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Target]) -> String {
     let (state, colour) = match (session.cached, session.fresh) {
         (false, _) => ("no cached session".to_owned(), Colour::Red),
-        (true, true) => (
-            format!("fresh, {}s left", session.expires_in),
-            Colour::Green,
-        ),
+        (true, true) => (format!("fresh, {}", ago(session.expires_in)), Colour::Green),
         // Not red: a stale access token is the normal steady state between
         // refreshes, and `token` renews it silently. Flagging it as a problem
         // would train the reader to ignore this line.
         (true, false) => (
-            format!("needs refresh, {}s", session.expires_in),
+            format!("needs refresh, {}", ago(session.expires_in)),
             Colour::Yellow,
         ),
     };
@@ -194,4 +191,4 @@ pub fn render(issuer: &str, client_id: &str, session: &Session, targets: &[Targe
 mod tests;
 
 mod style;
-use style::{Colour, pad, short};
+use style::{Colour, ago, pad, short};
