@@ -8,13 +8,9 @@
 //! `crate::config` for why it isn't the default.
 //!
 //! ⚠️ The fixed ports are a **workaround for a server-side spec violation**,
-//! not a design preference. RFC 8252 §7.3 says the authorization server MUST
-//! allow any port for a loopback redirect, precisely so a native app can take
-//! an ephemeral one from the OS. `authkestra-op` matches redirect URIs with a
-//! plain `==`, so an ephemeral port can never match a registration and the
-//! flow fails 100% of the time. Filed upstream as
-//! <https://github.com/marcjazz/authkestra/issues/291>; revert to
-//! `bind(("127.0.0.1", 0))` and delete that module once it is fixed.
+//! not a design preference -- RFC 8252 §7.3 makes accepting any loopback port
+//! a MUST. See [`crate::oauth::callback_port`] for the full reasoning and the
+//! condition under which this is deleted again.
 //!
 //! ⚠️ PKCE (`code_challenge`/`code_challenge_method=S256`, below) is
 //! unconditional, not a flag. RFC 8252 / OAuth 2.1 require it for public
@@ -67,11 +63,18 @@ pub async fn run(
         eprintln!("To log in, visit:\n{authorize_url}");
     }
 
-    let (code, returned_state) = tokio::task::spawn_blocking(move || await_callback(listener))
-        .await
-        .context("waiting for the OAuth callback")??;
+    // The browser page is written LAST, from the real outcome. Deciding it at
+    // parse time -- when all that is known is "a `code` parameter was present"
+    // -- showed "You're signed in" for a forged `state` and for a code the
+    // token endpoint then rejected, contradicting the terminal. Both observed
+    // against the live server.
+    let (code, returned_state, mut stream) =
+        tokio::task::spawn_blocking(move || await_callback(listener))
+            .await
+            .context("waiting for the OAuth callback")??;
 
     if returned_state != state {
+        let _ = write_callback_response(&mut stream, false);
         bail!("OAuth `state` mismatch on callback; aborting rather than trusting it");
     }
 
@@ -86,8 +89,11 @@ pub async fn run(
         params.push(("audience", audience.as_str()));
     }
 
-    let response = token_endpoint::request(http, &metadata.token_endpoint, &params).await?;
-    token_endpoint::into_session(config, response)
+    let response = token_endpoint::request(http, &metadata.token_endpoint, &params).await;
+    // Ignoring the write is deliberate: the tab is cosmetic, and a closed one
+    // must not fail a successful sign-in or mask the real error below.
+    let _ = write_callback_response(&mut stream, response.is_ok());
+    token_endpoint::into_session(config, response?)
 }
 
 fn build_authorize_url(
@@ -128,12 +134,15 @@ fn build_authorize_url(
 }
 
 /// Blocks the calling (blocking-pool) thread for exactly one HTTP request.
-fn await_callback(listener: TcpListener) -> Result<(String, String)> {
+///
+/// Returns the stream alongside the parsed values so the caller can write the
+/// browser page once the outcome is actually known -- see `run`.
+fn await_callback(listener: TcpListener) -> Result<(String, String, TcpStream)> {
     let (stream, _) = listener.accept().context("accepting loopback callback")?;
     parse_callback_request(stream)
 }
 
-fn parse_callback_request(mut stream: TcpStream) -> Result<(String, String)> {
+fn parse_callback_request(mut stream: TcpStream) -> Result<(String, String, TcpStream)> {
     let mut reader = BufReader::new(stream.try_clone().context("cloning callback stream")?);
     let mut request_line = String::new();
     reader
@@ -162,11 +171,14 @@ fn parse_callback_request(mut stream: TcpStream) -> Result<(String, String)> {
         }
     }
 
-    write_callback_response(&mut stream, code.is_some())?;
-
+    // No page on the happy path: success is not known yet, and `run` writes it.
+    // A malformed callback IS already decided, so report that one here.
+    if code.is_none() || state.is_none() {
+        let _ = write_callback_response(&mut stream, false);
+    }
     let code = code.context("callback request had no `code` parameter")?;
     let state = state.context("callback request had no `state` parameter")?;
-    Ok((code, state))
+    Ok((code, state, stream))
 }
 
 fn write_callback_response(stream: &mut TcpStream, success: bool) -> Result<()> {
