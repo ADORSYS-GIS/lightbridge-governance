@@ -20,6 +20,7 @@ mod cache;
 mod config;
 mod config_file;
 mod config_persist;
+mod managed;
 mod oauth;
 mod otel;
 mod redacted;
