@@ -170,6 +170,20 @@ downstream.
 
 ### 6. The store boundary
 
+> **⚠️ Amendment note (2026-08-31, [ADR-0014](../adr/0014-usage-telemetry-consolidates-into-the-authz-usage-store.md)).
+> This entire section is superseded.** The boundary this section proposes — gateway telemetry in
+> `lightbridge-authz`, everything else here — was never decided, and the contradiction it flags
+> below (lightbridge-authz#491) has now been resolved the other way: by **consolidation**, not by
+> a split. Per ADR-0014 and
+> [lightbridge-authz ADR-0027](https://github.com/ADORSYS-GIS/lightbridge-authz/blob/main/docs/adr/0027-one-usage-store-partitioned-by-grain.md),
+> **all telemetry storage and its query APIs live in the `lightbridge-authz` usage store**, one
+> hypertable family per grain with `source` as a dimension column. This repository keeps the
+> collectors (`governance-ctl`, `governance-auth`, `redact-extproc`, the `aiCliOtel` chart) and
+> they become **clients** of that store's ingest surface; the store, migrations, and query surface
+> planned here are decommissioned. The "two stores are not redundant" argument below is answered
+> by the consolidated store's execution/tool grains, not by a second store. The text is left
+> intact per this repo's rule that superseded reasoning is marked, not deleted.
+
 The gateway's own request telemetry goes to `lightbridge-authz`'s usage store; everything in
 this matrix except that row lands here. That boundary was previously *inferred* — the audit
 cited above raises it as their open question Q8, noting it is written down nowhere. This RFC

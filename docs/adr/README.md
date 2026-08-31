@@ -21,6 +21,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0011](./0011-bridge-copilot-run-metrics-push-to-pull.md) | Bridge copilot-sync's run-detail metrics from push to pull with a dedicated collector | Proposed | 2026-08-07 |
 | [0012](./0012-governance-auth-packaging-and-distribution.md) | `governance-auth` on-disk layout, packaging and distribution | Proposed | 2026-08-14 |
 | [0013](./0013-telemetry-ingest-invariants-and-the-declaration-gate.md) | Bind every telemetry source to six ingest invariants, declared before implementation | Proposed | 2026-08-27 |
+| [0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md) | Usage telemetry consolidates into the authz usage store — this repo keeps the collectors, not the tables | Accepted | 2026-08-31 |
 
 ⚠️ **Number collision**: `0010` is used by two ADRs. Both are listed above so
 neither is invisible, but the number needs resolving — renumbering changes
