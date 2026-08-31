@@ -73,6 +73,15 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            // Must be removed, not merely overridden by HOME: since `login`
+            // persists its settings (`config_persist`), an inherited
+            // XDG_CONFIG_HOME points every test at ONE shared config file, and
+            // a sibling test running `--open-browser` leaves `open_browser =
+            // true` behind for the test that asserts the opposite. Reproduced
+            // exactly that way; it is invisible locally whenever the variable
+            // happens to be unset, which is why CI failed and this machine did
+            // not.
+            .env_remove("XDG_CONFIG_HOME")
             .arg("--issuer")
             .arg(&self.issuer)
             .arg("--client-id")
@@ -101,6 +110,15 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            // Must be removed, not merely overridden by HOME: since `login`
+            // persists its settings (`config_persist`), an inherited
+            // XDG_CONFIG_HOME points every test at ONE shared config file, and
+            // a sibling test running `--open-browser` leaves `open_browser =
+            // true` behind for the test that asserts the opposite. Reproduced
+            // exactly that way; it is invisible locally whenever the variable
+            // happens to be unset, which is why CI failed and this machine did
+            // not.
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("GOVERNANCE_AUTH_ISSUER")
             .env_remove("GOVERNANCE_AUTH_CLIENT_ID")
@@ -137,6 +155,15 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            // Must be removed, not merely overridden by HOME: since `login`
+            // persists its settings (`config_persist`), an inherited
+            // XDG_CONFIG_HOME points every test at ONE shared config file, and
+            // a sibling test running `--open-browser` leaves `open_browser =
+            // true` behind for the test that asserts the opposite. Reproduced
+            // exactly that way; it is invisible locally whenever the variable
+            // happens to be unset, which is why CI failed and this machine did
+            // not.
+            .env_remove("XDG_CONFIG_HOME")
             .args(args);
         tokio::task::spawn_blocking(move || {
             command
