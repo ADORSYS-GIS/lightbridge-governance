@@ -9,7 +9,13 @@ use super::*;
 /// positive value, so nothing caught it.
 #[test]
 fn an_expired_session_does_not_print_negative_seconds() {
-    let out = render("i", "c", &expiring(true, false, -8338), &[]);
+    let out = render(
+        "i",
+        "c",
+        &expiring(true, false, -8338),
+        &otel(None, false),
+        &[],
+    );
     // Assert on the session line only: the empty-state row contains
     // "governance-auth configure", whose hyphen made a whole-output check for
     // '-' fail against correct code.

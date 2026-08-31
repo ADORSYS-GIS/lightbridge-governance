@@ -48,7 +48,7 @@ mod formats;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod testutil;
+pub(crate) mod testutil;
 
 pub use formats::Format;
 

@@ -359,14 +359,24 @@ pub fn status(config: &OauthConfig) -> Result<()> {
         return Ok(());
     }
 
-    let targets = std::env::var("HOME")
+    let home = std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
-        .map(|home| dashboard::targets(std::path::Path::new(&home)))
-        .unwrap_or_default();
+        .map(std::path::PathBuf::from);
+    let targets = home.as_deref().map(dashboard::targets).unwrap_or_default();
+    // Endpoint from the resolved config (it is persisted); everything else from
+    // what was actually written -- see `dashboard::telemetry`'s module doc for
+    // why the token cannot be read back off the config.
+    let telemetry = dashboard::Telemetry::survey(home.as_deref(), config.otel_endpoint.clone());
     eprintln!(
         "{}",
-        dashboard::render(&config.issuer, &config.client_id, &state, &targets)
+        dashboard::render(
+            &config.issuer,
+            &config.client_id,
+            &state,
+            &telemetry,
+            &targets
+        )
     );
     Ok(())
 }
