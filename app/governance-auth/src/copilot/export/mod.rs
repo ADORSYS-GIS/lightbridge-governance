@@ -52,18 +52,24 @@
 //! skipping past it. That is not a stall: the prefix before it has already
 //! been delivered and recorded, and the next wake resolves it.
 
-mod isolate;
+//!
+//! ## And why the offset moves during the pass, not after it
+//!
+//! The prefix is recorded the moment it advances, because the wake may not get
+//! to have an "after": a `TimeoutStartSec=` kill, an OOM, a closed lid. See
+//! [`super::journal`].
 
-use anyhow::{Error, anyhow};
-use serde_json::Value;
+mod isolate;
+mod progress;
+
+use anyhow::anyhow;
+pub use progress::{Offer, Progress};
+use progress::{build, commit};
 
 use super::{
-    batch,
-    push::{self, Signal, Verdict},
-    quarantine::Quarantine,
+    push::{self, Verdict},
     spool::Line,
 };
-use crate::redacted::Redacted;
 
 /// Ceiling on the requests one signal's pass may cost.
 ///
@@ -74,53 +80,24 @@ use crate::redacted::Redacted;
 /// duplicate delivery.
 const MAX_REQUESTS: usize = 512;
 
-/// Everything one pass over one signal did. `resolved` is the only field the
-/// offset depends on, and it is a prefix length precisely so that a pass which
-/// stopped early is still worth something.
-#[derive(Debug, Default)]
-pub struct Progress {
-    /// Lines of the offered slice that are resolved, counted from the front:
-    /// delivered, given up on, or carrying nothing for this signal.
-    pub resolved: usize,
-    /// Records the collector accepted.
-    pub accepted: usize,
-    /// Records given up on. These are gone: the caller records them as
-    /// discarded and `status` shows the loss.
-    pub discarded: usize,
-    /// Records refused for the first time and held for another wake's
-    /// evidence. Reported so "waiting on a second opinion" does not read as a
-    /// stall.
-    pub held: usize,
-    pub requests: usize,
-    /// Why the pass stopped short of the whole range. `None` means it did not.
-    pub stopped: Option<Error>,
-}
-
-/// The per-pass state [`signal`] needs beyond the lines themselves. A struct
-/// rather than eight parameters, and `&mut` on the quarantine because a
-/// refusal observed here has to survive into the checkpoint.
-pub struct Offer<'a> {
-    pub http: &'a reqwest::Client,
-    pub base: &'a str,
-    pub signal: Signal,
-    pub bearer: &'a Redacted<String>,
-    pub quarantine: &'a mut Quarantine,
-    pub now: u64,
-}
-
 /// Offers `lines` to one signal's endpoint, isolating anything permanently
 /// refused, and reports how far it got.
-pub async fn signal(offer: &mut Offer<'_>, lines: &[&Line]) -> Progress {
+pub async fn signal(offer: &mut Offer<'_, '_>, lines: &[&Line]) -> Progress {
     let mut progress = Progress::default();
-    if lines.is_empty() {
-        return progress;
-    }
 
     // In-order DFS. Right half pushed first so the left half pops first: that
     // is what makes the completed ranges a contiguous prefix -- see the
     // module doc.
     let mut pending = vec![(0usize, lines.len())];
     while let Some((start, end)) = pending.pop() {
+        // At the top rather than the bottom so that every path out of the body
+        // below -- including the two `continue`s and the four `break`s -- is
+        // followed by a commit, either on the next turn or by the one after
+        // the loop. A pass whose prefix has not moved writes nothing.
+        if let Err(error) = commit(offer, &mut progress, lines) {
+            progress.stopped = Some(error);
+            break;
+        }
         // ⚠️ A range the prefix already covers must not be offered again.
         // [`isolate`]'s probe resolves a record *ahead* of the one being
         // isolated, so the prefix can jump past ranges still on the stack --
@@ -183,17 +160,11 @@ pub async fn signal(offer: &mut Offer<'_>, lines: &[&Line]) -> Progress {
             }
         }
     }
+    // However the pass ended, what it resolved is durable before it returns.
+    // `get_or_insert` because a commit that already failed above is the more
+    // useful of the two errors -- the retry here fails for the same reason.
+    if let Err(error) = commit(offer, &mut progress, lines) {
+        progress.stopped.get_or_insert(error);
+    }
     progress
-}
-
-/// `None` when this range carries nothing for `signal`.
-fn build(lines: &[&Line], signal: Signal) -> Option<(Value, usize)> {
-    let (payload, records) = batch::build(lines).signal(signal);
-    Some((payload?, records))
-}
-
-/// The byte the caller may advance this signal's offset to: the start of the
-/// first *unresolved* line, or `end_of_range` when the whole slice resolved.
-pub fn advanced_to(lines: &[&Line], resolved: usize, end_of_range: u64) -> u64 {
-    lines.get(resolved).map_or(end_of_range, |line| line.offset)
 }

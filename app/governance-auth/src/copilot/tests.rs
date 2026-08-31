@@ -13,6 +13,8 @@ use super::{batch, record, spool};
 mod checkpoint;
 mod content;
 mod drain;
+mod identity;
+mod journal;
 mod points;
 mod quarantine;
 mod transform;

@@ -19,6 +19,14 @@
 //! **past the last newline** actually read. A trailing partial line is left
 //! where it is and picked up next run, which is also what makes re-running a
 //! no-op when nothing new was written.
+//!
+//! ## Why an offset alone is not enough to resume
+//!
+//! An offset is a byte count into *some* file, and nothing said which until an
+//! [`Identity`] travelled beside it -- see [`identity`] for the six records
+//! that cost.
+
+mod identity;
 
 use std::{
     fs::File,
@@ -27,6 +35,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+pub use identity::{Identity, Restart};
 
 /// The compiled-default spool name, under the state directory. Chosen so the
 /// `outfile` a developer pastes into VS Code's settings and the path this
@@ -60,15 +69,17 @@ pub struct Drain {
     pub lines: Vec<Line>,
     /// Where the next drain must start. Never past the last newline read.
     pub next_offset: u64,
-    /// The file was shorter than the checkpoint: it was truncated or rotated
-    /// under us and reading resumed from 0. Reported so a duplicated push is
-    /// explicable rather than mysterious.
-    pub restarted: bool,
+    /// The file was truncated or replaced under us and reading resumed from 0.
+    /// Reported so a duplicated push is explicable rather than mysterious.
+    pub restarted: Option<Restart>,
     /// The file is not there at all. Distinct from `restarted`, and the
     /// distinction is not cosmetic -- see [`drain`].
     pub missing: bool,
     /// Size at the moment of the read, for `status`.
     pub size: u64,
+    /// What the file was, so the checkpoint can record which file its offset
+    /// belongs to. `None` only when there is no file.
+    pub identity: Option<Identity>,
 }
 
 /// Reads whole lines from `offset` onwards.
@@ -84,28 +95,32 @@ pub struct Drain {
 /// let one such run reset the checkpoint, after which the next *correct* run
 /// re-exported the entire spool. So the offset comes back untouched and
 /// `missing` tells the caller to do nothing at all.
-pub fn drain(path: &Path, offset: u64) -> Result<Drain> {
-    let size = match std::fs::metadata(path) {
-        Ok(metadata) => metadata.len(),
+///
+/// `known` is the identity recorded for the file `offset` was measured
+/// against. `None` -- a checkpoint written before identities existed -- says
+/// *nothing* about the file, so it is adopted rather than read as a mismatch:
+/// reading it as one would re-export every developer's whole spool on upgrade.
+pub fn drain(path: &Path, offset: u64, known: Option<&Identity>) -> Result<Drain> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Drain {
                 lines: Vec::new(),
                 next_offset: offset,
-                restarted: false,
+                restarted: None,
                 missing: true,
                 size: 0,
+                identity: None,
             });
         }
         Err(error) => {
             return Err(error).with_context(|| format!("reading {}", path.display()));
         }
     };
-
-    let (offset, restarted) = if size < offset {
-        (0, true)
-    } else {
-        (offset, false)
-    };
+    let size = metadata.len();
+    let identity = Some(identity::of(path, &metadata)?);
+    let restarted = identity::restart(known, path, &metadata, offset)?;
+    let offset = if restarted.is_some() { 0 } else { offset };
 
     let mut file =
         File::open(path).with_context(|| format!("opening the spool {}", path.display()))?;
@@ -136,6 +151,7 @@ pub fn drain(path: &Path, offset: u64) -> Result<Drain> {
             restarted,
             missing: false,
             size,
+            identity,
         });
     };
 
@@ -165,5 +181,6 @@ pub fn drain(path: &Path, offset: u64) -> Result<Drain> {
         restarted,
         missing: false,
         size,
+        identity,
     })
 }

@@ -44,7 +44,7 @@
 
 use anyhow::anyhow;
 
-use super::{Offer, Progress, build};
+use super::{Offer, Progress, progress::build};
 use crate::copilot::{
     push::{self, Verdict},
     quarantine::{self, Quarantine},
@@ -54,7 +54,7 @@ use crate::copilot::{
 /// `index` is the position of the refused record in `lines`. Returns `true`
 /// when the pass may carry on past it.
 pub(super) async fn refused(
-    offer: &mut Offer<'_>,
+    offer: &mut Offer<'_, '_>,
     progress: &mut Progress,
     lines: &[&Line],
     index: usize,
@@ -63,7 +63,8 @@ pub(super) async fn refused(
         return false;
     };
     let key = Quarantine::key(&line.text);
-    let enough_wakes = offer.quarantine.refused(&key, offer.now);
+    let now = offer.now;
+    let enough_wakes = offer.journal.quarantine().refused(&key, now);
     let resolved_to = if !enough_wakes {
         None
     } else if progress.accepted > 0 {
@@ -74,7 +75,7 @@ pub(super) async fn refused(
 
     match resolved_to {
         Some(end) => {
-            offer.quarantine.forget(&key);
+            offer.journal.quarantine().forget(&key);
             progress.discarded = progress.discarded.saturating_add(1);
             progress.resolved = end;
             // The offset, never the record: `AGENTS.md` bans logging a payload,
@@ -115,7 +116,7 @@ pub(super) async fn refused(
 /// offset moves past a record that has just been delivered rather than
 /// re-sending it next wake.
 async fn probe(
-    offer: &mut Offer<'_>,
+    offer: &mut Offer<'_, '_>,
     progress: &mut Progress,
     lines: &[&Line],
     index: usize,
@@ -137,7 +138,12 @@ async fn probe(
             _ => None,
         };
     }
-    // Nothing else to offer. A batch of exactly one refused record waits until
-    // something acceptable arrives beside it -- self-healing, not stuck.
+    // Nothing else to offer. The refused record is the last one in the spool,
+    // so there is nothing to prove the collector with and nothing any later
+    // wake can do about it: this is the ONE stall that does not resolve itself
+    // on a timer. It clears when Copilot appends another record, and not
+    // before. Flagged rather than left implicit so `status` can say that
+    // instead of advising a re-run that repeats it exactly.
+    progress.exhausted = true;
     None
 }

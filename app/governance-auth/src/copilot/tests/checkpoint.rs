@@ -41,12 +41,14 @@ fn a_stored_checkpoint_round_trips() {
     let path = checkpoint::path(&dir.0);
     let written = checkpoint::Checkpoint {
         offset: 4096,
+        spool: None,
         metrics_offset: Some(8192),
         logs_offset: Some(4096),
         last_push_unix: Some(1_788_191_916),
         last_push_records: 12,
         discarded_total: 3,
         last_discard_unix: Some(1_788_191_900),
+        held_since_unix: None,
         quarantine: quarantine::Quarantine::default(),
     };
 

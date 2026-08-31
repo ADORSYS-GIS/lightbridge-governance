@@ -42,9 +42,16 @@ const FILE_NAME: &str = "copilot-push.lock";
 /// one lost wake. That was measured: a healthy collector received zero
 /// requests from the wake after a stuck one.
 ///
-/// Two minutes is far above any healthy drain (the HTTP client's own read
-/// timeout is 30s, so a legitimate wake cannot approach this) and far below a
-/// five-minute timer interval, so at most one wake is ever queued.
+/// Two minutes is far above any healthy drain and far below a five-minute
+/// timer interval, so at most one wake is ever queued.
+///
+/// ⚠️ This used to say the client's read timeout is 30s, therefore "a
+/// legitimate wake cannot approach this". Both halves were wrong: `main.rs`
+/// sets `read_timeout` to **15s**, and that bounds one *stall*, not a wake --
+/// a wake that bisects a refused batch makes up to 512 requests per signal and
+/// can legitimately outlast two minutes. Waiting is still the right default
+/// (see below), and a wake that gives up on the lock costs a wake, never a
+/// record, now that progress is durable as it happens ([`super::journal`]).
 const HELD_BY_A_LIVE_DRAIN: Duration = Duration::from_secs(120);
 
 /// Blocks until no other drain is running, or until [`HELD_BY_A_LIVE_DRAIN`].

@@ -18,16 +18,19 @@
 
 use anyhow::Result;
 
-use super::{checkpoint::Checkpoint, export, push::Signal, spool::Line};
+use super::{checkpoint::Checkpoint, export, journal::Journal, push::Signal, spool::Line};
 use crate::redacted::Redacted;
 
 #[derive(Default)]
 pub struct Outcome {
     pub pushed: u64,
-    pub discarded: u64,
     /// Records refused on their own for the first time. Held for another
     /// wake's evidence rather than discarded -- see [`super::quarantine`].
     pub held: u64,
+    /// A signal stopped on a refused record with nothing after it. The only
+    /// stall a later wake does not clear on its own -- see
+    /// [`export::Progress::exhausted`].
+    pub stalled: bool,
     pub failures: Vec<String>,
 }
 
@@ -48,50 +51,39 @@ pub struct Endpoint<'a> {
     pub bearer: &'a Redacted<String>,
 }
 
-/// Offers both signals and moves each one's offset over the prefix it
-/// resolved. Takes `state` by `&mut` because the quarantine it carries is
-/// evidence that has to survive into the checkpoint whether the pass succeeded
-/// or not.
-pub async fn both(to: &Endpoint<'_>, state: &mut Checkpoint, target: Target<'_>) -> Outcome {
+/// Offers both signals; each one's offset moves over the prefix it resolved.
+///
+/// ⚠️ The offsets are no longer advanced *here*. [`export::signal`] records the
+/// prefix into `journal` as it moves, because a wake that is killed part way
+/// through never reaches this function's return -- see [`super::journal`].
+/// What is left here is the tally and the quarantine's per-wake pruning.
+pub async fn both(to: &Endpoint<'_>, journal: &mut Journal<'_>, target: Target<'_>) -> Outcome {
     let mut outcome = Outcome::default();
     let now = target.now;
-    // Moved out so the borrow checker sees one mutable path into `state`; put
-    // back below, pruned, whatever happened.
-    let mut quarantine = std::mem::take(&mut state.quarantine);
-    quarantine.prune(now);
+    journal.quarantine().prune(now);
 
     for signal in [Signal::Metrics, Signal::Logs] {
-        let pending = pending_for(state, signal, target.lines);
+        let pending = pending_for(journal.state(), signal, target.lines);
         let mut offer = export::Offer {
             http: to.http,
             base: to.base,
             signal,
             bearer: to.bearer,
-            quarantine: &mut quarantine,
+            // Reborrowed rather than moved: the second signal needs it too.
+            journal: &mut *journal,
             now,
+            end_offset: target.end_offset,
         };
         let progress = export::signal(&mut offer, &pending).await;
 
-        // ⚠️ Independent of whether the pass succeeded, and that is the fix: a
-        // pass that stopped short still delivered its prefix, and not
-        // recording that is what made the next wake re-send it. The `>` guard
-        // is not an optimisation -- a pass that resolved nothing must leave
-        // the checkpoint untouched, including not creating the file, because
-        // "no checkpoint" is how a drain that has never delivered anything is
-        // meant to look.
-        let reached = export::advanced_to(&pending, progress.resolved, target.end_offset);
-        if reached > state.signal_offset(signal) {
-            state.advance(signal, reached);
-        }
         outcome.pushed = outcome.pushed.saturating_add(count(progress.accepted));
-        outcome.discarded = outcome.discarded.saturating_add(count(progress.discarded));
         outcome.held = outcome.held.saturating_add(count(progress.held));
+        outcome.stalled |= progress.exhausted;
         if let Some(error) = progress.stopped {
             outcome.failures.push(format!("{error:#}"));
         }
     }
 
-    state.quarantine = quarantine;
     outcome
 }
 

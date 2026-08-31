@@ -241,12 +241,28 @@ lock.
 
 An offset moves over the records a wake **resolved**, counted from the front, whether or not
 the wake as a whole succeeded. That is not a detail: what the collector accepted is recorded
-the moment the wake ends, so a wake that stops half way costs a wake and never a duplicate.
-The split below therefore works strictly left to right, because a byte offset can only ever
-say "everything up to here is done".
+as it happens, so a wake that stops half way costs a wake and never a duplicate. The split
+below therefore works strictly left to right, because a byte offset can only ever say
+"everything up to here is done".
 
 Work per wake is bounded (512 requests per signal). Reaching that bound is not a failure of
 the batch — the wake stops, the offset stands where it got to, and the next wake continues.
+
+**And the checkpoint is written as the prefix advances, not once at the end of the wake.**
+This binary installs no signal handler, and a handler would not be enough anyway: it covers
+SIGTERM and covers neither SIGKILL, nor the OOM killer, nor a laptop losing power. A wake that
+was killed part way through used to throw away every acceptance it had obtained — the
+collector had the records, this side had no record of it, and the next wake re-sent all of
+them, for ever if the kill was recurring. So each advance of the resolved prefix is persisted
+at the moment it happens, together with anything that advance moved past uncounted.
+
+The cost is one small write per prefix advance, each of which follows an HTTP round trip that
+is orders of magnitude slower. An ordinary wake writes the checkpoint **twice** (once per
+signal); only a wake that bisects a refused batch writes more, and it does one request of work
+between each. The writes are `tmp`-then-`rename`, which survives process death because the
+page cache does; they are deliberately **not** `fsync`ed, so host power loss can still cost the
+duplicates this otherwise prevents. That is a judgement call for a five-minute developer timer
+and would not be the right one for anything with a stricter duty.
 
 ### When a record is given up on
 
@@ -272,14 +288,52 @@ Two guards on the second rule:
   valid telemetry. The first refusal *holds* the record and stops that wake there — everything
   before it is already delivered and recorded. On a five-minute timer a bad record therefore
   costs one extra wake, and a batch with several costs one wake each.
-- **And only once the collector has been shown to accept something** — earlier in the same
-  wake, or within the last hour (`last_push_unix`). A collector misconfigured to reject
-  everything has never accepted anything, so that case advances nothing and discards nothing.
+- **And only once the collector has been shown to accept something *in this pass*.** Either
+  the split already delivered records before reaching this one, or — when the bad record is at
+  the very front and there is nothing before it to prove anything with — the next record
+  carrying that signal is offered on its own as a one-request probe. A collector misconfigured
+  to reject everything refuses the probe too, so that case advances nothing and discards
+  nothing.
+
+  ⚠️ There is deliberately **no** fallback to "the checkpoint says a push succeeded within the
+  last hour (`last_push_unix`)". That answer was implemented, tested and rejected: it is cheap
+  and it is wrong in exactly the case the rule exists for — a collector that worked this
+  morning and rejects everything now. With it, a five-minute config error empties the spool one
+  record per wake for as long as the window lasts. The proof is obtained live, every time.
+
+  ⚠️ **This narrows the loss, it does not eliminate it.** Measured against a gateway returning
+  400 non-deterministically, 9 of 150 small-spool rounds still permanently discarded a *valid*
+  record — down from 29 of 150 before the two-wake rule, and not zero. A record that a flaky
+  transport happens to refuse on two separate wakes, while other records in the same wake
+  succeed, is indistinguishable from a bad one with the evidence available here. `status` shows
+  the discard; nothing recovers it.
+
+  ⚠️ The quarantine counter is keyed on a digest of the record's **content**, so two
+  byte-identical spool lines share one refusal count and a refusal of either counts against
+  both. Real records carry nanosecond timestamps and span ids, so a collision is close to
+  impossible, and the table's 7-day TTL bounds the consequence either way. Noted rather than
+  designed around.
 
 Both counts land in the checkpoint as `discarded_total`/`last_discard_unix`, and `status`
 shows them until they age out. The alternative — never advancing — is not the safe option it
 looks like: one record the collector will never take would stop the stream at that byte
 offset permanently, and take every record written after it with it.
+
+### The one stall that does not clear itself
+
+There is an exception to "the next wake resolves it", and it is permanent. If the refused
+record is the **last** one in the spool, there is nothing after it to offer as the probe, so
+the second condition above can never be met. The record is held rather than discarded — which
+is the correct choice, because discarding on no evidence is how a misconfigured collector
+empties a spool — and every wake from then on reads it, refuses it, and exits 1.
+
+It clears when Copilot writes another record, and only then. Re-running `copilot-push` by hand
+does exactly what the timer just did.
+
+`status` reports this as its own row, **held, waiting for a later record** (yellow), rather
+than as `N bytes pending … run governance-auth copilot-push`. The byte counts are identical,
+so nothing else in the row distinguishes them — and the backlog row's advice is a command that
+reproduces the same failing wake.
 
 The spool itself is never written to. VS Code holds it **open for append** for the life of
 the window; truncating a file another process holds at offset N does not move that process's
@@ -288,8 +342,34 @@ hole of NUL bytes and every later parse is garbage. That is true on Linux and ma
 there is no safe truncation to implement and none is attempted. Reclaiming disk is Copilot's
 job (it rotates its own outfile) or a human's, with VS Code closed.
 
-If the file *is* shorter than the recorded offset, that is a rotation: the drain restarts at
-byte 0 and says so on stderr, so a duplicated push is explicable rather than mysterious.
+### Which file the offset belongs to
+
+An offset is a byte count into *some* file, so the checkpoint records **which**: the spool's
+inode and device, plus a SHA-256 of its first 4 KiB. Appending never changes either, so the
+pair is a stable name for the same file; a mismatch in either means the drain restarts at byte
+0 and says so on stderr.
+
+Both halves are needed. An inode number can be reused, at which point a brand-new file
+inherits the old one's identity; a digest cannot tell a file from a byte-identical copy, which
+is what copy-truncate rotation produces.
+
+⚠️ Size alone cannot answer this, and used to be all that was asked. `size < offset` catches a
+truncation, and it is *false* for the ordinary case: VS Code recreates its outfile on restart,
+the developer keeps working, and by the next timer wake the new file is already longer than
+the offset the old one left behind. The drain then resumed into the middle of a file it had
+never read. Measured: a 2,700-byte spool replaced by a 5,412-byte one lost six brand-new
+records — not delivered, not counted, offset at the end — with `discarded_total` moving by one,
+for the partial-line fragment at the resume point. The spool was separately measured growing
+73 KB → 315 KB in six minutes of ordinary use, so outgrowing a stale offset inside one
+five-minute window is the normal outcome of a restart, not a corner case.
+
+A checkpoint written before this field existed carries no identity. That is **not** treated as
+a mismatch — doing so would re-export every developer's whole spool on upgrade. The current
+file's identity is adopted and the drain carries on from the recorded offset.
+
+The `size < offset` check remains, and answers first: copy-truncate keeps the inode, so it is
+the case that reads as a truncation rather than a replacement, and the two stderr messages
+differ because they send the reader looking in different places.
 
 A spool that is **not there at all** is neither a rotation nor an error. The checkpoint is
 left exactly where it was and the run exits 0 — a path that does not exist says nothing about
@@ -324,10 +404,23 @@ Type=oneshot
 ExecStart=%h/.local/bin/governance-auth copilot-push
 # ⚠️ NOT optional. systemd.service(5) defaults `TimeoutStartSec=` for a
 # `Type=oneshot` unit to *infinity*, so without this line a wake that gets
-# stuck is never killed — it just sits there. The command has its own HTTP
-# read timeout and its own lock ceiling, so it should never come close to
-# this; the value is a backstop for the case those two do not cover, and it
-# is deliberately shorter than the timer interval so wakes cannot pile up.
+# stuck is never killed — it just sits there. It is deliberately shorter than
+# the timer interval so wakes cannot pile up.
+#
+# ⚠️ It is also a REAL kill, not a theoretical one, and the earlier claim that
+# "the command should never come close to this" was wrong. The HTTP read
+# timeout (15s) bounds one stall, not a wake; a wake that bisects a refused
+# batch may make up to 512 requests per signal and can legitimately exceed
+# four minutes. What makes that safe is not the number — it is that progress
+# is now durable as it happens (see "Progress is monotonic" above), so a
+# killed wake keeps everything it delivered and the next one resumes. Before
+# that, a wake which consistently exceeded this never checkpointed at all and
+# re-delivered its whole range for ever.
+#
+# 240 is kept rather than raised: with durable progress, being killed costs a
+# wake and nothing else, while a longer timeout lets a genuinely stuck drain
+# hold the lock for longer and delays the next wake behind it. Raise it only
+# if you see wakes repeatedly killed mid-drain in the journal.
 TimeoutStartSec=240
 ```
 
@@ -444,12 +537,16 @@ addition for a human and never a replacement, because `status` may be piped.
 | `not enabled` | yellow | no spool file — Copilot's file exporter is off |
 | `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
 | `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `held, waiting for a later record` | yellow | the spool's **last** record is refused; see above |
 | `up to date (<n> bytes)` | green | everything written has been pushed, and nothing was lost |
 | `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
 | `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
 | `unknown` | yellow | the state directory could not be resolved at all |
 
-Rows are checked in that order, so a discard outranks a backlog and outranks green.
+Rows are checked in that order, so a discard outranks a hold, which outranks a backlog, which
+outranks green. `held` has to beat `<n> bytes pending` because the bytes genuinely *are*
+pending: nothing else in the row distinguishes the two, and the backlog row's advice ("run
+`governance-auth copilot-push`") is the one command that cannot help.
 
 Two red rows, for the two ways this can fail silently:
 

@@ -40,6 +40,17 @@ pub enum Behavior {
         needle: &'static str,
         status: u16,
     },
+    /// [`Self::RejectContaining`], but every answer is held open first. The
+    /// two have to be one variant rather than composed, because the test that
+    /// needs both -- killing a wake part way through a bisect -- needs the
+    /// bisect (which only a refusal produces) *and* a window wide enough to
+    /// land a kill inside it. Against an instant mock the whole wake is over
+    /// in single-digit milliseconds and the kill is a coin flip.
+    RejectContainingSlowly {
+        needle: &'static str,
+        status: u16,
+        millis: u64,
+    },
 }
 
 impl Behavior {
@@ -52,13 +63,16 @@ impl Behavior {
                 path: rejected,
                 status,
             } => (path == rejected).then_some(status),
-            Self::RejectContaining { needle, status } => body.contains(needle).then_some(status),
+            Self::RejectContaining { needle, status }
+            | Self::RejectContainingSlowly { needle, status, .. } => {
+                body.contains(needle).then_some(status)
+            }
         }
     }
 
     pub fn delay_millis(self) -> u64 {
         match self {
-            Self::AcceptSlowly { millis } => millis,
+            Self::AcceptSlowly { millis } | Self::RejectContainingSlowly { millis, .. } => millis,
             _ => 0,
         }
     }

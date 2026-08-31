@@ -7,6 +7,7 @@ use super::{style::short, *};
 mod duration;
 mod hints;
 mod spool;
+mod spool_held;
 mod survey;
 mod targets;
 mod telemetry;
@@ -30,6 +31,7 @@ fn table(
             inner: None,
             last_push_age: None,
             last_discard_age: None,
+            held_age: None,
         },
         targets,
     )

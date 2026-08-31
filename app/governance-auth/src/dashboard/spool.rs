@@ -16,10 +16,23 @@
 //! | checkpoint unreadable (red) | `copilot-push.json` will not parse |
 //! | not enabled (yellow) | no spool file: Copilot's file exporter is off |
 //! | `<n>` record(s) discarded (red/yellow) | data was consumed and never delivered |
+//! | held, waiting for a later record (yellow) | see below |
 //! | up to date (green)   | spool exists, nothing pending, nothing lost |
 //! | pending (yellow)     | bytes waiting, and a push has succeeded before |
 //! | never pushed (red)   | bytes waiting and no push has *ever* succeeded |
 //! | unknown (yellow)     | the state directory could not be resolved |
+//!
+//! ## Why "held" is its own row and not a backlog
+//!
+//! A record the collector refuses on its own is only given up on once the
+//! collector has been shown to accept *something*. When the refused record is
+//! the **last** one in the spool there is nothing after it to show that with,
+//! so it is held -- and unlike every other stall, no later wake resolves it.
+//! It clears when Copilot appends another record, and not before.
+//!
+//! Rendered as an ordinary "N bytes pending ... run `governance-auth
+//! copilot-push`" that is actively misleading: the suggested command reproduces
+//! the same wake and exits 1 again. Same bytes, entirely different advice.
 //!
 //! ## Why discards outrank "pending", and why they are not permanently red
 //!
@@ -62,6 +75,8 @@ pub struct Spool {
     pub(super) last_push_age: Option<u64>,
     /// Seconds since the last discarded record, for the same reason.
     pub(super) last_discard_age: Option<u64>,
+    /// Seconds the drain has been held on the spool's final record, likewise.
+    pub(super) held_age: Option<u64>,
 }
 
 impl Spool {
@@ -70,10 +85,12 @@ impl Spool {
         let age_of = |at: Option<u64>| Some(now_unix()?.saturating_sub(at?));
         let last_push_age = inner.as_ref().and_then(|s| age_of(s.last_push_unix));
         let last_discard_age = inner.as_ref().and_then(|s| age_of(s.last_discard_unix));
+        let held_age = inner.as_ref().and_then(|s| age_of(s.held_since_unix));
         Self {
             inner,
             last_push_age,
             last_discard_age,
+            held_age,
         }
     }
 
@@ -117,6 +134,25 @@ impl Spool {
 
         if status.discarded_total > 0 {
             return self.discarded_row(status, &last);
+        }
+
+        // Before `pending`, because the bytes ARE pending and that reading is
+        // the misleading one -- see the module doc.
+        if status.held_since_unix.is_some() {
+            return (
+                "held, waiting for a later record".to_owned(),
+                Colour::Yellow,
+                format!(
+                    "the collector refuses the last record in the spool and there is nothing \
+                     after it to prove the collector still works with, so it is held rather than \
+                     discarded{}. Re-running `copilot-push` repeats this exactly; it clears when \
+                     Copilot writes another record. {last}",
+                    match self.held_age {
+                        Some(age) => format!(" (since {})", since(age)),
+                        None => String::new(),
+                    }
+                ),
+            );
         }
 
         if status.pending == 0 {

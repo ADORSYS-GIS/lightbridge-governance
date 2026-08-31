@@ -18,6 +18,8 @@ pub mod copilot;
 #[allow(dead_code)]
 pub mod harness;
 #[allow(dead_code)]
+pub mod interrupt;
+#[allow(dead_code)]
 pub mod mock_collector;
 #[allow(dead_code)]
 pub mod mock_idp;

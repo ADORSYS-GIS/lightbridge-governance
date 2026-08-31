@@ -47,6 +47,7 @@ mod checkpoint;
 mod classify;
 mod drain;
 mod export;
+mod journal;
 mod lock;
 mod logs;
 mod metrics;

@@ -32,6 +32,11 @@
 //! re-reads whatever the shared offset did not cover. Records the collector
 //! refused are counted immediately instead: that signal's offset has moved
 //! past them, so nothing will re-discover them.
+//!
+//! Both of those now happen inside [`super::journal`], in the same write as
+//! the offset they belong to. An offset that survives a kill and a loss count
+//! that does not would resume past records nothing ever counted, which is the
+//! conservation rule breaking at every interrupted wake rather than never.
 
 use std::path::Path;
 
@@ -39,10 +44,10 @@ use anyhow::{Context, Result};
 
 use super::{
     batch, checkpoint,
-    checkpoint::Checkpoint,
+    journal::Journal,
     lock,
     pass::{self, Endpoint, Outcome, Target},
-    spool::{self, Line},
+    spool::{self, Restart},
 };
 use crate::redacted::Redacted;
 
@@ -58,9 +63,9 @@ pub async fn once(
     let _guard = lock::acquire(&state_dir)?;
 
     let checkpoint_path = checkpoint::path(&state_dir);
-    let mut state = checkpoint::load(&checkpoint_path)?;
+    let state = checkpoint::load(&checkpoint_path)?;
 
-    let drained = spool::drain(spool_path, state.offset)?;
+    let drained = spool::drain(spool_path, state.offset, state.spool.as_ref())?;
     if drained.missing {
         eprintln!(
             "There is no spool at {}. Nothing was drained and the checkpoint stays at byte {} -- \
@@ -71,15 +76,17 @@ pub async fn once(
         );
         return Ok(());
     }
-    if drained.restarted {
-        eprintln!(
-            "The spool at {} is shorter than the recorded offset ({} bytes): it was truncated or \
-             rotated, so the drain restarted at byte 0.",
-            spool_path.display(),
-            state.offset
-        );
-        state.restart();
+
+    if let Some(restart) = drained.restarted {
+        eprintln!("{}", restarted(spool_path, restart, state.offset));
     }
+    let mut journal = Journal::new(
+        checkpoint_path,
+        &drained.lines,
+        state,
+        drained.identity,
+        drained.restarted.is_some(),
+    );
 
     if drained.lines.is_empty() {
         eprintln!(
@@ -90,8 +97,8 @@ pub async fn once(
         );
         // A rotation is the one thing an empty drain still has to persist, or
         // the next run re-detects and re-reports the same restart.
-        if drained.restarted && !dry_run {
-            checkpoint::store(&checkpoint_path, &state)?;
+        if drained.restarted.is_some() && !dry_run {
+            journal.commit()?;
         }
         return Ok(());
     }
@@ -101,16 +108,11 @@ pub async fn once(
     if dry_run {
         eprintln!(
             "--dry-run: nothing was posted and the checkpoint stays at byte {}.",
-            state.offset
+            journal.state().offset
         );
         return Ok(());
     }
 
-    // The state as it was, so a run that changed nothing writes nothing. A
-    // failed export must not so much as create the checkpoint file: "there is
-    // no checkpoint" is what a drain that has never delivered anything looks
-    // like, and `status` says so.
-    let before = state.clone();
     let now = checkpoint::now_unix()?;
     let target = Target {
         lines: &drained.lines,
@@ -122,35 +124,38 @@ pub async fn once(
         base: endpoint,
         bearer,
     };
-    let outcome = pass::both(&to, &mut state, target).await;
+    let outcome = pass::both(&to, &mut journal, target).await;
 
-    // The transform's loss is final only for the bytes the SHARED offset just
-    // covered; anything past it is re-read, and re-counted, next run.
-    let delivered: Vec<&Line> = drained
-        .lines
-        .iter()
-        .filter(|line| line.offset < state.offset)
-        .collect();
-    let lost_in_transform = batch::build(&delivered).counts.discarded();
-    state.record_discards(outcome.discarded.saturating_add(lost_in_transform))?;
-    // Only on an actual push: these two describe the last delivery, and a run
-    // that delivered nothing did not make one. Overwriting them with zeros
-    // would erase the evidence that a push ever succeeded, which is exactly
-    // what `status` uses to tell a stalled timer from a fresh install.
-    if outcome.pushed > 0 {
-        state.last_push_records = outcome.pushed;
-        state.last_push_unix = Some(now);
-    }
-    if state != before {
-        checkpoint::store(&checkpoint_path, &state)?;
-    }
-    report(&state, &outcome, lost_in_transform);
+    journal.finished(outcome.pushed, outcome.stalled, now);
+    journal.commit()?;
+    report(&journal, &outcome);
 
     pass::settled(&outcome)
         .context("the collector did not accept every signal; those bytes stay pending")
 }
 
-fn report(state: &Checkpoint, outcome: &Outcome, lost: u64) {
+/// The two restarts read differently on purpose: one sends the reader looking
+/// for a truncation and the other for a file swap, and being sent to the wrong
+/// one is worse than being told nothing.
+fn restarted(path: &Path, why: Restart, offset: u64) -> String {
+    match why {
+        Restart::Truncated => format!(
+            "The spool at {} is shorter than the recorded offset ({offset} bytes): it was \
+             truncated or rotated, so the drain restarted at byte 0.",
+            path.display()
+        ),
+        Restart::Replaced => format!(
+            "The spool at {} is not the file byte {offset} was measured against -- it was \
+             replaced, not appended to (VS Code recreating its outfile does this). The drain \
+             restarted at byte 0, so records the old file already delivered may arrive again if \
+             the two files share content.",
+            path.display()
+        ),
+    }
+}
+
+fn report(journal: &Journal<'_>, outcome: &Outcome) {
+    let state = journal.state();
     if outcome.pushed > 0 {
         eprintln!(
             "Pushed {} record(s); checkpoint at byte {}.",
@@ -164,7 +169,15 @@ fn report(state: &Checkpoint, outcome: &Outcome, lost: u64) {
             outcome.held
         );
     }
-    let discarded = outcome.discarded.saturating_add(lost);
+    if outcome.stalled {
+        eprintln!(
+            "The refused record is the LAST one in the spool, so there is nothing after it to \
+             prove the collector still works with -- and giving up on no evidence is how a \
+             misconfigured collector empties a spool. This does not clear on the next wake: it \
+             clears when Copilot writes another record. Re-running now repeats exactly this."
+        );
+    }
+    let discarded = journal.lost();
     if discarded > 0 {
         eprintln!(
             "⚠️  discarded {discarded} record(s) that will never reach the collector ({} in \

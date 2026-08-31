@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{private_file, push::Signal, quarantine::Quarantine};
+use super::{private_file, push::Signal, quarantine::Quarantine, spool::Identity};
 
 /// The file name under the state dir. Sibling of the session files, which are
 /// named by `sha256(issuer + client_id)` -- this one is not, deliberately:
@@ -44,6 +44,18 @@ pub struct Checkpoint {
     /// hand see one obvious number.
     #[serde(default)]
     pub offset: u64,
+    /// Which file [`Self::offset`] was measured against. Without it an offset
+    /// is a byte count into *some* file, and a spool replaced between two
+    /// wakes was resumed into rather than restarted -- see
+    /// [`super::spool::Identity`].
+    ///
+    /// `None` on a checkpoint written before this field existed. That is
+    /// **not** a mismatch: reading it as one would re-export every
+    /// developer's whole spool on upgrade. It is written by the same commit
+    /// that writes an offset, so the recorded identity always describes the
+    /// file the recorded offset refers to.
+    #[serde(default)]
+    pub spool: Option<Identity>,
     /// Bytes `/v1/metrics` has accepted. `None` on a file written before this
     /// field existed, where [`Self::signal_offset`] falls back to `offset` --
     /// defaulting it to 0 would re-export the whole spool after an upgrade.
@@ -70,6 +82,15 @@ pub struct Checkpoint {
     pub discarded_total: u64,
     #[serde(default)]
     pub last_discard_unix: Option<u64>,
+    /// When the drain last found itself unable to make progress *and* unable
+    /// to resolve why, because the refused record is the last one in the spool
+    /// and there is nothing after it to prove the collector with. `status`
+    /// reads this to tell that state -- which no wake will clear, and which
+    /// running the command by hand does nothing about -- from an ordinary
+    /// backlog, which is the same row otherwise. Cleared by the first wake
+    /// that is not in it. See [`super::export::isolate`].
+    #[serde(default)]
+    pub held_since_unix: Option<u64>,
     /// Records the collector has refused on their own, and on how many wakes.
     /// Persisted rather than held per run because "refused twice, on separate
     /// wakes" is the whole distinction between a bad payload and a flaky

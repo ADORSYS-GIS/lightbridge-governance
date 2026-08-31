@@ -15,7 +15,14 @@ use std::path::PathBuf;
 use super::*;
 use crate::{copilot::SpoolStatus, dashboard::style::Colour};
 
-fn spool(size: Option<u64>, offset: u64, last_push_unix: Option<u64>, age: Option<u64>) -> Spool {
+/// `pub(super)` so `spool_held` can build the same shape: a field added to
+/// `SpoolStatus` must break one fixture, not silently miss a second copy of it.
+pub(super) fn spool(
+    size: Option<u64>,
+    offset: u64,
+    last_push_unix: Option<u64>,
+    age: Option<u64>,
+) -> Spool {
     Spool {
         inner: Some(SpoolStatus {
             path: PathBuf::from("/state/governance-auth/copilot-otel.jsonl"),
@@ -23,12 +30,14 @@ fn spool(size: Option<u64>, offset: u64, last_push_unix: Option<u64>, age: Optio
             offset,
             pending: size.unwrap_or_default().saturating_sub(offset),
             last_push_unix,
+            held_since_unix: None,
             discarded_total: 0,
             last_discard_unix: None,
             checkpoint_unreadable: false,
         }),
         last_push_age: age,
         last_discard_age: None,
+        held_age: None,
     }
 }
 
@@ -131,6 +140,7 @@ fn an_unresolvable_state_directory_reads_as_unknown() {
         inner: None,
         last_push_age: None,
         last_discard_age: None,
+        held_age: None,
     };
     let (value, colour, note) = nothing.row();
     assert_eq!(value, "unknown");

@@ -13,6 +13,7 @@
 mod support;
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 use support::{
     copilot as fixture,
     harness::Harness,
@@ -52,14 +53,64 @@ async fn three_concurrent_runs_export_each_record_once() -> Result<()> {
     );
 
     let checkpoint = fixture::checkpoint_path(&harness);
-    let state: serde_json::Value =
+    let state: Value =
         serde_json::from_slice(&std::fs::read(&checkpoint).context("reading the checkpoint")?)
             .context("parsing the checkpoint")?;
     let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
     assert_eq!(
-        state.get("offset").and_then(serde_json::Value::as_u64),
+        state.get("offset").and_then(Value::as_u64),
         Some(size),
         "the winner's checkpoint must survive the losers' writes: {state}"
     );
+    Ok(())
+}
+
+/// Five at once, on a spool big enough that a lost race would be obvious.
+///
+/// The three-run test above pins the lock; this pins that it does not degrade
+/// with more contenders, which is the shape a real machine produces -- a
+/// five-minute timer, a developer following `status`'s advice, and a shell
+/// history repeat.
+#[tokio::test]
+async fn five_simultaneous_wakes_cost_one_wakes_requests() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    let collector = MockCollector::start(Behavior::AcceptSlowly { millis: 300 }).await?;
+    let spool = fixture::seed_spool(&harness)?;
+    harness.seed_session(&fixture::fresh_session(harness.issuer())?)?;
+    let records: Vec<Value> = (0..8)
+        .map(|index| fixture::marked_log_line(&format!("good-{index}")))
+        .collect();
+    fixture::write_spool(&spool, &records)?;
+
+    let (a, b, c, d, e) = tokio::join!(
+        fixture::push(&harness, &collector.base_url, &spool, &[]),
+        fixture::push(&harness, &collector.base_url, &spool, &[]),
+        fixture::push(&harness, &collector.base_url, &spool, &[]),
+        fixture::push(&harness, &collector.base_url, &spool, &[]),
+        fixture::push(&harness, &collector.base_url, &spool, &[]),
+    );
+    for output in [a?, b?, c?, d?, e?] {
+        assert!(
+            output.status.success(),
+            "a run that loses the race is a no-op, not a failure: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let delivered = collector.accepted_log_bodies()?;
+    let mut seen = std::collections::HashSet::new();
+    let repeated: Vec<&String> = delivered.iter().filter(|b| !seen.insert(*b)).collect();
+    println!(
+        "concurrency: 5 wakes -> {} requests, {} delivered, {} duplicates",
+        collector.request_count()?,
+        delivered.len(),
+        repeated.len()
+    );
+    assert_eq!(
+        collector.request_count()?,
+        1,
+        "the lock serialises the read-modify-write, so only the first wake has anything to send"
+    );
+    assert!(repeated.is_empty(), "and nothing may be sent twice");
     Ok(())
 }

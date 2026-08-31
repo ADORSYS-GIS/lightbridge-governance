@@ -49,10 +49,10 @@ fn a_fresh_spool_is_read_whole() {
     let contents = format!("{}\n{}\n", metrics_line(), log_line());
     write(&path, &contents);
 
-    let drained = spool::drain(&path, 0).expect("draining a fresh spool");
+    let drained = spool::drain(&path, 0, None).expect("draining a fresh spool");
 
     assert_eq!(drained.lines.len(), 2);
-    assert!(!drained.restarted);
+    assert_eq!(drained.restarted, None);
     assert_eq!(drained.next_offset, contents.len() as u64);
     assert_eq!(drained.size, contents.len() as u64);
 }
@@ -64,11 +64,11 @@ fn re_running_with_no_new_data_pushes_nothing_and_moves_nothing() {
     let contents = format!("{}\n", log_line());
     write(&path, &contents);
 
-    let first = spool::drain(&path, 0).expect("first drain");
+    let first = spool::drain(&path, 0, None).expect("first drain");
     assert_eq!(first.lines.len(), 1);
 
     // THE idempotency assertion: same file, checkpoint from the first run.
-    let second = spool::drain(&path, first.next_offset).expect("second drain");
+    let second = spool::drain(&path, first.next_offset, None).expect("second drain");
     assert!(
         second.lines.is_empty(),
         "re-running with no new data must yield no records, got {:?}",
@@ -78,7 +78,10 @@ fn re_running_with_no_new_data_pushes_nothing_and_moves_nothing() {
         second.next_offset, first.next_offset,
         "the offset must not move when nothing was read"
     );
-    assert!(!second.restarted, "an unchanged file is not a rotation");
+    assert_eq!(
+        second.restarted, None,
+        "an unchanged file is not a rotation"
+    );
     assert!(
         batch::build(&second.lines).metrics.is_none(),
         "and there must be nothing to post"
@@ -92,12 +95,12 @@ fn only_new_bytes_are_read_after_a_partial_consumption() {
     let first_line = format!("{}\n", log_line());
     write(&path, &first_line);
 
-    let first = spool::drain(&path, 0).expect("first drain");
+    let first = spool::drain(&path, 0, None).expect("first drain");
 
     let appended = format!("{first_line}{}\n", metrics_line());
     write(&path, &appended);
 
-    let second = spool::drain(&path, first.next_offset).expect("second drain");
+    let second = spool::drain(&path, first.next_offset, None).expect("second drain");
     assert_eq!(second.lines.len(), 1, "only the appended record");
     assert_eq!(record::classify(&json(&second)), record::Kind::Metrics);
     assert_eq!(second.next_offset, appended.len() as u64);
@@ -117,16 +120,21 @@ fn a_truncated_spool_restarts_from_zero_and_says_so() {
     let path = dir.file("spool.jsonl");
     let long = format!("{}\n{}\n", metrics_line(), log_line());
     write(&path, &long);
-    let stale_offset = spool::drain(&path, 0).expect("first drain").next_offset;
+    let stale_offset = spool::drain(&path, 0, None)
+        .expect("first drain")
+        .next_offset;
 
     // VS Code rotated the outfile under us: same path, fewer bytes.
     let short = format!("{}\n", log_line());
     write(&path, &short);
 
-    let after = spool::drain(&path, stale_offset).expect("drain after rotation");
-    assert!(
+    let after = spool::drain(&path, stale_offset, None).expect("drain after rotation");
+    assert_eq!(
         after.restarted,
-        "a file shorter than the checkpoint must be reported as restarted, not silently skipped"
+        Some(spool::Restart::Truncated),
+        "a file shorter than the checkpoint must be reported as restarted, not silently skipped -- \
+         and as TRUNCATED, because reporting a replacement sends the reader looking for a file \
+         swap that never happened"
     );
     assert_eq!(after.lines.len(), 1, "the whole new file is read");
     assert_eq!(after.next_offset, short.len() as u64);
@@ -135,7 +143,8 @@ fn a_truncated_spool_restarts_from_zero_and_says_so() {
 #[test]
 fn a_missing_spool_is_not_an_error() {
     let dir = TempDir::new("missing");
-    let drained = spool::drain(&dir.file("never-created.jsonl"), 0).expect("a missing spool is ok");
+    let drained =
+        spool::drain(&dir.file("never-created.jsonl"), 0, None).expect("a missing spool is ok");
     assert!(drained.lines.is_empty());
     assert_eq!(drained.size, 0);
 }
@@ -148,7 +157,7 @@ fn a_partial_trailing_line_is_left_for_the_next_run() {
     let complete = format!("{}\n", log_line());
     write(&path, &format!("{complete}{{\"hrTime\":[1788191912"));
 
-    let drained = spool::drain(&path, 0).expect("draining mid-write");
+    let drained = spool::drain(&path, 0, None).expect("draining mid-write");
     assert_eq!(drained.lines.len(), 1, "half a record must not be parsed");
     assert_eq!(
         drained.next_offset,

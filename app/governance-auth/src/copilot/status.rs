@@ -25,6 +25,12 @@ pub struct SpoolStatus {
     /// under a stale checkpoint reads 0 rather than underflowing.
     pub pending: u64,
     pub last_push_unix: Option<u64>,
+    /// Since when the drain has been stuck on a refused record that is the
+    /// **last** one in the spool. That state does not clear on the next wake
+    /// and running the command by hand repeats it exactly, so it must not be
+    /// reported as an ordinary backlog with "run `governance-auth
+    /// copilot-push`" beside it. `None` is every other state.
+    pub held_since_unix: Option<u64>,
     /// Records consumed that never reached the collector. Non-zero is the one
     /// thing that stops this row being green even with nothing pending: a
     /// parser regression drains the spool into nowhere, and `pending == 0`
@@ -57,6 +63,7 @@ impl SpoolStatus {
             offset: state.offset,
             pending: size.unwrap_or_default().saturating_sub(state.offset),
             last_push_unix: state.last_push_unix,
+            held_since_unix: state.held_since_unix,
             discarded_total: state.discarded_total,
             last_discard_unix: state.last_discard_unix,
             checkpoint_unreadable,
