@@ -6,6 +6,7 @@
 //! browser from an unattended re-invoke -- only `login` does that.
 
 mod authcode;
+mod callback_port;
 mod device;
 mod discovery;
 mod exchange;

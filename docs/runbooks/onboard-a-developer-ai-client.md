@@ -31,13 +31,29 @@ Which login paths actually work:
   verified against the deployment: `POST /oauth2/device_authorization` returns 200 with a
   real `user_code`. It needs no Keycloak realm changes -- you are verified through
   authz-idp's own relying-party leg, and the CLI never presents a subject token.
-- **Plain `login` (browser) -- still blocked, and not by configuration.** `governance-auth`
-  binds an *ephemeral* loopback port, while authz matches `redirect_uri` by exact string
-  equality with no RFC 8252 §7.3 loopback exemption, so no registered value can ever match a
-  port the kernel picks at runtime. Registering a `redirect_uri` does not fix it -- it only
-  moves the failure from "grant refused" to `400 invalid redirect_uri`. It needs a fixed
-  port here or §7.3 upstream in `authkestra-op`. Tracked on
-  [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84).
+- **Plain `login` (browser) -- works from a build of `main`, via pinned ports.** It used to be
+  impossible: `governance-auth` took an *ephemeral* loopback port, while authz matches
+  `redirect_uri` by exact string equality with no RFC 8252 §7.3 loopback exemption, so no
+  registration could ever match a port the kernel picks at runtime.
+
+  The CLI now binds the first free port of a fixed, pre-registered block --
+  `17452-17456` -- and every one of them is registered as a `redirect_uri`
+  ([`ai-helm-values`#331](https://github.com/ADORSYS-GIS/ai-helm-values/pull/331)).
+
+  ⚠️ **This is a workaround for a spec violation on the server, not a design choice.**
+  §7.3 says an authorization server **MUST** allow any port for a loopback redirect,
+  precisely so a native app can take an ephemeral one. Filed upstream as
+  [marcjazz/authkestra#291](https://github.com/marcjazz/authkestra/issues/291); when it
+  lands, the CLI goes back to an ephemeral port and the extra registrations are deleted.
+  Until then the two lists are a **contract**: the ports in
+  `app/governance-auth/src/oauth/callback_port.rs` and the `redirect_uris` in
+  `ai-helm-values` must match byte-for-byte, or `/authorize` answers
+  `400 invalid redirect_uri`.
+
+  If all five ports are held by other processes, `login` refuses with a message naming
+  them rather than silently falling back -- a fallback would bind fine and then fail at
+  `/authorize`, which points at the wrong thing entirely. Use `--device-code`, which needs
+  no local listener.
 
 ([#680](https://github.com/ADORSYS-GIS/ai-helm/issues/680) and
 [#679](https://github.com/ADORSYS-GIS/ai-helm/issues/679) remain open, but they are about
