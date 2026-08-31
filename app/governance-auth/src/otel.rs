@@ -1029,6 +1029,70 @@ mod tests {
     }
 
     /// `settings()` plus the gateway, i.e. what `--gateway-url` turns on.
+    /// Every file, byte-identical after a second run.
+    ///
+    /// Not a nicety: `configure` runs on every `login`, and anything that
+    /// churns here shows up as a spurious diff in a developer's dotfiles --
+    /// or, for the managed manifest, as a retraction that deletes and rewrites
+    /// the same key forever.
+    #[test]
+    fn configure_all_is_idempotent() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude")).expect("claude dir");
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        fs::create_dir_all(vscode_user_dir(home.path(), VSCODE_FLAVOURS[0])).expect("vscode dir");
+        fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
+
+        let settings = settings_with_gateway();
+        configure_all(home.path(), &settings).expect("first run");
+        let first = snapshot(home.path());
+        assert!(
+            first.len() >= 5,
+            "expected several files to be written, got {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            first.keys().any(|k| k.ends_with("managed.json")),
+            "the manifest must be among them: {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+
+        configure_all(home.path(), &settings).expect("second run");
+        let second = snapshot(home.path());
+
+        for (path, before) in &first {
+            let after = second
+                .get(path)
+                .expect("file disappeared on the second run");
+            assert_eq!(before, after, "second run changed {path}");
+        }
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "second run added or removed a file"
+        );
+    }
+
+    /// path -> contents, for every file under `root`.
+    fn snapshot(root: &Path) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(text) = fs::read_to_string(&path) {
+                    out.insert(path.display().to_string(), text);
+                }
+            }
+        }
+        out
+    }
+
     fn settings_with_gateway() -> OtelSettings {
         OtelSettings {
             gateway_url: Some("https://api.example.com".to_owned()),

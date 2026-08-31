@@ -4,7 +4,7 @@
   "app/governance-auth/src/config.rs": 1351,
   "app/governance-auth/src/oauth/discovery.rs": 296,
   "app/governance-auth/src/oauth/mod.rs": 464,
-  "app/governance-auth/src/otel.rs": 1773,
+  "app/governance-auth/src/otel.rs": 1837,
   "app/governance-auth/src/update.rs": 630,
   "app/governance-auth/tests/support/harness.rs": 429,
   "app/governance-auth/tests/support/mock_idp.rs": 313,
