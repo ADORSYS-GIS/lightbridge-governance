@@ -38,6 +38,11 @@ use crate::redacted::Redacted;
 /// can't drift to different endpoints or protocols.
 #[derive(Debug, Clone)]
 pub struct OtelSettings {
+    /// The resolved issuer and client id, exported into the developer's shell
+    /// so `governance-auth` itself works from any terminal without flags, and
+    /// so a helper subprocess that does not inherit them can still resolve.
+    pub issuer: String,
+    pub client_id: String,
     /// Collector base URL, e.g. `https://otel.ai.camer.digital`. Signal
     /// suffixes (`/v1/metrics`, `/v1/logs`, `/v1/traces`) are appended by the
     /// SDKs themselves from this base -- do not include one here.
@@ -190,13 +195,128 @@ pub enum Outcome {
 /// someone who doesn't use Codex would be surprising, and an empty config
 /// directory changes how some tools behave on first run.
 pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+    let previous = crate::managed::load(&crate::managed::manifest_path(home));
+
     let mut outcomes = vec![
         configure_claude_code(home, settings)?,
         configure_codex(home, settings)?,
     ];
     outcomes.extend(configure_vscode(home, settings)?);
     outcomes.extend(configure_shell_env(home, settings)?);
+
+    // Retract anything we wrote last time and did not write now, then record
+    // what we own for next time. Non-fatal by design: a failure here leaves a
+    // stale key, which is what happens today anyway -- it must never undo a
+    // successful configure. See `managed`.
+    let now = managed_now(home, settings);
+    match crate::managed::retract_stale(&previous, &now) {
+        Ok(removed) => {
+            for entry in removed {
+                eprintln!("Removed (no longer managed): {entry}");
+            }
+        }
+        Err(error) => eprintln!("warning: could not retract stale config keys: {error:#}"),
+    }
+    let manifest = crate::managed::Manifest {
+        version: 1,
+        targets: now,
+    };
+    if let Err(error) = crate::managed::save(&crate::managed::manifest_path(home), &manifest) {
+        eprintln!("warning: could not record managed keys: {error:#}");
+    }
+
     Ok(outcomes)
+}
+
+/// The keys this run owns, per target, with a digest of each current value.
+///
+/// Derived from the same conditionals the writers use rather than by reading
+/// the files back: a key merely *present* might be the developer's, and
+/// recording it as ours would let a later run delete their work.
+///
+/// Only string values are recorded. `managed::Document::get` returns strings
+/// only -- a digest of a rendered number would depend on formatting -- so
+/// numeric keys like `log_user_prompt` are never retracted. Accepted: they are
+/// few, and the alternative is a digest that changes when nothing did.
+fn managed_now(home: &Path, settings: &OtelSettings) -> BTreeMap<String, BTreeMap<String, String>> {
+    use crate::managed::{Format, digest};
+
+    let telemetry = settings.endpoint.is_some();
+    let inference = settings.gateway_url.is_some();
+
+    let mut claude: Vec<String> = Vec::new();
+    if inference {
+        claude.push("apiKeyHelper".to_owned());
+        claude.push("env.ANTHROPIC_BASE_URL".to_owned());
+    }
+    if settings.headers_helper.is_some() {
+        claude.push("otelHeadersHelper".to_owned());
+    }
+    for (key, _) in claude_code_env(settings) {
+        claude.push(format!("env.{key}"));
+    }
+
+    let mut codex: Vec<String> = Vec::new();
+    if inference {
+        codex.push("model_provider".to_owned());
+        for leaf in ["name", "base_url", "wire_api"] {
+            codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.{leaf}"));
+        }
+        codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.auth.command"));
+    }
+    if telemetry {
+        codex.push("otel.environment".to_owned());
+        for kind in ["exporter", "metrics_exporter"] {
+            codex.push(format!("otel.{kind}.otlp-http.endpoint"));
+            codex.push(format!("otel.{kind}.otlp-http.protocol"));
+            codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+        }
+    }
+
+    let vscode: Vec<String> = if telemetry {
+        vscode_settings(settings.endpoint.as_deref().unwrap_or_default())
+            .into_iter()
+            .map(|(key, _)| key.to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // VS Code ships under several flavour directories and any subset may exist,
+    // so each is its own target rather than one path.
+    let mut targets = vec![
+        (home.join(".claude").join("settings.json"), claude),
+        (home.join(".codex").join("config.toml"), codex),
+    ];
+    for flavour in VSCODE_FLAVOURS {
+        targets.push((
+            vscode_user_dir(home, flavour).join("settings.json"),
+            vscode.clone(),
+        ));
+    }
+
+    let mut out = BTreeMap::new();
+    for (path, keys) in targets {
+        if keys.is_empty() || !path.is_file() {
+            continue;
+        }
+        let Some(format) = Format::of(&path) else {
+            continue;
+        };
+        let Ok(document) = format.read(&path) else {
+            continue;
+        };
+        let mut recorded = BTreeMap::new();
+        for key in keys {
+            if let Some(value) = document.get(&key) {
+                recorded.insert(key, digest(&value));
+            }
+        }
+        if !recorded.is_empty() {
+            out.insert(path.display().to_string(), recorded);
+        }
+    }
+    out
 }
 
 /// Marker pair delimiting the block this binary owns in a shell rc file.
@@ -209,6 +329,48 @@ const BLOCK_END: &str = "# <<< governance-auth otel (managed) <<<";
 
 /// POSIX rc files, then fish (different syntax, different path).
 const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profile"];
+
+/// Every variable placed in the developer's shell, in a stable order.
+///
+/// ⚠️ This is the ONLY channel some clients have. VS Code Copilot has no
+/// settings key for OTLP headers, and Codex reads OTEL configuration from the
+/// environment rather than from its own config file -- so a value that exists
+/// only in Claude Code's `settings.json` reaches exactly one of the three
+/// tools. Claude Code gets these through `settings.json` too (see
+/// [`claude_code_env`]); the duplication is deliberate, because a developer who
+/// launches Claude Code from a desktop icon has no shell to inherit from.
+///
+/// `GOVERNANCE_AUTH_ISSUER`/`_CLIENT_ID` are here so the binary itself works
+/// from any terminal with no flags, which is the other half of what `login`
+/// persisting its settings buys (see `config_persist`): the file covers this
+/// binary, the environment covers everything that shells out to it.
+fn shell_exports(settings: &OtelSettings) -> Vec<(&'static str, String)> {
+    let mut exports = vec![
+        ("GOVERNANCE_AUTH_ISSUER", settings.issuer.clone()),
+        ("GOVERNANCE_AUTH_CLIENT_ID", settings.client_id.clone()),
+    ];
+    if let Some(base_url) = settings.anthropic_base_url() {
+        exports.push(("ANTHROPIC_BASE_URL", base_url));
+    }
+    if let Some(endpoint) = &settings.endpoint {
+        exports.push(("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()));
+        exports.push(("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()));
+        exports.push(("OTEL_METRICS_EXPORTER", "otlp".to_owned()));
+        exports.push(("OTEL_LOGS_EXPORTER", "otlp".to_owned()));
+        exports.push((
+            "OTEL_RESOURCE_ATTRIBUTES",
+            settings.resource_attributes_value(),
+        ));
+    }
+    // Last, and only with a collector to send it to: an exported Authorization
+    // header with no endpoint authenticates to nothing.
+    if settings.endpoint.is_some()
+        && let Some(headers) = settings.headers_value()
+    {
+        exports.push(("OTEL_EXPORTER_OTLP_HEADERS", headers));
+    }
+    exports
+}
 
 /// Exports the OTLP credential into the developer's shell, which is the only
 /// way VS Code Copilot can be authenticated -- it has no settings key for
@@ -229,43 +391,25 @@ const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profi
 /// authenticating Copilot at all, not a choice made here. Callers should say
 /// so out loud.
 pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
-    if settings.endpoint.is_none() {
-        // No telemetry endpoint means an exported OTLP header would
-        // authenticate to nothing -- this writer exists only to carry the
-        // credential VS Code Copilot needs, which is meaningless without a
-        // collector to send it to.
+    let exports = shell_exports(settings);
+    if exports.is_empty() {
+        // Nothing to place, and an rc block that exports nothing is just noise
+        // in someone's shell startup.
         return Ok(Vec::new());
     }
-    let Some(headers) = settings.headers_value() else {
-        // Nothing secret to place, and an rc block that exports nothing is
-        // just noise in someone's shell startup.
-        return Ok(Vec::new());
-    };
 
     let env_dir = home.join(".config").join("governance-auth");
     fs::create_dir_all(&env_dir).with_context(|| format!("creating {}", env_dir.display()))?;
 
     let posix_env = env_dir.join("otel.env");
-    write_atomically(
-        &posix_env,
-        format!(
-            "# Written by `governance-auth`. Mode 0600 on purpose: this file holds a\n\
-             # credential. It is sourced from your shell rc file so the rc file itself\n\
-             # stays safe to commit.\n\
-             export OTEL_EXPORTER_OTLP_HEADERS='{headers}'\n"
-        )
-        .as_bytes(),
-    )?;
+    let posix =
+        crate::templates::shell_env_sh(&exports).context("rendering the POSIX shell env file")?;
+    write_atomically(&posix_env, posix.as_bytes())?;
 
     let fish_env = env_dir.join("otel.fish");
-    write_atomically(
-        &fish_env,
-        format!(
-            "# Written by `governance-auth`. See otel.env; fish needs its own syntax.\n\
-             set -gx OTEL_EXPORTER_OTLP_HEADERS '{headers}'\n"
-        )
-        .as_bytes(),
-    )?;
+    let fish =
+        crate::templates::shell_env_fish(&exports).context("rendering the fish shell env file")?;
+    write_atomically(&fish_env, fish.as_bytes())?;
 
     let mut outcomes = vec![
         Outcome::Written(posix_env.clone()),
@@ -743,6 +887,23 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
     }
 
     if let Some(base_url) = settings.openai_base_url() {
+        // Take over the default. Writing the provider block alone leaves Codex
+        // pointed at whatever it used before, so the wiring existed and did
+        // nothing -- this key is what selects it. Set here only because
+        // `model_providers` is borrowed below; placement in the output is
+        // `toml_edit`'s job, see `set_root_scalar`.
+        //
+        // Deliberately authoritative: it overwrites an existing value rather
+        // than deferring to it. Someone who wants another provider for a
+        // session has `--config model_provider=...`; someone still talking to
+        // api.openai.com while believing they are on the gateway gets no
+        // signal at all, and that is the failure this prevents.
+        set_root_scalar(
+            document.as_table_mut(),
+            "model_provider",
+            toml_edit::value(CODEX_PROVIDER_ID),
+        );
+
         let providers = table_entry(document.as_table_mut(), "model_providers")?;
         let provider = table_entry(providers, CODEX_PROVIDER_ID)?;
         provider.insert("name", toml_edit::value(CODEX_PROVIDER_ID));
@@ -751,9 +912,9 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         // rejected outright at config load ("no longer supported"), so there
         // is no shape of this block that reaches a chat-completions gateway.
         provider.insert("wire_api", toml_edit::value("responses"));
-        provider
-            .decor_mut()
-            .set_prefix("\n# Written by `governance-auth configure --gateway-url`.\n# \u{26a0} INERT until the gateway serves /v1/responses: codex-cli requires\n# wire_api = \"responses\" and this gateway implements /v1/chat/completions\n# (verified: /v1/responses 404s upstream, /v1/chat/completions 200s). The\n# auth wiring below is correct and tested; only the endpoint is missing.\n");
+        provider.decor_mut().set_prefix(
+            crate::templates::codex_provider_banner().context("rendering the Codex banner")?,
+        );
 
         let auth = table_entry(provider, "auth")?;
         // Absolute path, deliberately -- see OtelSettings::token_command.
@@ -777,6 +938,25 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
 /// re-running `configure` updates the same block instead of accumulating one
 /// per run; any differently-named provider a developer wrote by hand is left
 /// strictly alone.
+/// Sets a top-level scalar, replacing in place so an existing key keeps its
+/// comment (see `config_persist::set` for why `Table::insert` alone loses it).
+///
+/// A bare TOML key must precede the first table header or it belongs to that
+/// table instead -- but `toml_edit` handles this for us: it emits root scalars
+/// ahead of tables no matter when they were inserted. Checked by moving this
+/// call after `[model_providers]` was built and confirming the output was still
+/// a root key, so the call site's ordering is a borrow-checker constraint, not
+/// a correctness one. `codex_default_provider_is_a_root_key` pins the result
+/// regardless, because it is what Codex actually reads.
+fn set_root_scalar(table: &mut toml_edit::Table, key: &str, item: toml_edit::Item) {
+    match table.get_mut(key) {
+        Some(slot) => *slot = item,
+        None => {
+            table.insert(key, item);
+        }
+    }
+}
+
 const CODEX_PROVIDER_ID: &str = "governance";
 
 /// `table[key]` on a `toml_edit` table panics when the key exists but holds a
@@ -831,6 +1011,8 @@ mod tests {
 
     fn settings() -> OtelSettings {
         OtelSettings {
+            issuer: "https://auth.example".to_owned(),
+            client_id: "cli".to_owned(),
             endpoint: Some("https://otel.example.com".to_owned()),
             token: Some(Redacted::new("ingest-token".to_owned())),
             headers_helper: None,
@@ -847,6 +1029,70 @@ mod tests {
     }
 
     /// `settings()` plus the gateway, i.e. what `--gateway-url` turns on.
+    /// Every file, byte-identical after a second run.
+    ///
+    /// Not a nicety: `configure` runs on every `login`, and anything that
+    /// churns here shows up as a spurious diff in a developer's dotfiles --
+    /// or, for the managed manifest, as a retraction that deletes and rewrites
+    /// the same key forever.
+    #[test]
+    fn configure_all_is_idempotent() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".claude")).expect("claude dir");
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        fs::create_dir_all(vscode_user_dir(home.path(), VSCODE_FLAVOURS[0])).expect("vscode dir");
+        fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
+
+        let settings = settings_with_gateway();
+        configure_all(home.path(), &settings).expect("first run");
+        let first = snapshot(home.path());
+        assert!(
+            first.len() >= 5,
+            "expected several files to be written, got {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            first.keys().any(|k| k.ends_with("managed.json")),
+            "the manifest must be among them: {:?}",
+            first.keys().collect::<Vec<_>>()
+        );
+
+        configure_all(home.path(), &settings).expect("second run");
+        let second = snapshot(home.path());
+
+        for (path, before) in &first {
+            let after = second
+                .get(path)
+                .expect("file disappeared on the second run");
+            assert_eq!(before, after, "second run changed {path}");
+        }
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "second run added or removed a file"
+        );
+    }
+
+    /// path -> contents, for every file under `root`.
+    fn snapshot(root: &Path) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(text) = fs::read_to_string(&path) {
+                    out.insert(path.display().to_string(), text);
+                }
+            }
+        }
+        out
+    }
+
     fn settings_with_gateway() -> OtelSettings {
         OtelSettings {
             gateway_url: Some("https://api.example.com".to_owned()),
@@ -921,6 +1167,55 @@ mod tests {
         assert_ne!(
             path, "governance-auth",
             "the bare-name fallback means Codex gets `No such file or directory`"
+        );
+    }
+
+    /// Codex reads `model_provider` from the document root; the same text
+    /// nested under `[model_providers]` is valid TOML with the wrong meaning
+    /// and would silently leave the old default in place. Parse rather than
+    /// grep, because both forms contain the same substring.
+    #[test]
+    fn codex_default_provider_is_a_root_key() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        configure_codex(home.path(), &settings_with_gateway()).expect("configure");
+
+        let text = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read");
+        let doc: toml_edit::DocumentMut = text.parse().expect("valid TOML");
+
+        assert_eq!(
+            doc.as_table()
+                .get("model_provider")
+                .and_then(|item| item.as_str()),
+            Some(CODEX_PROVIDER_ID),
+            "default provider must be a ROOT key, got:\n{text}"
+        );
+        assert!(
+            doc["model_providers"].get("model_provider").is_none(),
+            "key nested under [model_providers] -- Codex would ignore it:\n{text}"
+        );
+    }
+
+    /// Authoritative means authoritative: an existing choice is replaced.
+    #[test]
+    fn codex_default_provider_overwrites_an_existing_choice() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        fs::write(
+            home.path().join(".codex/config.toml"),
+            "model_provider = \"openai\"\n",
+        )
+        .expect("seed");
+
+        configure_codex(home.path(), &settings_with_gateway()).expect("configure");
+        let text = fs::read_to_string(home.path().join(".codex/config.toml")).expect("read");
+        let doc: toml_edit::DocumentMut = text.parse().expect("valid TOML");
+        assert_eq!(
+            doc.as_table()
+                .get("model_provider")
+                .and_then(|item| item.as_str()),
+            Some(CODEX_PROVIDER_ID),
+            "must take over, got:\n{text}"
         );
     }
 
@@ -1312,18 +1607,27 @@ mod tests {
     }
 
     #[test]
-    fn no_token_writes_no_shell_block_at_all() {
+    fn no_token_exports_everything_except_the_header() {
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed");
         let mut without = settings();
         without.token = None;
 
         let outcomes = configure_shell_env(home.path(), &without).expect("configure");
-        assert!(outcomes.is_empty(), "nothing to export, so nothing written");
-        assert_eq!(
-            fs::read_to_string(home.path().join(".bashrc")).expect("read"),
-            "# mine\n",
-            "an rc block exporting nothing is just noise"
+        assert!(
+            !outcomes.is_empty(),
+            "issuer/client-id still belong in the shell so the binary needs no flags"
+        );
+
+        let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
+            .expect("env file");
+        assert!(env.contains("GOVERNANCE_AUTH_ISSUER"), "{env}");
+        assert!(env.contains("OTEL_EXPORTER_OTLP_ENDPOINT"), "{env}");
+        // The point that survived the behaviour change: no credential exists,
+        // so no Authorization header may be exported.
+        assert!(
+            !env.contains("OTEL_EXPORTER_OTLP_HEADERS"),
+            "exported a header with no token: {env}"
         );
     }
 
@@ -1385,6 +1689,8 @@ mod tests {
     /// `OtelSettings`, let alone calling into these writers.
     fn settings_gateway_only() -> OtelSettings {
         OtelSettings {
+            issuer: "https://auth.example".to_owned(),
+            client_id: "cli".to_owned(),
             endpoint: None,
             headers_helper: None,
             ..settings_with_gateway()
@@ -1473,24 +1779,33 @@ mod tests {
     }
 
     #[test]
-    fn shell_env_is_untouched_without_an_otel_endpoint() {
+    fn no_otel_endpoint_exports_no_otel_variables() {
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
 
         let outcomes =
             configure_shell_env(home.path(), &settings_gateway_only()).expect("configure");
         assert!(
-            outcomes.is_empty(),
-            "nothing to export without a telemetry endpoint"
+            !outcomes.is_empty(),
+            "gateway + identity still get exported"
         );
 
-        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
-        assert_eq!(bashrc, "# mine\n", "rc file must be left untouched");
+        let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
+            .expect("env file");
+        assert!(env.contains("ANTHROPIC_BASE_URL"), "{env}");
+        assert!(env.contains("GOVERNANCE_AUTH_CLIENT_ID"), "{env}");
+        // No collector means every OTEL_* variable would point at nothing.
         assert!(
-            !home
-                .path()
-                .join(".config/governance-auth/otel.env")
-                .exists()
+            !env.contains("OTEL_"),
+            "exported OTEL config with no endpoint: {env}"
+        );
+
+        // The rc file is still only ever a `source` line inside the markers.
+        let bashrc = fs::read_to_string(home.path().join(".bashrc")).expect("read bashrc");
+        assert!(bashrc.starts_with("# mine\n"), "clobbered the user's file");
+        assert!(
+            !bashrc.contains("ANTHROPIC_BASE_URL"),
+            "secret-adjacent value inlined into rc"
         );
     }
 

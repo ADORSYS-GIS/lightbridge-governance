@@ -45,6 +45,45 @@ window is real: act at the identity provider, not just here.
 That is the design. It is waiting for you to visit the URL; it does not open a browser unless
 `--open-browser` is set. On a box with no browser at all, use `--device-code` instead.
 
+**`every loopback callback port is already in use: 17452, 17453, …`**
+
+Exactly what it says, and it is refusing on purpose. The browser flow can only use those five
+ports because the authorization server matches redirect URIs exactly and only those are
+registered, so there is no other port it could legally fall back to. Free one
+(`ss -ltnp | grep 174` shows the holder), or use `--device-code`, which needs no local
+listener at all.
+
+It refuses rather than quietly taking another port because a fallback would bind fine and then
+fail at `/authorize` with `invalid redirect_uri` — moving the error away from its cause and
+making a local port collision look like a broken server or a bad registration.
+
+**`400 invalid redirect_uri` from the authorization server**
+
+The port the CLI bound is not registered on the client. These two lists are a contract and
+have drifted:
+
+- `CALLBACK_PORTS` in `app/governance-auth/src/oauth/callback_port.rs`
+- `redirect_uris` on `governance-auth-cli` in `ai-helm-values`
+  `environments/prod/values/lightbridge-app.yaml`
+
+Matching is byte-for-byte — no normalisation, no port exemption — so `http` vs `https`,
+`127.0.0.1` vs `localhost`, or a trailing slash all fail the same way. Fix by adding the port
+to the registration **first**, then to the binary: a registration the CLI does not use is
+inert, an unregistered CLI port is a hard failure. Background:
+[ADR-0015](../adr/0015-pin-the-loopback-callback-to-a-registered-port-block.md).
+
+**The browser tab says "Sign-in failed" but I did sign in**
+
+Trust the terminal, and read the error there. The tab reports the *outcome*, which includes
+the `state` check and the token exchange that happen after the redirect — so a completed
+Keycloak sign-in can still end in a failed login (a mismatched `state`, or a code the token
+endpoint rejects).
+
+This was previously the other way round and worse: the page said "You're signed in" as soon as
+a `code` parameter was present, before either check, so a forged callback or a rejected code
+produced a success page contradicting the terminal. Fixed in
+[#204](https://github.com/ADORSYS-GIS/lightbridge-governance/pull/204).
+
 ---
 
 ## Configuration
@@ -124,9 +163,12 @@ the exchange server checks the audience twice against two different values. See
 
 **`missing field 'authorization_endpoint'`**
 
-An old build refusing a discovery document that legitimately omits the field — which
-`lightbridge-authz` does, having no `/authorize` route. Fixed in
+An old build refusing a discovery document that legitimately omits the field. Fixed in
 [#145](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/145); update.
+
+(This entry used to add "which `lightbridge-authz` does, having no `/authorize` route".
+That is no longer true — `authz-idp` serves `/authorize` and advertises
+`authorization_endpoint`. The fix still stands for issuers that genuinely omit it.)
 
 **Exchange succeeds but the gateway returns 403**
 
@@ -159,8 +201,18 @@ load time. The current writer emits the correct shape; a hand-edit may not.
 
 **Codex talks to the gateway but nothing works**
 
-The provider block is currently **inert**: codex-cli requires `wire_api = "responses"` and
-this gateway implements `/v1/chat/completions` (`/v1/responses` 404s upstream). The auth
+⚠️ This entry previously said the provider block was **inert** because `/v1/responses` 404d.
+That is no longer the whole picture: as of 2026-08-31 the gateway **routes and auth-gates**
+`/v1/responses` (it returns `401`, where a genuinely absent path returns `404`), and
+`governance-auth` now makes this provider the default via `model_provider`.
+
+What is **not** verified is whether the *upstream* serves it. The `401` is returned before
+upstream is reached, so an unauthenticated probe cannot tell; the previously-recorded failure
+was a well-formed body 404ing **from upstream**. If every Codex call errors, check that first,
+and `--config model_provider=openai` reverts for a single run.
+
+Historical detail, still useful: codex-cli requires `wire_api = "responses"` and this gateway
+implements `/v1/chat/completions`. The auth
 wiring is correct and tested; the endpoint is the missing piece —
 [#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144).
 

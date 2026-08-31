@@ -1,0 +1,84 @@
+{#
+  The page the browser lands on after the loopback redirect.
+
+  Rendered by `oauth::callback_page`, embedded with `include_str!` so the
+  shipped binary carries it and never looks for a template directory at run
+  time. Autoescaping is on (the template name ends in `.html`), and every value
+  below is a plain string -- the icon is passed as a list of SVG path `d`
+  attributes rather than raw markup precisely so nothing here needs `| safe`.
+
+  ⚠️ NO EXTERNAL REFERENCES. No CDN stylesheet, webfont, script or image. This
+  is served by a loopback listener on a developer's machine, possibly offline,
+  and renders immediately after an OAuth callback -- the worst moment to hand a
+  third party a referrer containing a `code`. `makes_no_external_requests`
+  fails the build if a `src=`, `<link`, `@import` or `http(s)://` appears.
+#}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{ heading }} &middot; governance-auth</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center;
+    justify-content: center; padding: 1.5rem;
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    background: #f8fafc; color: #0f172a;
+  }
+  .card {
+    width: 100%; max-width: 27rem; background: #fff; border: 1px solid #e2e8f0;
+    border-radius: 14px; padding: 2rem; text-align: center;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.06);
+  }
+  .icon {
+    width: 3rem; height: 3rem; margin: 0 auto 1.15rem; border-radius: 999px;
+    display: flex; align-items: center; justify-content: center;
+    background: {{ accent }}14; color: {{ accent }};
+  }
+  .icon svg { width: 1.6rem; height: 1.6rem; }
+  h1 { margin: 0 0 .5rem; font-size: 1.2rem; font-weight: 620; letter-spacing: -.01em; }
+  p { margin: 0; color: #475569; }
+  .hint {
+    margin-top: 1.5rem; padding-top: 1.15rem; border-top: 1px solid #e2e8f0;
+    font-size: .8125rem; color: #64748b;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0b1120; color: #e2e8f0; }
+    .card { background: #111827; border-color: #1f2937; box-shadow: none; }
+    p { color: #94a3b8; }
+    .hint { border-top-color: #1f2937; color: #64748b; }
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        {%- for d in icon_paths %}
+        <path d="{{ d }}"/>
+        {%- endfor %}
+      </svg>
+    </div>
+    <h1>{{ heading }}</h1>
+    <p>{{ detail }}</p>
+    <p class="hint" id="hint">Closing this tab&hellip;</p>
+  </main>
+<script>
+  // Best-effort. Browsers allow close() only on script-opened windows, so this
+  // is expected to fail for a tab the user navigated to -- hence the fallback
+  // text rather than a promise we cannot keep. The delay lets the message be
+  // read in the case where it does work.
+  setTimeout(function () {
+    try { window.close(); } catch (e) {}
+    // Reached whenever close() was refused, which is the common case.
+    document.getElementById('hint').textContent =
+      'You can close this tab and return to your terminal.';
+  }, 1200);
+</script>
+</body>
+</html>

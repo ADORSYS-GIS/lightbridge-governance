@@ -1,8 +1,13 @@
 # ADR-0013: Bind every telemetry source to six ingest invariants, declared before implementation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-27
 - Decision owners: @stephane-segning
+
+> **Acceptance note (2026-08-31).** Ratified alongside
+> [ADR-0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md)'s adoption of
+> these invariants verbatim; see
+> [lightbridge-authz#581](https://github.com/ADORSYS-GIS/lightbridge-authz/issues/581).
 
 ## Context
 

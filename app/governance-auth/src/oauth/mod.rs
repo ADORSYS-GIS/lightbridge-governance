@@ -6,6 +6,8 @@
 //! browser from an unattended re-invoke -- only `login` does that.
 
 mod authcode;
+mod callback_page;
+mod callback_port;
 mod device;
 mod discovery;
 mod exchange;
@@ -18,7 +20,7 @@ pub use discovery::OidcMetadata;
 use crate::{
     cache::{self, CachedSession, FileLock},
     config::OauthConfig,
-    otel,
+    config_file, config_persist, otel,
     redacted::Redacted,
 };
 
@@ -35,6 +37,19 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
     let expires_in = session.seconds_until_expiry()?;
     cache::store(&session)?;
     eprintln!("Logged in; session cached, expires in {expires_in}s.");
+
+    // Remember what worked, so `token`/`status`/`logout` stop demanding
+    // `--issuer`/`--client-id` that this command has just proved. Same
+    // non-fatal posture as `apply_telemetry` below and for the same reason:
+    // the credential is already cached and usable, so a read-only config
+    // directory must not turn a successful login into a failed command.
+    match config_file::per_user_config_path() {
+        Ok(path) => match config_persist::remember(config, &path) {
+            Ok(()) => eprintln!("Settings saved to {}.", path.display()),
+            Err(error) => eprintln!("warning: could not save settings: {error:#}"),
+        },
+        Err(error) => eprintln!("warning: could not locate the config file: {error:#}"),
+    }
 
     // Deliberately not `?`: the session is already cached and valid by this
     // point, and failing `login` because a dotfile couldn't be written would
@@ -101,6 +116,8 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
     resource_attributes.insert("service.namespace".to_owned(), "ai-cli".to_owned());
 
     let settings = otel::OtelSettings {
+        issuer: config.issuer.clone(),
+        client_id: config.client_id.clone(),
         endpoint: config.otel_endpoint.clone(),
         token: config.otel_token.clone().map(Redacted::new),
         resource_attributes,

@@ -3,21 +3,65 @@
 **When:** a developer wants Claude Code and/or Codex pointed at `api.ai.camer.digital`
 with real per-developer OAuth2 (ADR-0010), instead of a manually-issued static key.
 
-⚠️ **Partially operational.** Split by half, as of 2026-08-23:
+✅ **Operational, both login flows, as of 2026-08-31.** Each was completed end to end against
+the live deployment -- browser sign-in included, not just the endpoints:
 
-- **The gateway half is live and verified.** With a token obtained by exchange, all three
-  paths return 200: `POST /v1/chat/completions`, `POST /anthropic/v1/messages`, and
-  `POST /otel/v1/traces`. See [Section 6](#6-optional-token-exchange-rfc-8693).
-- **The interactive `login` half is not yet provisioned.** The `ai-helm`-side client
-  registration ([#680](https://github.com/ADORSYS-GIS/ai-helm/issues/680),
-  [#679](https://github.com/ADORSYS-GIS/ai-helm/issues/679)) is still open -- see ADR-0010's
-  Appendix for exactly what that registration needs. Until it lands, `governance-auth login`
-  has nothing to authenticate against, so Steps 2-5 below describe the target flow rather
-  than something you can run today.
+- **The gateway half.** All three paths return 200: `POST /v1/chat/completions`,
+  `POST /anthropic/v1/messages`, and `POST /otel/v1/traces`.
+- **`login --device-code`** -- works. No local listener, so it is also the answer on a
+  headless box or when the callback ports are taken.
+- **Plain `login` (browser)** -- works, via a pinned port block. Read the note on it below
+  before changing anything about the ports; they are a contract with `ai-helm-values`.
 
-Note that the exchange server cannot stand in for `--issuer`: it serves no
-`authorization_endpoint`, so it cannot host an interactive login at all. The shape is
-*log in at the identity provider, exchange at authz*.
+**`authz-idp` is now a full OpenID Provider, and `auth.ai.camer.digital` is it.**
+`GET https://auth.ai.camer.digital/.well-known/openid-configuration` returns 200 and
+advertises `authorization_code`, `refresh_token`, RFC 8628 `device_code` and RFC 8693
+token-exchange, with `/authorize`, `/oauth2/device_authorization`, `/oauth2/introspect`,
+`/oauth2/userinfo` and `/oauth2/end_session`. `lightbridge-console` already runs the
+browser flow against it in production.
+
+⚠️ This **supersedes** an earlier note here claiming the exchange server "serves no
+`authorization_endpoint`, so it cannot host an interactive login at all." That was true
+when authz was a thin exchange in front of Keycloak and is now false. Since ADR-0025 moved
+subject ownership to authz, the shape is *log in at authz, which brokers to Keycloak
+internally*. Keycloak is still there; it is no longer something you point a flag at.
+
+Which login paths actually work:
+
+- **`--device-code`** -- the `device_code` grant on the `governance-auth-cli` registration
+  ([`ai-helm-values`#327](https://github.com/ADORSYS-GIS/ai-helm-values/pull/327)). Needs no
+  Keycloak realm changes: you are verified through authz-idp's own relying-party leg, and the
+  CLI never presents a subject token. No local listener either, so this is the flow for a
+  headless box -- or for when all five callback ports below are occupied.
+- **Plain `login` (browser) -- via pinned ports.** It used to be impossible:
+  `governance-auth` took an *ephemeral* loopback port, while authz matches `redirect_uri` by
+  exact string equality with no RFC 8252 §7.3 loopback exemption, so no registration could
+  ever match a port the kernel picks at runtime.
+
+  The CLI now binds the first free port of a fixed, pre-registered block --
+  `17452-17456` -- and every one of them is registered as a `redirect_uri`
+  ([`ai-helm-values`#331](https://github.com/ADORSYS-GIS/ai-helm-values/pull/331)).
+
+  ⚠️ **This is a workaround for a spec violation on the server, not a design choice**
+  ([ADR-0015](../adr/0015-pin-the-loopback-callback-to-a-registered-port-block.md)).
+  §7.3 says an authorization server **MUST** allow any port for a loopback redirect,
+  precisely so a native app can take an ephemeral one. Filed upstream as
+  [marcjazz/authkestra#291](https://github.com/marcjazz/authkestra/issues/291); when it
+  lands, the CLI goes back to an ephemeral port and the extra registrations are deleted.
+  Until then the two lists are a **contract**: the ports in
+  `app/governance-auth/src/oauth/callback_port.rs` and the `redirect_uris` in
+  `ai-helm-values` must match byte-for-byte, or `/authorize` answers
+  `400 invalid redirect_uri`.
+
+  If all five ports are held by other processes, `login` refuses with a message naming
+  them rather than silently falling back -- a fallback would bind fine and then fail at
+  `/authorize`, which points at the wrong thing entirely. Use `--device-code`, which needs
+  no local listener.
+
+([#680](https://github.com/ADORSYS-GIS/ai-helm/issues/680) and
+[#679](https://github.com/ADORSYS-GIS/ai-helm/issues/679) remain open, but they are about
+Codex/Claude Code *gateway* integration -- this runbook once cited them as the blocker for
+CLI client registration, which they never were.)
 
 📖 This runbook is the short path. The exhaustive reference -- every flag, every env var,
 every file this binary touches -- is [`docs/governance-auth/`](../governance-auth/README.md).
@@ -36,25 +80,35 @@ resolve and the provider falls back to unauthenticated, silently.
 
 ```bash
 governance-auth login \
-  --issuer https://auth.ai.camer.digital/realms/platform \
+  --device-code \
+  --issuer https://auth.ai.camer.digital \
   --client-id governance-auth-cli
 ```
 
+It prints a verification URL and an 8-character code to stderr, then polls until you
+complete it in a browser -- on any machine, which is why it needs no local listener and
+cannot hit a port collision. `--open-browser` has no effect on this path; there is no local
+redirect to open.
+
+**Both flows work; `--device-code` is the one to reach for by default.** Dropping the flag
+runs the browser authorization-code flow instead, which binds a local callback port:
+
+```bash
+governance-auth login \
+  --issuer https://auth.ai.camer.digital \
+  --client-id governance-auth-cli
+```
+
+That is a smoother desktop experience -- no code to retype -- and it is the right choice when
+you are at a machine with a browser. Prefer `--device-code` when you are on a headless box,
+when something else on your machine is holding `17452-17456`, or when you want the flow with
+the fewest moving parts. The banner above explains why those ports are pinned and why that is
+temporary.
+
 `--issuer` is resolved through plain OIDC discovery, so this works against any
-RFC 8414-compliant issuer -- Keycloak today, but nothing about `governance-auth` assumes
-it.
-
-Prints the URL to visit and waits; it does NOT open your browser automatically (a
-headless SSH session, a container, or a CI runner would otherwise get a `DISPLAY`/
-`xdg-open` that fails or hijacks an unrelated desktop). Pass `--open-browser` (or set
-`GOVERNANCE_AUTH_OPEN_BROWSER=true`, or `open_browser = true` in a config file --
-see `governance-auth --help`) to restore the old auto-open behaviour on a machine
-where it's actually useful.
-
-On a headless box (SSH, a Coder cloud workspace with no local browser) use
-`--device-code` instead: it prints a verification URL and code to stderr and polls
-until you complete it elsewhere. Independent of `--open-browser` -- there is no
-browser to open for a device-code flow either way.
+RFC 8414-compliant issuer -- `authz-idp` here, but nothing about `governance-auth` assumes
+it. Note the issuer has **no realm path**: `authz-idp` is the provider itself, and a
+`/realms/...` suffix 404s at discovery.
 
 Set `GOVERNANCE_AUTH_ISSUER` / `GOVERNANCE_AUTH_CLIENT_ID` in your shell profile so you
 don't have to pass `--issuer`/`--client-id` on every subsequent command -- `token`,
@@ -70,7 +124,8 @@ it owns, merged into your existing files rather than replacing them:
 
 ```bash
 governance-auth login \
-  --issuer https://auth.ai.camer.digital/realms/platform \
+  --device-code \
+  --issuer https://auth.ai.camer.digital \
   --client-id governance-auth-cli \
   --gateway-url https://api.ai.camer.digital \
   --otel-endpoint https://otel.ai.camer.digital \
@@ -132,44 +187,52 @@ Reports whether a session is cached and its freshness. A real request from eithe
 is the actual proof -- but confirming the helper alone rules out half the failure modes
 before touching the tools.
 
-## 6. Optional: token exchange (RFC 8693)
+## 6. Token exchange (RFC 8693) -- not used here any more
 
-Some deployments want `token`/`otel-headers` to present a DIFFERENT, downstream-minted
-credential rather than the raw token issued by `--issuer` -- e.g. exchanging a Keycloak
-access token for a project-scoped token minted by `lightbridge-authz`'s native
-`/oauth2/token` endpoint. This is OFF by default; nothing changes unless you opt in.
+**Do not reach for this. There is nothing to exchange against.** The
+`urn:ietf:params:oauth:grant-type:token-exchange` grant was removed from the
+`governance-auth-cli` client on 2026-08-31
+([`ai-helm-values`#329](https://github.com/ADORSYS-GIS/ai-helm-values/pull/329)), and
+`governance-auth-exchange-cli` -- the client id this section used to tell you to pass --
+was never registered at all.
 
-```bash
-governance-auth token \
-  --token-exchange \
-  --exchange-issuer https://auth.ai.camer.digital \
-  --exchange-client-id governance-auth-exchange-cli
+The reason is the whole point of Section 2: **we own the identity provider now.** Exchange
+existed to trade a Keycloak access token for one of ours. Since ADR-0025 moved subject
+ownership to `authz-idp`, the CLI logs in against our IdP directly and is handed our token
+to begin with. There is no second credential to trade for.
+
+Verified against the deployment on 2026-08-31 -- the grant is refused for this client:
+
+```
+POST /oauth2/token   grant_type=…token-exchange   client_id=governance-auth-cli
+  → 400 {"error":"unauthorized_client",
+         "error_description":"Client is not authorized to use token_exchange grant type"}
 ```
 
-The `client_id` must be registered in the exchange server's own client list, and the
-upstream token you present must carry that `client_id` in its `aud` -- `lightbridge-authz`
-checks the subject token's audience twice, against two different values, and rejects with
-`401 invalid_token` or `400 invalid_grant` respectively. See its
-`docs/token-exchange-integration.md`.
+The `--token-exchange` / `--exchange-*` flags still exist in the binary, because the
+capability is a property of `governance-auth` rather than of this deployment: another
+install that registers an exchange client can still use them. They are OFF by default, so
+nothing here changes for you. If you turn them on against *this* gateway you will get the
+400 above.
 
-⚠️ `--exchange-issuer` works against a server that serves **no** `authorization_endpoint`.
-`lightbridge-authz` is exactly that: it has no `/authorize` route and omits the field, which
-OIDC Discovery §3 permits for a provider that supports no authorization endpoint. Requiring
-it here used to make this exact command fail with `missing field 'authorization_endpoint'`
-(#145) -- fixed, and pinned by a test whose mock now reproduces authz's real document.
+⚠️ **Two corrections to what this section used to say**, kept rather than deleted because
+both were repeated elsewhere and are worth un-learning explicitly:
 
-(`--exchange-token-endpoint <url>` skips the discovery round trip if you already know
-the endpoint; `--exchange-scopes "..."` requests specific scopes.) Every one of these
-is also settable as `GOVERNANCE_AUTH_EXCHANGE_*` / `GOVERNANCE_AUTH_TOKEN_EXCHANGE` env
-vars or config-file keys, with the same flag > env > per-user file > machine-wide file
-precedence as every other option.
+- It claimed `lightbridge-authz` "has no `/authorize` route and omits the field, which OIDC
+  Discovery §3 permits". **That is no longer true.** `authz-idp` serves `/authorize` and
+  advertises `authorization_endpoint`; `lightbridge-console` runs the browser
+  authorization-code flow against it in production today. The `#145` fix -- not requiring
+  `authorization_endpoint` during discovery -- is still correct and still wanted, but the
+  *reason* given for it has expired.
+- It described the two Keycloak audience mappers as a prerequisite you should go and satisfy.
+  They were never added, which is part of why no exchange ever completed. Nothing needs
+  satisfying now; the requirement is gone with the grant.
 
-⚠️ **Fails closed.** If exchange is enabled and the exchange request fails for any
-reason, `token`/`otel-headers` exit non-zero and print nothing to stdout -- never a
-silent fallback to the un-exchanged upstream token. See the Keycloak-client audience
-requirements in lightbridge-authz's `docs/token-exchange-integration.md` before turning
-this on: a subject token whose `aud` doesn't include both the bearer-validation audience
-and your `--exchange-client-id` will fail the exchange every time.
+If you are auditing an older deployment that still uses exchange, the mechanics are
+unchanged and documented in `lightbridge-authz`'s `docs/token-exchange-integration.md`. The
+one behaviour worth knowing either way: exchange **fails closed** -- if it is enabled and
+the exchange fails, `token`/`otel-headers` exit non-zero and print nothing, never falling
+back to the un-exchanged upstream token.
 
 ## 7. Troubleshooting
 

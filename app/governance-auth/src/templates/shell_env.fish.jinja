@@ -1,0 +1,9 @@
+{#
+  fish equivalent of shell_env.sh.jinja. `set -gx`, and fish's own quoting
+  rules -- inside single quotes fish honours \\ and \' escapes, which POSIX
+  does not.
+-#}
+# Written by `governance-auth`. See otel.env; fish needs its own syntax.
+{% for name, value in exports -%}
+set -gx {{ name }} {{ value | fish_quote }}
+{% endfor -%}

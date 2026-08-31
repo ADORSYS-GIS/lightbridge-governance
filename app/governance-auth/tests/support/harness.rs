@@ -2,6 +2,14 @@
 //! the same way `apiKeyHelper`/`auth.command` invoke it -- against an
 //! isolated `$HOME` so tests never touch a developer's real session cache.
 //!
+//! ⚠️ Every spawn site `env_remove`s `XDG_CACHE_HOME`/`XDG_STATE_HOME`/
+//! `XDG_CONFIG_HOME`. Removing differs from overriding `HOME`: those win over
+//! it, so an inherited one points every test at one shared directory. Harmless
+//! until `login` began persisting settings (`config_persist`) -- after which
+//! the sibling test running `--open-browser` left `open_browser = true` there
+//! for the test asserting the opposite. Invisible where the variable is unset,
+//! which is why CI failed and local runs did not.
+//!
 //! Every fallible step here returns `anyhow::Result` rather than
 //! unwrapping: `clippy.toml` calls out that free functions under
 //! `tests/support/` are NOT covered by the `allow-*-in-tests` carve-out
@@ -73,6 +81,7 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CONFIG_HOME") // see the module doc
             .arg("--issuer")
             .arg(&self.issuer)
             .arg("--client-id")
@@ -101,6 +110,7 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CONFIG_HOME") // see the module doc
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("GOVERNANCE_AUTH_ISSUER")
             .env_remove("GOVERNANCE_AUTH_CLIENT_ID")
@@ -137,6 +147,7 @@ impl Harness {
             .env("HOME", &self.home.path)
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CONFIG_HOME") // see the module doc
             .args(args);
         tokio::task::spawn_blocking(move || {
             command

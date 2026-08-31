@@ -39,6 +39,28 @@ deliberately no flag, env var or config key to turn it off — this is a public 
 secret, so the verifier is the only thing binding the authorization code to this process.
 `tests/pkce_authcode.rs` pins it.
 
+**The callback port is fixed, and it is a cross-repo contract.** `login` binds the first free
+port of `17452-17456` and builds `http://127.0.0.1:<port>/callback`. All five are registered
+as `redirect_uris` on the `governance-auth-cli` client; the authorization server matches
+redirect URIs by exact string equality, so a port that is not registered is refused with
+`400 invalid redirect_uri`.
+
+There is no flag to change the port, deliberately: changing it unilaterally would break login
+rather than customise it. Both sides move together — `CALLBACK_PORTS` in
+`app/governance-auth/src/oauth/callback_port.rs`, and `redirect_uris` in `ai-helm-values`
+`environments/prod/values/lightbridge-app.yaml` — registration first.
+
+⚠️ This is a **workaround for a server-side spec violation**, not a design choice. RFC 8252
+§7.3 says an authorization server **MUST** accept any port for a loopback redirect, precisely
+so a native app can take an ephemeral one from the OS; `authkestra-op` does not implement that
+exemption ([upstream #291](https://github.com/marcjazz/authkestra/issues/291)). When it lands,
+the CLI goes back to an ephemeral port and the extra registrations are deleted. See
+[ADR-0015](../adr/0015-pin-the-loopback-callback-to-a-registered-port-block.md).
+
+If all five ports are held, `login` **refuses and names them** rather than falling back to an
+ephemeral port — a fallback would bind fine and then fail at `/authorize`, pointing at the
+server instead of the local collision. Use `--device-code`, which needs no local listener.
+
 ### `login --device-code`
 
 The device-authorization flow instead of the loopback flow. Prints a verification URL and a
