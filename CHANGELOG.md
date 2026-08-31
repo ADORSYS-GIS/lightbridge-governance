@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.1...v0.4.0) (2026-08-31)
+
+
+### Features
+
+* **chart:** aiCliOtel accepts the exchanged token's audience ([#142](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/142)) ([64b709d](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/64b709df32d036834bbad4fdc2922aa3ce64b7df)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+* **governance-auth:** bind a registered loopback port, not an ephemeral one ([#203](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/203)) ([ce71c52](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/ce71c52484deee5143746bdd4e3bb4f3a5fe438f))
+* **governance-auth:** make our provider Codex's default ([#208](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/208)) ([35f5173](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/35f517348c5573aaa8f20c3789b45a716d708b5f)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+* **governance-auth:** remember settings, export them to the shell, style the callback page ([#206](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/206)) ([ea244f7](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/ea244f799db68fa951a273ac634e006e2a08138d))
+* **governance-auth:** status shows a dashboard when a human is looking ([#211](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/211)) ([cb4598a](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/cb4598a9b703f3becdb273445dc6ce6d3d2e568e))
+
+
+### Bug Fixes
+
+* **deps:** bump chacha20 0.10.1 -&gt; 0.10.2, unyanked ([#200](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/200)) ([6d8d9a5](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6d8d9a56191eab66b0343772a4ad5a220a521e0e))
+* **governance-auth:** an expired session read as 'needs refresh, -8338s' ([#213](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/213)) ([4b7d6db](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4b7d6db68037ac8018975ae44ff7429c2b59b0dc))
+* **governance-auth:** stop an empty lock file blocking token for 300s ([#154](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/154)) ([b2cb1b2](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/b2cb1b280a044e6864eb28d6bd4f75642cda266e))
+* **governance-auth:** the callback page said 'signed in' when sign-in failed ([#204](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/204)) ([b663d26](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/b663d26760a56d4b4aac280f04a1bb77fdf9a8a8)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+* **governance:** alert on a failed copilot-verify CronJob run ([711c4a2](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/711c4a28e033ec35b2419bb6781980600ce42cbb))
+* **governance:** alert on a failed copilot-verify CronJob run ([#181](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/181)) ([0753edb](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0753edbffec7dd7215d71d0414a6287bb176fc87))
+* **loc-gate:** measure renamed files instead of skipping them. ([66e241b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/66e241b5f3bb7d1e4f685f3bfb7cf2267ac825d6))
+
+
+### Code Refactoring
+
+* **governance-auth:** move the callback page into a minijinja template ([#209](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/209)) ([86f2fbf](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/86f2fbfd5ef3dde2a6d82dae2174d9cfb89653a1))
+
+
+### Continuous Integration
+
+* add 200 LoC gate for new and changed rust files. ([45bd4e4](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/45bd4e415782e1fa8b2e8ea9d2e807f05531bf35))
+* add 200-LoC gate for new and changed Rust files ([d06ce26](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d06ce2656412b874e89c0d713f42cca1733207be))
+
+
+### Documentation
+
+* **adr:** ADR-0013 is Accepted — ratified with ADR-0014's adoption ([#207](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/207)) ([8519ba4](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/8519ba437b6e595428dbf4793f8cc2be804b4939))
+* **adr:** ADR-0014 — usage telemetry consolidates into the authz usage store ([#198](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/198)) ([d7650cf](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d7650cf0ae9d65ce46e07ea41fd98cc195a339e8)), closes [#182](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/182)
+* **governance-auth:** add the reference manual ([#155](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/155)) ([3f510fd](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/3f510fde0c41b5797df05d6266fa526ac5c1771d))
+* **governance-auth:** correct the issuer, the stated blocker, and a superseded claim ([#199](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/199)) ([d552b43](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d552b432fe7b245b7bc9499f879e7313d27aa47c))
+* **governance-auth:** record that logout is not immediate cutoff ([#156](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/156)) ([4268406](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4268406b0a0b2dc12fc6b73bb71670adb318058f))
+* **governance-auth:** record the pinned-port decision and bring the manual current ([#205](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/205)) ([15823b5](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/15823b5e8977c9f66da25fc3864d42586fe7dd0a)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+* **governance-auth:** retire token exchange, make --device-code the login ([#202](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/202)) ([80f87ef](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/80f87ef8d81916e537763ba91c984774c0cfab1c)), closes [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84)
+* **rfc:** RFC-0003 telemetry source taxonomy, and ADR-0013 ingest invariants ([#157](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/157)) ([a171f8c](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/a171f8c62de5e83a080df7aa092e001287a0c29c))
+
 ## [0.3.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.0...v0.3.1) (2026-08-16)
 
 
