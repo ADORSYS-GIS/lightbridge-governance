@@ -230,29 +230,54 @@ impl OauthConfigArgs {
             )
         })?;
 
-        let issuer = self
+        // Both required values are resolved BEFORE either is reported missing.
+        // Failing on `--issuer` alone sent a first-time user round the loop
+        // twice: fix the issuer, run again, discover `--client-id`. Naming
+        // both, with a command they can paste, ends it in one go.
+        let issuer_value = self
             .issuer
             .or_else(|| per_user.as_ref().and_then(|file| file.issuer.clone()))
-            .or_else(|| machine.as_ref().and_then(|file| file.issuer.clone()))
-            .context(
-                "--issuer (or GOVERNANCE_AUTH_ISSUER, or `issuer` in a config file) is required",
-            )?;
-        // Re-validated here even though `--issuer` already goes through
-        // `parse_issuer` at CLI-parse time: a value sourced from a config
-        // file never passes through clap at all, so without this an
-        // operator's plaintext-HTTP typo in `/etc/governance-auth/config.toml`
-        // would reach the network unchecked -- the exact hole `security`'s
-        // module doc says this predicate exists to close everywhere.
-        let issuer = parse_issuer(&issuer).map_err(|error| anyhow::anyhow!(error))?;
-
-        let client_id = self
+            .or_else(|| machine.as_ref().and_then(|file| file.issuer.clone()));
+        let client_id_value = self
             .client_id
             .or_else(|| per_user.as_ref().and_then(|file| file.client_id.clone()))
-            .or_else(|| machine.as_ref().and_then(|file| file.client_id.clone()))
-            .context(
-                "--client-id (or GOVERNANCE_AUTH_CLIENT_ID, or `client_id` in a config file) is \
-                 required",
-            )?;
+            .or_else(|| machine.as_ref().and_then(|file| file.client_id.clone()));
+
+        // Destructured together so "both present" is proved by the match, not
+        // asserted with `expect` -- which this workspace denies, correctly.
+        let (issuer, client_id) = match (issuer_value, client_id_value) {
+            (Some(issuer), Some(client_id)) => (issuer, client_id),
+            (issuer, client_id) => {
+                let mut missing = Vec::new();
+                if issuer.is_none() {
+                    missing
+                        .push("--issuer (or GOVERNANCE_AUTH_ISSUER, or `issuer` in a config file)");
+                }
+                if client_id.is_none() {
+                    missing.push(
+                        "--client-id (or GOVERNANCE_AUTH_CLIENT_ID, or `client_id` in a config \
+                         file)",
+                    );
+                }
+                bail!(
+                    "{} required.\n\nFirst time here? This writes them to your config file so \
+                     you only pass them once:\n\n  governance-auth login --device-code \\\n    \
+                     --issuer <your-issuer-url> \\\n    --client-id <your-client-id>",
+                    missing.join(" and ")
+                );
+            }
+        };
+
+        // ⚠️ RESTORED after a refactor dropped it, caught by
+        // `a_config_file_issuer_is_still_validated_for_transport_security`.
+        //
+        // Re-validated here even though `--issuer` already goes through
+        // `parse_issuer` at CLI-parse time: a value sourced from a config file
+        // never passes through clap at all, so without this an operator's
+        // plaintext-HTTP typo in `/etc/governance-auth/config.toml` would reach
+        // the network unchecked -- the exact hole `security`'s module doc says
+        // this predicate exists to close everywhere.
+        let issuer = parse_issuer(&issuer).map_err(|error| anyhow::anyhow!(error))?;
 
         let scopes = self
             .scopes

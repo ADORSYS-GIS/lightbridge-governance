@@ -5,6 +5,7 @@ use std::path::Path;
 use super::*;
 
 mod duration;
+mod hints;
 
 fn target(path: &str, managed: usize, edited: usize) -> Target {
     Target {
@@ -54,13 +55,6 @@ fn the_table_reports_the_session_state() {
 
 /// An empty manifest means `configure` has not run. Saying so, with the command
 /// to fix it, beats an empty table the reader has to interpret.
-#[test]
-fn nothing_configured_says_what_to_do() {
-    let out = render("https://auth.example", "cli", &session(true, true), &[]);
-    assert!(out.contains("nothing yet"), "{out}");
-    assert!(out.contains("governance-auth configure"), "{out}");
-}
-
 #[test]
 fn drift_is_reported_per_target_without_alarm() {
     let targets = vec![
