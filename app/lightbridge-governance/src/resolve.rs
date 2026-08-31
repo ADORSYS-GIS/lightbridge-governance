@@ -496,7 +496,7 @@ mod tests {
         let db =
             governance_core::schema::cratestack_schema::Cratestack::builder(state.pool.clone())
                 .build();
-        let ctx = cratestack::CoolContext::authenticated(vec![(
+        let ctx = cratestack::CratestackContext::authenticated(vec![(
             "id".to_owned(),
             cratestack::Value::String("test-principal".to_owned()),
         )]);

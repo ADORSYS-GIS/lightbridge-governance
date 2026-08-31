@@ -27,7 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cratestack::{cool_error_from_sqlx, sqlx};
+use cratestack::{cratestack_error_from_sqlx, sqlx};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::Error;
@@ -60,7 +60,7 @@ pub async fn get_integration_identity(
     .bind(tenant_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(row.and_then(|r| r.0))
 }
@@ -121,7 +121,7 @@ pub async fn check_email_mismatches(
                 tracing::error!(
                     tenant_id = %tenant_id,
                     provider = %provider,
-                    error = %cool_error_from_sqlx(e),
+                    error = %cratestack_error_from_sqlx(e),
                     "failed to query identity_maps for mismatch detection; continuing without mismatch alerts"
                 );
                 (HashMap::new(), true)
@@ -205,7 +205,7 @@ pub async fn sync_identity_directory(
     let mut tx = pool
         .begin()
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     // One query for the whole directory instead of one per entry.
     // `ORDER BY valid_from DESC` then first-wins keeps the latest active
@@ -219,7 +219,7 @@ pub async fn sync_identity_directory(
     .bind(provider)
     .fetch_all(&mut *tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     let mut active_by_provider_user_id: HashMap<String, String> = HashMap::new();
     for (provider_user_id, internal_user_id) in active_rows {
@@ -249,7 +249,7 @@ pub async fn sync_identity_directory(
 
     tx.commit()
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(report)
 }
@@ -272,7 +272,7 @@ async fn insert_identity_map(
     .bind(&entry.internal_user_id)
     .execute(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(())
 }
 
@@ -291,7 +291,7 @@ async fn close_active_identity_map(
     .bind(provider_user_id)
     .execute(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(())
 }
 
@@ -372,7 +372,7 @@ pub async fn verify_attribution(
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(AttributionReport {
         providers: rows

@@ -70,7 +70,7 @@
 //! query) -- see `app/lightbridge-governance/src/metrics.rs`.
 
 use chrono::{DateTime, Utc};
-use cratestack::{cool_error_from_sqlx, sqlx};
+use cratestack::{cratestack_error_from_sqlx, sqlx};
 use sqlx::PgPool;
 
 use crate::{Error, Result};
@@ -149,7 +149,7 @@ pub async fn org_usage_kpis(pool: &PgPool, tenant_id: &str) -> Result<Vec<OrgUsa
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(rows
         .into_iter()
@@ -199,7 +199,7 @@ pub async fn org_seat_kpis(pool: &PgPool, tenant_id: &str) -> Result<Vec<OrgSeat
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(rows
         .into_iter()
@@ -216,7 +216,7 @@ pub async fn org_seat_kpis(pool: &PgPool, tenant_id: &str) -> Result<Vec<OrgSeat
 
 #[cfg(test)]
 mod tests {
-    use cratestack::{cool_error_from_sqlx, sqlx};
+    use cratestack::{cratestack_error_from_sqlx, sqlx};
     use sqlx::PgPool;
 
     use super::{org_seat_kpis, org_usage_kpis};
@@ -260,7 +260,7 @@ mod tests {
         .bind(net_cost_micro_usd)
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)
+        .map_err(cratestack_error_from_sqlx)
         .expect("insert org daily fixture");
     }
 
@@ -289,7 +289,7 @@ mod tests {
         .bind(last_activity_at)
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)
+        .map_err(cratestack_error_from_sqlx)
         .expect("insert seat fixture");
     }
 

@@ -11,7 +11,7 @@
 //! (RFC-0002's trust boundary).
 
 use chrono::{DateTime, Utc};
-use cratestack::{cool_error_from_sqlx, sqlx};
+use cratestack::{cratestack_error_from_sqlx, sqlx};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -173,8 +173,8 @@ pub async fn ingest_telemetry(
     }
 }
 
-fn is_deadlock(e: &cratestack_core::CoolError) -> bool {
-    matches!(e, cratestack_core::CoolError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("40P01"))
+fn is_deadlock(e: &cratestack_core::CratestackError) -> bool {
+    matches!(e, cratestack_core::CratestackError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("40P01"))
 }
 
 async fn ingest_telemetry_inner(
@@ -187,7 +187,7 @@ async fn ingest_telemetry_inner(
     let mut tx = pool
         .begin()
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     let mut result = IngestResult {
         executions_upserted: 0,
@@ -292,11 +292,11 @@ async fn ingest_telemetry_inner(
     .bind(tenant_id)
     .execute(&mut *tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     tx.commit()
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     Ok(result)
 }
@@ -342,7 +342,7 @@ async fn upsert_execution(
     .bind(total_cost)
     .execute(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(())
 }
 
@@ -376,7 +376,7 @@ async fn upsert_model_call(
     .bind(cost.map(|c| c.0))
     .execute(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(())
 }
 
@@ -403,7 +403,7 @@ async fn upsert_tool_call(
     .bind(tool_call.duration_ms)
     .execute(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(())
 }
 
@@ -436,7 +436,7 @@ async fn calculate_model_cost(
     .bind(&model_call.model)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+    .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     let Some((input_rate, output_rate)) = pricing else {
         // No pricing row for this model -> cost unknown, not zero.
@@ -648,7 +648,7 @@ mod tests {
     async fn fixture_inner(
         pool: &PgPool,
         provider: &str,
-    ) -> std::result::Result<(String, String), cratestack_core::CoolError> {
+    ) -> std::result::Result<(String, String), cratestack_core::CratestackError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -658,14 +658,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .map_err(cool_error_from_sqlx)?;
+            .map_err(cratestack_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .map_err(cool_error_from_sqlx)?;
+            .map_err(cratestack_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -676,7 +676,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)?;
+        .map_err(cratestack_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -693,7 +693,7 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)?;
+        .map_err(cratestack_error_from_sqlx)?;
         Ok((tenant_id, integration_id))
     }
 
@@ -727,7 +727,7 @@ mod tests {
         pool: &PgPool,
         provider_a: &str,
         provider_b: &str,
-    ) -> std::result::Result<(String, String, String), cratestack_core::CoolError> {
+    ) -> std::result::Result<(String, String, String), cratestack_core::CratestackError> {
         let tenant_id = format!("tenant-{}", cuid::cuid2());
         let application_id = format!("app-{}", cuid::cuid2());
         let environment_id = format!("env-{}", cuid::cuid2());
@@ -738,14 +738,14 @@ mod tests {
             .bind("ingest-test-tenant")
             .execute(pool)
             .await
-            .map_err(cool_error_from_sqlx)?;
+            .map_err(cratestack_error_from_sqlx)?;
         sqlx::query("INSERT INTO applications (id, tenant_id, name) VALUES ($1, $2, $3)")
             .bind(&application_id)
             .bind(&tenant_id)
             .bind("ingest-test-app")
             .execute(pool)
             .await
-            .map_err(cool_error_from_sqlx)?;
+            .map_err(cratestack_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO environments (id, tenant_id, application_id, name) \
              VALUES ($1, $2, $3, $4)",
@@ -756,7 +756,7 @@ mod tests {
         .bind("dev")
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)?;
+        .map_err(cratestack_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -773,7 +773,7 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)?;
+        .map_err(cratestack_error_from_sqlx)?;
         sqlx::query(
             "INSERT INTO integrations (id, tenant_id, application_id, environment_id, provider, \
              credential_prefix, credential_hash, status, content_capture) \
@@ -790,7 +790,7 @@ mod tests {
         .bind("none")
         .execute(pool)
         .await
-        .map_err(cool_error_from_sqlx)?;
+        .map_err(cratestack_error_from_sqlx)?;
         Ok((tenant_id, integration_a, integration_b))
     }
 

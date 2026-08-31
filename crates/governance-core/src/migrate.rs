@@ -4,7 +4,7 @@
 //! here each time the schema changes and a new migration directory is
 //! generated under `migrations/postgres/`.
 
-use cratestack::{Migration, apply_pending, cool_error_from_sqlx, sqlx};
+use cratestack::{Migration, apply_pending, cratestack_error_from_sqlx, sqlx};
 use sqlx::PgPool;
 
 use crate::{Error, Result};
@@ -210,13 +210,13 @@ pub async fn run(pool: &PgPool) -> Result<Vec<String>> {
     let mut lock_conn = pool
         .acquire()
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     lock_conn.close_on_drop();
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(MIGRATE_LOCK_KEY)
         .execute(&mut *lock_conn)
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
 
     let applied = apply_pending(pool, &migrations())
         .await
@@ -224,18 +224,18 @@ pub async fn run(pool: &PgPool) -> Result<Vec<String>> {
     let (installed,): (i64,) = sqlx::query_as(TRIGGERS_INSTALLED)
         .fetch_one(pool)
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     if installed < EXPECTED_TOUCH_TRIGGERS {
         sqlx::raw_sql(TOUCH_UPDATED_AT)
             .execute(pool)
             .await
-            .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+            .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     }
 
     sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(MIGRATE_LOCK_KEY)
         .execute(&mut *lock_conn)
         .await
-        .map_err(|e| Error::Storage(cool_error_from_sqlx(e)))?;
+        .map_err(|e| Error::Storage(cratestack_error_from_sqlx(e)))?;
     Ok(applied)
 }
