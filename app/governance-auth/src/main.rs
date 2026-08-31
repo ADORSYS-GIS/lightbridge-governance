@@ -19,6 +19,7 @@ mod browser;
 mod cache;
 mod config;
 mod config_file;
+mod config_persist;
 mod oauth;
 mod otel;
 mod redacted;

@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use url::Url;
 
-use super::{OidcMetadata, callback_port, token_endpoint};
+use super::{OidcMetadata, callback_page, callback_port, token_endpoint};
 use crate::{browser, cache::CachedSession, config::OauthConfig, oauth::pkce};
 
 pub async fn run(
@@ -182,18 +182,8 @@ fn parse_callback_request(mut stream: TcpStream) -> Result<(String, String, TcpS
 }
 
 fn write_callback_response(stream: &mut TcpStream, success: bool) -> Result<()> {
-    let body = if success {
-        "You're signed in. You can close this tab and return to your terminal."
-    } else {
-        "Sign-in failed. You can close this tab and return to your terminal."
-    };
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
     stream
-        .write_all(response.as_bytes())
+        .write_all(callback_page::http_response(success).as_bytes())
         .context("writing callback HTTP response")?;
     Ok(())
 }
