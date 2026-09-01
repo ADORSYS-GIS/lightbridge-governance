@@ -93,6 +93,8 @@ pub struct ConfigFile {
     otel_token: Option<Redacted<String>>,
     otel_token_file: Option<String>,
     pub gateway_url: Option<String>,
+    /// See `config::OauthConfigArgs::copilot_spool_path`.
+    pub copilot_spool_path: Option<String>,
     pub otel_headers_debounce_ms: Option<u64>,
     /// See `config::OauthConfigArgs::open_browser`'s doc (issue #141).
     pub open_browser: Option<bool>,

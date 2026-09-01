@@ -59,6 +59,10 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// guarantee the lock exists for. This is generous because it only fires
 /// in the ambiguous case, not the common one.
 const LOCK_MAX_WAIT: Duration = Duration::from_secs(300);
+/// How long an EMPTY lock file is presumed to be a holder mid-write rather
+/// than debris. See [`holder_liveness`] -- this closes the window in which a
+/// loser reads the winner's lock between `create_new` and the PID write.
+const EMPTY_LOCK_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSession {
@@ -125,7 +129,7 @@ pub fn cache_dir() -> Result<PathBuf> {
 /// non-purgeable per-user location is Application Support. (Config stays at
 /// `~/.config` on both platforms -- see `crate::otel`, which already writes
 /// there on macOS. One convention per KIND of data, not one per platform.)
-fn state_dir() -> Result<PathBuf> {
+pub(crate) fn state_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_STATE_HOME")
         && !xdg.is_empty()
     {
@@ -347,6 +351,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 /// not timeout-based: a lock whose recorded PID is no longer running is
 /// reclaimed immediately, so a legitimately slow holder (an interactive
 /// `login` waiting on a human) is never preempted just because time passed.
+#[derive(Debug)]
 pub struct FileLock {
     path: PathBuf,
     pid: u32,
@@ -354,14 +359,31 @@ pub struct FileLock {
 
 impl FileLock {
     pub fn acquire(issuer: &str, client_id: &str) -> Result<Self> {
-        // Must be the STATE dir, not the cache dir: `lock_path` lives beside
-        // the session it guards, and creating the wrong directory here would
-        // leave the lock's own parent missing.
+        Self::acquire_at(lock_path(issuer, client_id)?, None)
+    }
+
+    /// The same lock over an arbitrary state file. Exists so `copilot-push`
+    /// can hold ONE writer over its own read-drain-post-write critical
+    /// section without a second, subtly different implementation of stale-lock
+    /// recovery -- that logic is the part worth having exactly one of.
+    ///
+    /// `live_holder_ceiling` is how long to keep waiting on a holder that is
+    /// **confirmed alive**. `None` -- what `login`/`token` pass -- waits
+    /// indefinitely, because an interactive login legitimately runs for as
+    /// long as a human takes and preempting it would break the single-writer
+    /// guarantee. A caller on a timer wants a ceiling instead: a wake that
+    /// gives up is one lost wake, whereas a wake that waits for ever behind a
+    /// stuck peer is a permanently stuck drain. Reaching the ceiling is an
+    /// ERROR, never a reclaim -- the holder is alive and its lock is valid.
+    pub fn acquire_at(path: PathBuf, live_holder_ceiling: Option<Duration>) -> Result<Self> {
+        // Must be the STATE dir, not the cache dir: every lock this takes
+        // lives beside the file it guards, and creating the wrong directory
+        // here would leave the lock's own parent missing.
         let dir = state_dir()?;
         create_state_dir(&dir)?;
-        let path = lock_path(issuer, client_id)?;
         let pid = std::process::id();
-        let deadline = Instant::now() + LOCK_MAX_WAIT;
+        let started = Instant::now();
+        let deadline = started + LOCK_MAX_WAIT;
 
         loop {
             match fs::OpenOptions::new()
@@ -411,12 +433,29 @@ impl FileLock {
                             continue;
                         }
                         Some(true) => {
-                            // Confirmed alive -- keep waiting, no timeout.
-                            // An interactive `login` can legitimately run
-                            // for minutes; preempting it here would break
-                            // the single-writer guarantee this lock exists
-                            // for, on a real cadence (an automated `token`
-                            // re-invoke racing a slow human login).
+                            // Confirmed alive -- keep waiting. The lock is
+                            // NEVER stolen here: an interactive `login` can
+                            // legitimately run for minutes, and preempting it
+                            // would break the single-writer guarantee this
+                            // lock exists for, on a real cadence (an
+                            // automated `token` re-invoke racing a slow human
+                            // login).
+                            //
+                            // A caller that supplied a ceiling gives up
+                            // instead, and says so. That is the difference
+                            // between one lost wake and a drain wedged for
+                            // ever behind a peer stuck on a socket.
+                            if let Some(ceiling) = live_holder_ceiling
+                                && started.elapsed() >= ceiling
+                            {
+                                return Err(anyhow::anyhow!(
+                                    "{} is still held by a live process after {}s. Giving up \
+                                     rather than waiting indefinitely -- the lock is valid, so it \
+                                     was not taken. Check whether an earlier run is stuck.",
+                                    path.display(),
+                                    ceiling.as_secs()
+                                ));
+                            }
                             std::thread::sleep(LOCK_POLL_INTERVAL);
                         }
                         None => {
@@ -449,22 +488,45 @@ impl FileLock {
 fn holder_liveness(path: &Path) -> Option<bool> {
     let contents = fs::read_to_string(path).ok()?;
     let trimmed = contents.trim();
-    // An EMPTY lock is confirmed-dead, not undeterminable (#152). A zero-byte
-    // file cannot represent a live holder: the PID is written and fsynced
-    // immediately after `create_new` succeeds, and a failure to write now
-    // releases the lock rather than leaving it. So an empty lock can only be
-    // debris from a process that died in that window -- reclaim it at once
-    // instead of waiting out LOCK_MAX_WAIT.
+    // An EMPTY lock is confirmed-dead, not undeterminable (#152) -- a zero-byte
+    // file left behind is debris from a process that died between creating the
+    // lock and recording its PID, and reclaiming it at once is what stops every
+    // later caller waiting out LOCK_MAX_WAIT.
     //
+    // ⚠️ With ONE exception, and it is not theoretical. The winner creates the
+    // file and then writes its PID, and a loser's `create_new` fails at exactly
+    // the instant the file appears -- so the loser reads it in precisely the
+    // window where it is legitimately empty, calls the live holder dead, and
+    // deletes the lock out from under it. Both then hold it. Reproduced: three
+    // concurrent `copilot-push` runs, two of which drained the same offset and
+    // exported every record twice.
+    //
+    // So a BRAND NEW empty lock is presumed to be mid-write. This is not the
+    // timeout #152 removed: it is two seconds against a window measured in
+    // microseconds, it costs a crashed run's debris one extra poll rather than
+    // five minutes, and it applies only while the file is both empty and newer
+    // than the grace.
+    if trimmed.is_empty() {
+        return Some(written_within(path, EMPTY_LOCK_GRACE));
+    }
     // Deliberately narrower than "anything unparseable": a lock containing
     // NON-empty garbage is still `None`, because that could be a live holder
     // whose PID we simply cannot read, and preempting a live `login` mid-browser
     // flow would break the single-writer guarantee this lock exists for.
-    if trimmed.is_empty() {
-        return Some(false);
-    }
     let pid: u32 = trimmed.parse().ok()?;
     process_is_alive(pid)
+}
+
+/// Whether `path` was last written less than `grace` ago. A clock that cannot
+/// be read, or a timestamp in the future, answers `false` -- "I cannot show
+/// this is mid-write" -- so an unreadable mtime never grants an empty lock
+/// indefinite protection.
+fn written_within(path: &Path, grace: Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|written| SystemTime::now().duration_since(written).ok())
+        .is_some_and(|age| age < grace)
 }
 
 #[cfg(unix)]
@@ -540,13 +602,26 @@ mod tests {
         (s, path)
     }
 
+    /// Debris, as a crashed run leaves it: empty and no longer being written.
+    /// Backdated rather than slept on, so the test costs nothing.
+    fn abandoned_lock(tag: &str, body: &str) -> (Scratch, PathBuf) {
+        let (s, path) = lock_containing(tag, body);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("reopen lock");
+        file.set_modified(SystemTime::now() - EMPTY_LOCK_GRACE - Duration::from_secs(1))
+            .expect("backdate lock");
+        (s, path)
+    }
+
     /// THE regression guard for the 300s block. An empty lock is exactly what a
     /// crashed or disk-full `acquire` leaves behind, and treating it as
     /// "undeterminable" sent every later `token` into LOCK_MAX_WAIT -- five
     /// minutes, on a command Claude Code and Codex invoke from a timer.
     #[test]
     fn an_empty_lock_is_confirmed_dead_not_undeterminable() {
-        let (_s, path) = lock_containing("empty", "");
+        let (_s, path) = abandoned_lock("empty", "");
         assert_eq!(
             holder_liveness(&path),
             Some(false),
@@ -555,9 +630,25 @@ mod tests {
         );
     }
 
+    /// The other side of the same rule. The winner creates the lock and then
+    /// writes its PID; a loser's `create_new` fails at exactly that instant, so
+    /// it reads the file in the one window where empty is legitimate. Calling
+    /// that dead deletes a live holder's lock -- measured as three concurrent
+    /// `copilot-push` runs exporting every record twice.
+    #[test]
+    fn a_just_created_empty_lock_is_presumed_mid_write_not_dead() {
+        let (_s, path) = lock_containing("racing", "");
+        assert_eq!(
+            holder_liveness(&path),
+            Some(true),
+            "an empty lock written microseconds ago is a holder between `create_new` and its PID \
+             write, and reclaiming it hands two processes the same lock"
+        );
+    }
+
     #[test]
     fn a_whitespace_only_lock_is_also_confirmed_dead() {
-        let (_s, path) = lock_containing("ws", "  \n ");
+        let (_s, path) = abandoned_lock("ws", "  \n ");
         assert_eq!(holder_liveness(&path), Some(false));
     }
 
@@ -580,6 +671,32 @@ mod tests {
     fn a_lock_held_by_this_live_process_is_reported_alive() {
         let (_s, path) = lock_containing("live", &std::process::id().to_string());
         assert_eq!(holder_liveness(&path), Some(true));
+    }
+
+    /// A confirmed-live holder is never preempted, so a caller with nothing to
+    /// wait for -- `copilot-push` on a timer -- has to be able to give up
+    /// instead. Without a ceiling, one drain stuck on a socket wedges every
+    /// later wake behind it for ever, which is a permanently stuck drain
+    /// rather than one lost wake.
+    #[test]
+    fn a_ceiling_gives_up_on_a_live_holder_rather_than_waiting_for_ever() {
+        let (_s, path) = lock_containing("ceiling", &std::process::id().to_string());
+        let started = Instant::now();
+        let error = FileLock::acquire_at(path.clone(), Some(Duration::from_millis(300)))
+            .expect_err("a live holder must not be preempted, so this cannot succeed");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "waited {:?}; with no ceiling this blocks until the holder exits",
+            started.elapsed()
+        );
+        assert!(
+            error.to_string().contains("still held by a live process"),
+            "the error must say what happened: {error:#}"
+        );
+        assert!(
+            path.exists(),
+            "giving up must NOT delete a valid lock -- the holder is alive and still writing"
+        );
     }
 
     /// A failed session write must not strand a `.json.tmp` in the credential

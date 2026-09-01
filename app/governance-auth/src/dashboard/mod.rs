@@ -54,6 +54,7 @@ pub fn render(
     client_id: &str,
     session: &Session,
     telemetry: &Telemetry,
+    spool: &Spool,
     targets: &[Target],
 ) -> String {
     let (state, colour) = match (session.cached, session.fresh) {
@@ -88,6 +89,12 @@ pub fn render(
     // configuration state, not something we manage inside someone's file.
     let (value, colour, note) = telemetry.row(session);
     rows.push(("telemetry".to_owned(), value, colour, note));
+
+    // Directly under telemetry: the Copilot drain is the one export path whose
+    // schedule this binary does not own, so it is the one that can silently
+    // stop. See `spool`'s module doc.
+    let (value, colour, note) = spool.row();
+    rows.push(("copilot spool".to_owned(), value, colour, note));
 
     if targets.is_empty() {
         rows.push((
@@ -167,9 +174,13 @@ pub fn render(
 #[cfg(test)]
 mod tests;
 
+mod spool;
+mod status;
 mod style;
 mod targets;
 mod telemetry;
+pub use spool::Spool;
+pub use status::status;
 use style::{Colour, ago, pad};
 pub use targets::{Target, targets};
 pub use telemetry::Telemetry;

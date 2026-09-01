@@ -11,7 +11,7 @@ fn drift_is_reported_per_target_without_alarm() {
         target("/home/dev/.claude/settings.json", 12, 0),
         target("/home/dev/.codex/config.toml", 11, 2),
     ];
-    let out = render(
+    let out = table(
         "https://auth.example",
         "cli",
         &session(true, true),

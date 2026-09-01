@@ -12,6 +12,14 @@
 // and this one's necessity is genuinely binary-dependent, not a fact that
 // could go stale and get caught by "unfulfilled expectation".
 #[allow(dead_code)]
+pub mod collector_policy;
+#[allow(dead_code)]
+pub mod copilot;
+#[allow(dead_code)]
 pub mod harness;
+#[allow(dead_code)]
+pub mod interrupt;
+#[allow(dead_code)]
+pub mod mock_collector;
 #[allow(dead_code)]
 pub mod mock_idp;

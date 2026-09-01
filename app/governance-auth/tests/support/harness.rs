@@ -111,7 +111,6 @@ impl Harness {
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CONFIG_HOME") // see the module doc
-            .env_remove("XDG_CONFIG_HOME")
             .env_remove("GOVERNANCE_AUTH_ISSUER")
             .env_remove("GOVERNANCE_AUTH_CLIENT_ID")
             .args(args);
@@ -178,6 +177,13 @@ impl Harness {
         })
         .await
         .context("run_with_env harness task panicked")?
+    }
+
+    /// The scratch `$HOME` this harness spawns children against. Exposed for
+    /// [`super::interrupt`], which has to build its own [`Command`] because it
+    /// must not wait for the child -- see that module's doc.
+    pub fn home(&self) -> &std::path::Path {
+        &self.home.path
     }
 
     pub fn issuer(&self) -> &str {
@@ -319,7 +325,7 @@ impl Harness {
     /// Where the session lives now. Mirrors `cache::state_dir`: a refresh
     /// token is STATE, not cache -- see that module's doc for why the
     /// distinction is load-bearing rather than cosmetic.
-    fn state_dir(&self) -> PathBuf {
+    pub fn state_dir(&self) -> PathBuf {
         let base = if cfg!(target_os = "macos") {
             self.home.path.join("Library").join("Application Support")
         } else {

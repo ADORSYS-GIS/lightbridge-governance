@@ -33,6 +33,7 @@ either platform, so the machine-wide path is a fixed constant.
 | `--gateway-url` | `GOVERNANCE_AUTH_GATEWAY_URL` | `gateway_url` | — | AI gateway base URL. Presence turns on **inference** wiring in `configure`. |
 | `--otel-endpoint` | `GOVERNANCE_AUTH_OTEL_ENDPOINT` | `otel_endpoint` | — | OTLP collector **base** URL. Presence turns on **telemetry** wiring. Do not append a signal path. |
 | `--otel-token` | `GOVERNANCE_AUTH_OTEL_TOKEN` | `otel_token` / `otel_token_file` | — | Long-lived OTLP ingest credential. See [Secrets](#secrets-in-config-files). |
+| `--copilot-spool-path` | `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` | `copilot_spool_path` | `<state dir>/governance-auth/copilot-otel.jsonl` | Where VS Code Copilot Chat's file exporter writes, for [`copilot-push`](./commands.md#copilot-push) to drain. Must match `github.copilot.chat.otel.outfile`. Not checked for existence — Copilot creates it on its first export. |
 | `--otel-headers-debounce-ms` | `GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS` | `otel_headers_debounce_ms` | `240000` | How often Claude Code re-runs the helpers. Must stay **below** the access-token lifetime. |
 | `--open-browser` | `GOVERNANCE_AUTH_OPEN_BROWSER` | `open_browser` | `false` | Whether `login`'s loopback flow launches a browser. Usable bare (`--open-browser`) or explicit (`--open-browser=false`). |
 | `--token-exchange` | `GOVERNANCE_AUTH_TOKEN_EXCHANGE` | `token_exchange` | `false` | Opt into RFC 8693 exchange in `token`/`otel-headers`. See [`token-exchange.md`](./token-exchange.md). |
@@ -41,8 +42,8 @@ either platform, so the machine-wide path is a fixed constant.
 | `--exchange-client-id` | `GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID` | `exchange_client_id` | — | `client_id` presented on the exchange. **Required** once exchange is on. |
 | `--exchange-scopes` | `GOVERNANCE_AUTH_EXCHANGE_SCOPES` | `exchange_scopes` | — | Scopes requested on the exchange. Omitting it takes the server's allow-list. |
 
-Two flags are **not** global config, because they belong to one subcommand only:
-`login --device-code` and `self-update --check`.
+Three flags are **not** global config, because they belong to one subcommand only:
+`login --device-code`, `self-update --check` and `copilot-push --dry-run`.
 
 `RUST_LOG` is honoured for tracing output, which goes to stderr like everything else.
 

@@ -20,6 +20,7 @@ mod cache;
 mod config;
 mod config_file;
 mod config_persist;
+mod copilot;
 mod dashboard;
 mod managed;
 mod oauth;
@@ -87,6 +88,22 @@ enum Command {
     /// changed, and it's the command to re-run after installing one of the
     /// two tools for the first time.
     Configure,
+    /// Drain VS Code Copilot Chat's OTel spool file and export it to the
+    /// collector over OTLP/HTTP.
+    ///
+    /// Fails closed: with no valid session it exits non-zero WITHOUT reading
+    /// the spool, advancing the checkpoint, or discarding anything. Meant to
+    /// be run on a timer -- `docs/governance-auth/commands.md` carries sample
+    /// systemd and launchd units, which this binary deliberately does not
+    /// install for you.
+    CopilotPush {
+        /// Parse and report what would be sent, then stop. Posts nothing and
+        /// leaves the checkpoint alone. Still requires a valid session --
+        /// see `crate::copilot`'s module doc for why there is no offline
+        /// path that reads the spool.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print whether a cached session exists and its freshness.
     Status,
     /// Remove the cached session.
@@ -127,6 +144,27 @@ async fn main() -> Result<()> {
     // Every other command still resolves before it does any work, so a missing
     // value is still reported immediately with no partial work done.
     let http = reqwest::Client::builder()
+        // ⚠️ Without these, a server that accepts the connection and then says
+        // nothing blocks the process for ever. That is not a lost wake: the
+        // drain holds `copilot-push.lock` across its POSTs, so one stuck
+        // `copilot-push` wedges every later one behind it, and the sample
+        // systemd unit (`Type=oneshot`) defaults `TimeoutStartSec=` to
+        // infinity so nothing kills it either. Measured: a healthy collector
+        // received zero requests from the wake after a stuck one.
+        //
+        // A READ timeout, not a total `timeout()`: read_timeout resets after
+        // every successful read, so it catches a silent peer without putting a
+        // deadline on a large body. `self-update` streams a release binary
+        // over this same client and a total deadline would fail that on a slow
+        // link.
+        //
+        // 15s is half again the OpenTelemetry SDKs' own default OTLP exporter
+        // timeout, and the cost of it firing early is asymmetric in the safe
+        // direction: a timed-out POST advances nothing, so the bytes stay
+        // pending and go again on the next wake. Nothing is ever lost by
+        // being impatient here.
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(15))
         // `--issuer`/discovery already reject an insecure *initial* request
         // URL (config::parse_issuer, oauth::discovery::require_same_origin)
         // -- this redirect policy is the other half: it re-checks every hop
@@ -145,7 +183,10 @@ async fn main() -> Result<()> {
         Command::Token => oauth::token(&http, &cli.oauth.resolve()?).await,
         Command::OtelHeaders => oauth::otel_headers(&http, &cli.oauth.resolve()?).await,
         Command::Configure => oauth::configure(&cli.oauth.resolve()?),
-        Command::Status => oauth::status(&cli.oauth.resolve()?),
+        Command::CopilotPush { dry_run } => {
+            copilot::run(&http, &cli.oauth.resolve()?, dry_run).await
+        }
+        Command::Status => dashboard::status(&cli.oauth.resolve()?),
         Command::Logout => oauth::logout(&http, &cli.oauth.resolve()?).await,
         // Deliberately does NOT resolve: see the comment above.
         Command::SelfUpdate { check } => update::run(&http, check).await,

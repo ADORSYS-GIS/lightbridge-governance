@@ -37,6 +37,7 @@ fn base() -> OauthConfig {
         otel_endpoint: Some("https://otel.example".to_owned()),
         otel_token: Some("SECRET-DO-NOT-PERSIST".to_owned()),
         gateway_url: Some("https://api.example".to_owned()),
+        copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
         token_exchange: None,

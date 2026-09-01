@@ -6,9 +6,36 @@ use super::{style::short, *};
 
 mod duration;
 mod hints;
+mod spool;
+mod spool_held;
 mod survey;
 mod targets;
 mod telemetry;
+
+/// [`render`] with the Copilot spool row fixed at "nothing surveyed", so the
+/// tests that predate that row keep asserting on exactly what they did before
+/// and never touch `$HOME`. The row's own states are covered in [`spool`].
+fn table(
+    issuer: &str,
+    client_id: &str,
+    session: &Session,
+    telemetry: &Telemetry,
+    targets: &[Target],
+) -> String {
+    render(
+        issuer,
+        client_id,
+        session,
+        telemetry,
+        &Spool {
+            inner: None,
+            last_push_age: None,
+            last_discard_age: None,
+            held_age: None,
+        },
+        targets,
+    )
+}
 
 fn target(path: &str, managed: usize, edited: usize) -> Target {
     Target {
@@ -56,7 +83,7 @@ fn plain_output_is_unchanged() {
 
 #[test]
 fn the_table_reports_the_session_state() {
-    let fresh = render(
+    let fresh = table(
         "https://auth.example",
         "cli",
         &session(true, true),
@@ -66,7 +93,7 @@ fn the_table_reports_the_session_state() {
     assert!(fresh.contains("fresh"), "{fresh}");
     assert!(fresh.contains("15m left"), "{fresh}");
 
-    let none = render(
+    let none = table(
         "https://auth.example",
         "cli",
         &session(false, false),
@@ -82,14 +109,14 @@ fn the_table_reports_the_session_state() {
 fn no_row_has_trailing_whitespace() {
     let targets = vec![target("~/.codex/config.toml", 11, 2)];
     for out in [
-        render(
+        table(
             "https://auth.example",
             "cli",
             &session(true, true),
             &otel(Some("https://otel.example"), true),
             &targets,
         ),
-        render(
+        table(
             "https://auth.example",
             "cli",
             &session(false, false),
@@ -118,7 +145,7 @@ fn padded_width_ignores_colour() {
     // starts, so a fixture with one noted row cannot show the misalignment.
     // My first attempt had exactly that flaw and passed against broken code.
     let targets = vec![target("a", 1, 1), target("b", 22222, 2)];
-    let out = render("i", "c", &session(true, true), &otel(None, false), &targets);
+    let out = table("i", "c", &session(true, true), &otel(None, false), &targets);
     let offsets: Vec<usize> = out
         .lines()
         .filter(|l| l.contains("changed by you"))

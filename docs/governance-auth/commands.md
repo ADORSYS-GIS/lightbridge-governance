@@ -145,6 +145,371 @@ Which files, and which keys inside them, is [`files.md`](./files.md).
 
 ---
 
+## `copilot-push`
+
+Drains VS Code Copilot Chat's OTel **spool file** and exports it to the collector over
+OTLP/HTTP.
+
+```bash
+governance-auth copilot-push --otel-endpoint https://otel.example
+governance-auth copilot-push --dry-run      # parse and report; post nothing, move nothing
+```
+
+`--otel-endpoint` (or `GOVERNANCE_AUTH_OTEL_ENDPOINT`, or `otel_endpoint` in a config file —
+ADR-0012 Decision 2's usual five layers) is **required**: with no collector configured the
+command errors before it reads anything. `configure --otel-endpoint …` writes it to the
+per-user config file, after which the bare `governance-auth copilot-push` in the timer units
+below works.
+
+### Why this command exists
+
+Claude Code and Codex export telemetry themselves. Copilot Chat can too — but through an
+HTTP exporter it only re-reads at window start, with no credential-helper hook, so a
+300-second bearer stops working minutes into a session and fails silently. Its *file*
+exporter has no such problem: it appends records to disk and something else ships them.
+Nothing in VS Code is that something else. This is.
+
+Turn it on in VS Code's `settings.json`:
+
+```jsonc
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.exporterType": "file",
+"github.copilot.chat.otel.outfile": "~/.local/state/governance-auth/copilot-otel.jsonl"
+```
+
+`configure` does **not** write `exporterType: "file"` — it writes `otlp-http`, which is the
+right default for anyone who has exported `OTEL_EXPORTER_OTLP_HEADERS` by hand. This command
+is opt-in.
+
+### ⚠️ The file is not OTLP
+
+It is the OpenTelemetry **JS SDK's internal object graph**, serialised one JSON object per
+line, private `_`-prefixed fields and all — `_body`, `_rawAttributes`, `hrTime` as
+`[seconds, nanoseconds]`, and `dataPointType`/`aggregationTemporality` as the *JS SDK's*
+enum integers, which are not OTLP's. `copilot-push` translates all of it.
+
+None of that is a wire format anybody promised to keep stable, so the parser degrades:
+a record it cannot read is **skipped and counted**, never fatal. Every run that finds
+something to drain prints the tally (a run with nothing new prints `Nothing new in …`
+instead and stops there):
+
+```
+49 metric record(s), 27 log record(s); 22 empty; discarded 0 (0 unparsable, 0 unrecognised, 0 unsupported metric(s), 0 bad data point(s))
+```
+
+`empty` is normal and not an error — Copilot's exporter really does write empty `{}` records
+(22 of 98 on the file this parser was built against), and they carry nothing to lose. They are
+counted apart from `discarded` for exactly that reason: if they were folded in, a healthy
+install would show permanent loss and nobody would look at the number again.
+
+**`discarded` is the one that matters.** It counts records that were consumed and will never
+reach the collector, it is persisted in the checkpoint, and `status` shows it — see below. A
+number that *starts climbing* after a VS Code update is the signal that the shapes moved.
+
+### Fail-closed, stated exactly
+
+**No valid token means no data is consumed.** The bearer is obtained first — before the spool
+is opened, before the checkpoint is read, and including under `--dry-run`. A run that cannot
+authenticate exits non-zero having advanced nothing, discarded nothing, and posted nothing.
+
+`--dry-run` is deliberately *not* an offline preview. An offline mode would be a second path
+that reads the spool without a credential, and "there is exactly one such path and it starts
+with authentication" is a far easier property to keep true.
+
+### Idempotency, and why the spool is never truncated
+
+Progress is a **byte offset** in `<state_dir>/copilot-push.json`, advanced only after the
+collector has returned 2xx. Re-running with nothing new appended posts nothing and changes
+nothing. A rejected or unreachable collector leaves the offset where it was, so the same
+bytes are retried next run.
+
+There are **two** offsets, one per signal, plus the shared `offset` (the smaller of the two)
+that the next drain starts from. Metrics and logs go to different endpoints and can be
+accepted or refused independently; with a single offset, a run where `/v1/metrics` returned
+200 and `/v1/logs` returned 503 re-posted the *accepted* metrics on every later wake, forever.
+A checkpoint written by an older build carries only `offset`, and both signals resume from it.
+
+Only one drain runs at a time. `<state_dir>/copilot-push.lock` guards the whole
+read → POST → write sequence, because the timer and a developer running the command by hand
+(which the `status` row below tells them to do) otherwise read the same offset and ship the
+same records twice. A run that finds the lock held waits rather than failing — but not for
+ever: after **two minutes** behind a drain that is still running it gives up on that wake and
+says so, rather than queueing behind a process that may be stuck. It never steals a valid
+lock.
+
+### Progress is monotonic, even when a wake fails
+
+An offset moves over the records a wake **resolved**, counted from the front, whether or not
+the wake as a whole succeeded. That is not a detail: what the collector accepted is recorded
+as it happens, so a wake that stops half way costs a wake and never a duplicate. The split
+below therefore works strictly left to right, because a byte offset can only ever say
+"everything up to here is done".
+
+Work per wake is bounded (512 requests per signal). Reaching that bound is not a failure of
+the batch — the wake stops, the offset stands where it got to, and the next wake continues.
+
+**And the checkpoint is written as the prefix advances, not once at the end of the wake.**
+This binary installs no signal handler, and a handler would not be enough anyway: it covers
+SIGTERM and covers neither SIGKILL, nor the OOM killer, nor a laptop losing power. A wake that
+was killed part way through used to throw away every acceptance it had obtained — the
+collector had the records, this side had no record of it, and the next wake re-sent all of
+them, for ever if the kill was recurring. So each advance of the resolved prefix is persisted
+at the moment it happens, together with anything that advance moved past uncounted.
+
+The cost is one small write per prefix advance, each of which follows an HTTP round trip that
+is orders of magnitude slower. An ordinary wake writes the checkpoint **twice** (once per
+signal); only a wake that bisects a refused batch writes more, and it does one request of work
+between each. The writes are `tmp`-then-`rename`, which survives process death because the
+page cache does; they are deliberately **not** `fsync`ed, so host power loss can still cost the
+duplicates this otherwise prevents. That is a judgement call for a five-minute developer timer
+and would not be the right one for anything with a stricter duty.
+
+### When a record is given up on
+
+The drain is allowed to discard a record. It is not allowed to do it quietly, and the two
+places it can happen are:
+
+- **The parser cannot read it** — an unparsable line, an unrecognised shape, a metric kind
+  this build does not translate, a data point whose value changed type, or a record that
+  parses but carries nothing this build can export (a log line with no `_body`, a metrics
+  line that declared a metric and produced no data points). Counted, the offset moves past it.
+- **The collector permanently refuses it** — HTTP 400, 413 or 422 only. The batch is split in
+  half and re-offered, down to single records, until the one responsible is isolated; it is
+  then dropped and the rest go through. Every other failure (401, 403, 404, 408, 429, any 5xx,
+  any network error) is retried on the next wake and advances nothing, because those say
+  something about the moment or the deployment rather than about the payload.
+
+Two guards on the second rule:
+
+- **A refusal is evidence, not a verdict.** A record is only given up on once it has been
+  refused on its own across **two separate wakes**. An HTTP 400 is a deterministic function of
+  the payload only if nothing sits in front of the collector; a WAF, a proxy or an upstream
+  restart returns 400 for reasons of its own, and a drain that trusted a single one deleted
+  valid telemetry. The first refusal *holds* the record and stops that wake there — everything
+  before it is already delivered and recorded. On a five-minute timer a bad record therefore
+  costs one extra wake, and a batch with several costs one wake each.
+- **And only once the collector has been shown to accept something *in this pass*.** Either
+  the split already delivered records before reaching this one, or — when the bad record is at
+  the very front and there is nothing before it to prove anything with — the next record
+  carrying that signal is offered on its own as a one-request probe. A collector misconfigured
+  to reject everything refuses the probe too, so that case advances nothing and discards
+  nothing.
+
+  ⚠️ There is deliberately **no** fallback to "the checkpoint says a push succeeded within the
+  last hour (`last_push_unix`)". That answer was implemented, tested and rejected: it is cheap
+  and it is wrong in exactly the case the rule exists for — a collector that worked this
+  morning and rejects everything now. With it, a five-minute config error empties the spool one
+  record per wake for as long as the window lasts. The proof is obtained live, every time.
+
+  ⚠️ **This narrows the loss, it does not eliminate it.** Measured against a gateway returning
+  400 non-deterministically, 9 of 150 small-spool rounds still permanently discarded a *valid*
+  record — down from 29 of 150 before the two-wake rule, and not zero. A record that a flaky
+  transport happens to refuse on two separate wakes, while other records in the same wake
+  succeed, is indistinguishable from a bad one with the evidence available here. `status` shows
+  the discard; nothing recovers it.
+
+  ⚠️ The quarantine counter is keyed on a digest of the record's **content**, so two
+  byte-identical spool lines share one refusal count and a refusal of either counts against
+  both. Real records carry nanosecond timestamps and span ids, so a collision is close to
+  impossible, and the table's 7-day TTL bounds the consequence either way. Noted rather than
+  designed around.
+
+Both counts land in the checkpoint as `discarded_total`/`last_discard_unix`, and `status`
+shows them until they age out. The alternative — never advancing — is not the safe option it
+looks like: one record the collector will never take would stop the stream at that byte
+offset permanently, and take every record written after it with it.
+
+### The one stall that does not clear itself
+
+There is an exception to "the next wake resolves it", and it is permanent. If the refused
+record is the **last** one in the spool, there is nothing after it to offer as the probe, so
+the second condition above can never be met. The record is held rather than discarded — which
+is the correct choice, because discarding on no evidence is how a misconfigured collector
+empties a spool — and every wake from then on reads it, refuses it, and exits 1.
+
+It clears when Copilot writes another record, and only then. Re-running `copilot-push` by hand
+does exactly what the timer just did.
+
+`status` reports this as its own row, **held, waiting for a later record** (yellow), rather
+than as `N bytes pending … run governance-auth copilot-push`. The byte counts are identical,
+so nothing else in the row distinguishes them — and the backlog row's advice is a command that
+reproduces the same failing wake.
+
+The spool itself is never written to. VS Code holds it **open for append** for the life of
+the window; truncating a file another process holds at offset N does not move that process's
+offset, so the next append lands at N and the kernel zero-fills the gap — the file grows a
+hole of NUL bytes and every later parse is garbage. That is true on Linux and macOS alike, so
+there is no safe truncation to implement and none is attempted. Reclaiming disk is Copilot's
+job (it rotates its own outfile) or a human's, with VS Code closed.
+
+### Which file the offset belongs to
+
+An offset is a byte count into *some* file, so the checkpoint records **which**: the spool's
+inode and device, plus a SHA-256 of its first 4 KiB. Appending never changes either, so the
+pair is a stable name for the same file; a mismatch in either means the drain restarts at byte
+0 and says so on stderr.
+
+Both halves are needed. An inode number can be reused, at which point a brand-new file
+inherits the old one's identity; a digest cannot tell a file from a byte-identical copy, which
+is what copy-truncate rotation produces.
+
+⚠️ Size alone cannot answer this, and used to be all that was asked. `size < offset` catches a
+truncation, and it is *false* for the ordinary case: VS Code recreates its outfile on restart,
+the developer keeps working, and by the next timer wake the new file is already longer than
+the offset the old one left behind. The drain then resumed into the middle of a file it had
+never read. Measured: a 2,700-byte spool replaced by a 5,412-byte one lost six brand-new
+records — not delivered, not counted, offset at the end — with `discarded_total` moving by one,
+for the partial-line fragment at the resume point. The spool was separately measured growing
+73 KB → 315 KB in six minutes of ordinary use, so outgrowing a stale offset inside one
+five-minute window is the normal outcome of a restart, not a corner case.
+
+A checkpoint written before this field existed carries no identity. That is **not** treated as
+a mismatch — doing so would re-export every developer's whole spool on upgrade. The current
+file's identity is adopted and the drain carries on from the recorded offset.
+
+The `size < offset` check remains, and answers first: copy-truncate keeps the inode, so it is
+the case that reads as a truncation rather than a replacement, and the two stderr messages
+differ because they send the reader looking in different places.
+
+A spool that is **not there at all** is neither a rotation nor an error. The checkpoint is
+left exactly where it was and the run exits 0 — a path that does not exist says nothing about
+how far the real spool was drained, and the reasons to be pointed at one are mundane (a
+typo'd `--copilot-spool-path`, an edited config, a home directory not mounted yet, a run
+before VS Code has recreated the file).
+
+Only whole lines are consumed. A drain that lands mid-append sees half a JSON object, so the
+offset never advances past the last newline actually read.
+
+### Where the spool lives
+
+Five layers, same precedence as everything else (ADR-0012 Decision 2): `--copilot-spool-path`
+→ `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` → per-user config `copilot_spool_path` → machine-wide
+config → `<state_dir>/copilot-otel.jsonl`.
+
+### Running it on a timer
+
+**This binary does not install these, deliberately** — writing to a developer's systemd or
+launchd tree is a bigger claim on their machine than writing a dotfile, and it is out of
+scope for this command. Copy them yourself.
+
+`~/.config/systemd/user/governance-auth-copilot-push.service`:
+
+```ini
+[Unit]
+Description=Drain the GitHub Copilot OTel spool to the governed collector
+
+[Service]
+Type=oneshot
+# Absolute path: a user timer does not inherit your shell's PATH.
+ExecStart=%h/.local/bin/governance-auth copilot-push
+# ⚠️ NOT optional. systemd.service(5) defaults `TimeoutStartSec=` for a
+# `Type=oneshot` unit to *infinity*, so without this line a wake that gets
+# stuck is never killed — it just sits there. It is deliberately shorter than
+# the timer interval so wakes cannot pile up.
+#
+# ⚠️ It is also a REAL kill, not a theoretical one, and the earlier claim that
+# "the command should never come close to this" was wrong. The HTTP read
+# timeout (15s) bounds one stall, not a wake; a wake that bisects a refused
+# batch may make up to 512 requests per signal and can legitimately exceed
+# four minutes. What makes that safe is not the number — it is that progress
+# is now durable as it happens (see "Progress is monotonic" above), so a
+# killed wake keeps everything it delivered and the next one resumes. Before
+# that, a wake which consistently exceeded this never checkpointed at all and
+# re-delivered its whole range for ever.
+#
+# 240 is kept rather than raised: with durable progress, being killed costs a
+# wake and nothing else, while a longer timeout lets a genuinely stuck drain
+# hold the lock for longer and delays the next wake behind it. Raise it only
+# if you see wakes repeatedly killed mid-drain in the journal.
+TimeoutStartSec=240
+```
+
+`~/.config/systemd/user/governance-auth-copilot-push.timer`:
+
+```ini
+[Unit]
+Description=Drain the GitHub Copilot OTel spool every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# NOTE: `Persistent=true` does NOT belong here and is not merely redundant —
+# systemd.timer(5) defines it only for calendar (`OnCalendar=`) timers, so on a
+# monotonic timer like this one it is silently ignored. It was here with a comment
+# promising suspend/resume catch-up, which it never delivered. Switch the two
+# monotonic lines above for `OnCalendar=*:0/5` if you want that behaviour, and
+# then `Persistent=true` is real.
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now governance-auth-copilot-push.timer
+systemctl --user list-timers governance-auth-copilot-push.timer
+journalctl --user -u governance-auth-copilot-push.service -n 50
+```
+
+macOS — `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist`.
+
+⚠️ `ProgramArguments` must be the **same** `~/.local/bin` path the systemd unit uses:
+ADR-0012 makes `~/.local/bin` the per-user install location on both platforms, and a plist
+pointing at `/usr/local/bin` fails on every wake for anyone who installed normally. launchd
+does not expand `~`, so it is written out in full below — replace `YOUR-USERNAME`, or generate
+the file with `sed "s|\$HOME|$HOME|"`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>digital.camer.ai.governance-auth.copilot-push</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR-USERNAME/.local/bin/governance-auth</string>
+    <string>copilot-push</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- ⚠️ launchd has NO equivalent of systemd's TimeoutStartSec=, and the
+       plausible-looking keys are not it: ExitTimeOut bounds how long launchd
+       waits after SIGTERM before SIGKILL, not how long the job may run.
+       A StartInterval job that is still running when the interval fires is
+       simply skipped, so a wedged wake does not pile up — it silently stops
+       the drain instead, which is worse. On macOS the guarantee therefore
+       comes entirely from the command itself: the HTTP read timeout and the
+       copilot-push lock ceiling. Both are in-process, so they apply here
+       exactly as they do under systemd.
+       If you want an external backstop as well, install GNU coreutils and
+       wrap the two ProgramArguments strings in
+       `gtimeout 240 <path> copilot-push`. -->
+  <key>AbandonProcessGroup</key>
+  <false/>
+  <!-- Not /tmp: that is world-writable, so the name is predictable and another
+       local user can pre-create or replace the file. ~/Library/Logs is the
+       per-user location Console.app already reads. Nothing rotates it, so
+       either trim it occasionally or add a newsyslog.d entry. -->
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR-USERNAME/Library/Logs/governance-auth-copilot-push.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist
+launchctl print gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
+```
+
+⚠️ A timer you installed is a timer nothing monitors. `status` carries a **copilot spool**
+row for exactly that reason — see below.
+
+---
+
 ## `status`
 
 ```bash
@@ -160,6 +525,45 @@ Prints to **stderr**, one line:
 Exit status is 0 in all three cases — this reports state, it does not assert it. A real
 request from Claude Code or Codex is the actual proof that onboarding worked; `status`
 rules out half the failure modes before you go looking at the tools.
+
+At a terminal it also prints a table. Those three lines are the contract; the table is an
+addition for a human and never a replacement, because `status` may be piped.
+
+### The `copilot spool` row
+
+| Shown | Colour | Means |
+|---|---|---|
+| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
+| `not enabled` | yellow | no spool file — Copilot's file exporter is off |
+| `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
+| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `held, waiting for a later record` | yellow | the spool's **last** record is refused; see above |
+| `up to date (<n> bytes)` | green | everything written has been pushed, and nothing was lost |
+| `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
+| `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
+| `unknown` | yellow | the state directory could not be resolved at all |
+
+Rows are checked in that order, so a discard outranks a hold, which outranks a backlog, which
+outranks green. `held` has to beat `<n> bytes pending` because the bytes genuinely *are*
+pending: nothing else in the row distinguishes the two, and the backlog row's advice ("run
+`governance-auth copilot-push`") is the one command that cannot help.
+
+Two red rows, for the two ways this can fail silently:
+
+- **`<n> bytes pending`, never pushed.** A user timer that was never enabled, or a launchd
+  agent that fails on every wake, is indistinguishable from a working one everywhere else a
+  developer looks — bytes climbing while `last push` stays at `never pushed` is the only
+  visible difference. "Pending" after a successful push is *not* red on purpose: it is the
+  ordinary state between wakes, and a row that cries wolf is one people stop reading.
+- **`<n> record(s) discarded`.** A Copilot release renames the private fields this parser
+  dispatches on; every record classifies as unrecognised, both payloads come out empty, no
+  POST is made, and the checkpoint advances over the lot. Nothing is pending afterwards, so
+  without this row the table said `up to date`, in green, while the whole spool went in the
+  bin. It fades to yellow after a day because the counter is cumulative and there is no
+  command to clear it — recent loss is an alarm, old loss is a note, neither is green.
+
+`copilot-push --dry-run` prints the same tally the discard came from, which is where to look
+for *what* this build cannot read.
 
 ---
 

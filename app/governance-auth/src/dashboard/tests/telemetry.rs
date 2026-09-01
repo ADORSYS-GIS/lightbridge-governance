@@ -13,7 +13,7 @@ fn row(out: &str) -> String {
 
 #[test]
 fn unconfigured_telemetry_says_how_to_configure_it() {
-    let out = render("i", "c", &session(true, true), &otel(None, false), &[]);
+    let out = table("i", "c", &session(true, true), &otel(None, false), &[]);
     let line = row(&out);
     assert!(line.contains("not configured"), "{line}");
     assert!(
@@ -24,7 +24,7 @@ fn unconfigured_telemetry_says_how_to_configure_it() {
 
 #[test]
 fn a_configured_endpoint_is_shown() {
-    let out = render(
+    let out = table(
         "i",
         "c",
         &session(true, true),
@@ -41,7 +41,7 @@ fn a_configured_endpoint_is_shown() {
 /// cannot, so without a static token their exports are rejected -- silently.
 #[test]
 fn an_endpoint_without_a_token_names_who_it_breaks() {
-    let out = render(
+    let out = table(
         "i",
         "c",
         &session(true, true),
@@ -64,7 +64,7 @@ fn an_endpoint_without_a_token_names_who_it_breaks() {
 /// pins that the row reports CONFIGURATION, never reachability.
 #[test]
 fn the_row_reports_configuration_not_reachability() {
-    let out = render(
+    let out = table(
         "i",
         "c",
         &session(true, true),
@@ -85,7 +85,7 @@ fn the_row_reports_configuration_not_reachability() {
 /// hint #214 was opened for, so the note has to follow the session.
 #[test]
 fn without_a_session_the_hint_is_login_not_configure() {
-    let out = render("i", "c", &session(false, false), &otel(None, false), &[]);
+    let out = table("i", "c", &session(false, false), &otel(None, false), &[]);
     let line = row(&out);
     assert!(line.contains("login --otel-endpoint"), "{line}");
     // "not configured" contains "configure"; the command form is what matters.
@@ -97,7 +97,7 @@ fn without_a_session_the_hint_is_login_not_configure() {
 
 #[test]
 fn with_a_session_the_hint_is_configure() {
-    let out = render("i", "c", &session(true, true), &otel(None, false), &[]);
+    let out = table("i", "c", &session(true, true), &otel(None, false), &[]);
     assert!(row(&out).contains("configure --otel-endpoint"));
 }
 
@@ -110,7 +110,7 @@ fn a_configured_but_unapplied_endpoint_says_so() {
         applied: false,
         has_static_token: false,
     };
-    let out = render("i", "c", &session(true, true), &unapplied, &[]);
+    let out = table("i", "c", &session(true, true), &unapplied, &[]);
     let line = row(&out);
     assert!(line.contains("not applied yet"), "{line}");
     assert!(line.contains("configure"), "must name the fix: {line}");

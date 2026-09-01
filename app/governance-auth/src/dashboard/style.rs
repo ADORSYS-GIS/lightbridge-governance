@@ -19,16 +19,34 @@ use std::path::Path;
 /// anyone parsing it.
 pub(super) fn ago(seconds: i64) -> String {
     let past = seconds < 0;
-    let s = seconds.unsigned_abs();
-    let text = match s {
-        0..=90 => format!("{s}s"),
-        91..=5400 => format!("{}m", s.div_ceil(60)),
-        _ => format!("{}h", s.div_ceil(3600)),
-    };
+    let text = magnitude(seconds.unsigned_abs());
     if past {
         format!("expired {text} ago")
     } else {
         format!("{text} left")
+    }
+}
+
+/// Elapsed time, for something that already happened.
+///
+/// Separate from [`ago`] rather than reusing it with a negated argument, which
+/// is what the spool row used to do. Two things were wrong with that. `ago`
+/// renders a *remaining lifetime*, so it treats 0 as the future -- a discard
+/// that just happened printed "last 0s left". And its past wording is
+/// "expired", which is right for a token and wrong for a delivery or a loss:
+/// nothing about a discarded record expires.
+pub(super) fn since(seconds: u64) -> String {
+    if seconds == 0 {
+        return "just now".to_owned();
+    }
+    format!("{} ago", magnitude(seconds))
+}
+
+fn magnitude(seconds: u64) -> String {
+    match seconds {
+        0..=90 => format!("{seconds}s"),
+        91..=5400 => format!("{}m", seconds.div_ceil(60)),
+        _ => format!("{}h", seconds.div_ceil(3600)),
     }
 }
 
