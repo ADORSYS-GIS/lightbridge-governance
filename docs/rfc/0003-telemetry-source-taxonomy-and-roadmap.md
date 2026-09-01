@@ -64,9 +64,13 @@ where the identity comes from. The three that carry weight:
 
 | Axis | Values | What it determines |
 |---|---|---|
-| **Direction** | push · pull | **Auth**, because it decides whether a human is present to consent |
+| **Direction** | push · pull · push-in-band | **Auth**, because it decides whether a human is present to consent |
 | **Grain** | request · day-aggregate · seat-snapshot | **Storage**, because mixing grains is what makes KPIs double-count |
 | **Identity origin** | bound-at-issuance · payload-asserted · none | **Trust**, because it decides whether attribution is provable |
+
+`push-in-band` was added 2026-08-31 (§2a): the request being measured is itself the telemetry
+event, so there is no export to authenticate and identity is bound at issuance. It is the only
+Direction value where the auth question answers itself.
 
 A fourth column, **cost units**, is not an axis but must be declared, because the unit differs
 per source and the conversion has to live somewhere deliberate.
@@ -78,7 +82,8 @@ per source and the conversion has to live somewhere deliberate.
 | Claude Code | push OTLP | request | user, built-in | A | USD *and* µUSD both emitted | [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) blocks |
 | Codex | push OTLP | request | user, weak | A | none emitted | [#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144) |
 | OpenCode | push OTLP | request | user | A | none emitted | `lightbridge-opencode-toolbeit` |
-| GitHub Copilot (IDE) | push OTLP | request | **none in payload** | A | none | settings written, **unauthenticated** |
+| GitHub Copilot (IDE) | push OTLP | request | **none in payload** | A | none | settings written, **unauthenticated** — see amendment |
+| VS Code LM provider | **push, in-band** | request | **bound-at-issuance** | A | µUSD, gateway-computed | built, verified live ([#215](https://github.com/ADORSYS-GIS/lightbridge-governance/pull/215)) |
 | Microsoft Foundry | push OTLP | request | integration | B | provider-dependent | RFC-0002 |
 | Envoy AI Gateway | push logs | request | Authorino-stamped | D | µUSD | routes to `lightbridge-authz`, not here |
 | GitHub Copilot (API) | pull cron | day + seat | org-scoped | C | none — seats | RFC-0001, built |
@@ -88,10 +93,18 @@ per source and the conversion has to live somewhere deliberate.
 | Cursor | pull cron | day | org-scoped | C | — | [#99](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/99) |
 | JetBrains AI / Amazon Q / Tabnine | pull cron | day | org-scoped | C | — | [#100](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/100) |
 
-**The tally, since the rest of this document counts against it.** Twelve rows:
-**A** — 4 (Claude Code, Codex, OpenCode, Copilot IDE) · **B** — 1 (Foundry) ·
+**The tally, since the rest of this document counts against it.** Thirteen rows:
+**A** — 5 (Claude Code, Codex, OpenCode, Copilot IDE, VS Code LM provider) ·
+**B** — 1 (Foundry) ·
 **C** — 6 (Copilot API, Anthropic, OpenAI, M365, Cursor, JetBrains/Q/Tabnine) ·
 **D** — 1 (Envoy).
+
+> **Amendment (2026-08-31).** The thirteenth row was added when the VS Code
+> language model provider shipped. It is the first row where **Direction is not
+> a separate export**: the inference request *is* the telemetry event, because
+> it traverses the gateway. See §2a. The derived counts below are unchanged —
+> the new row has a user present, needs no machine-to-machine grant, and holds
+> no third-party credential.
 
 Three derived counts, which are not interchangeable:
 
@@ -105,6 +118,66 @@ Two rows deserve emphasis. **GitHub Copilot appears twice** and must stay twice 
 them into one "Copilot connector" is how a request-grain stream and a day-grain aggregate end
 up summed. **Envoy AI Gateway is in the table but not in this database**; it is listed so the
 boundary is visible rather than inferred (see §6).
+
+### 2a. Amendment — what shipping the VS Code provider measured
+
+Added 2026-08-31. Everything here was **verified against the live system**, not
+inferred, and four items correct statements made elsewhere in this document.
+
+**The fourth Direction value: `push, in-band`.** The VS Code LM provider row has
+no exporter, no collector, no cron and nothing to retry. The developer's request
+goes to the gateway, and the gateway's own record of it *is* the telemetry.
+Identity is therefore bound at issuance rather than asserted in a payload, which
+makes it the strongest row in the matrix on the axis this taxonomy cares most
+about. Either the Direction axis gains this value or the row is documented as
+the exception it is; this RFC now names it rather than leaving it implicit.
+
+**Correction 1 — VS Code *does* expose a settings key for OTLP headers.** The
+*Risks* section below states authentication "is only possible through an
+environment variable in the process VS Code was launched from".
+`github.copilot.chat.otel.headers` exists — an `{ "key": "value" }` map,
+documented as "applied directly to the OTLP exporter" — alongside
+`exporterType` (enum: `otlp-grpc`, `otlp-http`, `console`, `file`), `outfile`,
+`captureContent` and `otlpEndpoint`, all `scope: application` with an enterprise
+`policyReference`.
+
+It does not rescue that row, for a reason the original text did not anticipate:
+the header is **static**, with no helper hook to refresh it, and `settings.json`
+is covered by Settings Sync — so a long-lived bearer written there syncs
+off-machine. The conclusion stands; the stated reason was wrong.
+
+**Correction 2 — the Copilot IDE row does not double-count against the provider
+row.** With Copilot's file exporter enabled and a chat turn sent through the
+Lightbridge provider, every `gen_ai.client.token.usage` datapoint was tagged
+`gen_ai.provider.name=github` with Copilot's own model — its utility calls —
+while the gateway recorded the actual turn. **Copilot meters what it serves, not
+what it delegates.** The two rows measure disjoint populations and may both be
+enabled without violating §3.
+
+**Correction 3 — the Copilot OTLP stream carries no acceptance signal.** Across
+38 records the emitted names were `copilot_chat.session.start`,
+`copilot_chat.agent.turn`, `copilot_chat.tool.call` and latency/usage metrics.
+There was **no** accept, reject, dismiss, undo or edit-distance event of any
+kind. This matters for
+[#105](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/105): neither
+this row nor the provider row delivers the editor-native decision detail that
+spike exists to evaluate, and routing the Copilot spool to the collector would
+not change that.
+
+Two incidental findings from the same run, both relevant to anyone building the
+spool-and-push path: `captureContent: false` held (no prompt or completion text
+in 73KB), and the file exporter writes the OpenTelemetry **JS SDK's internal
+object graph** — `_rawAttributes`, `hrTime` pairs, `dataPointType` enums — not
+OTLP. A pusher must transform rather than relay, against a private shape that
+can change between Copilot releases.
+
+**Correction 4 — `client_credentials` is now advertised.** §4 calls the missing
+machine-to-machine grant "the single widest blocker in this RFC", blocking seven
+of the rows. The live discovery document at `https://auth.ai.camer.digital`
+advertises `authorization_code`, `refresh_token`, `client_credentials`,
+`device_code` and `token-exchange`. Whether a client is *provisioned* for it is
+a separate question and is not answered here — but the premise that the grant
+does not exist is no longer true.
 
 ### 3. Grain → storage
 
@@ -139,7 +212,9 @@ A query must never sum across grains. One authoritative source per measure.
 `authorization_code` grant. `governance-auth` can therefore authenticate directly against it.
 
 **Pattern B is blocked.** That same discovery document advertises no `client_credentials`
-grant. **Seven of the twelve rows depend on one** — pattern B's single hosted-agent row plus
+grant. ⚠️ **Superseded 2026-08-31 — see §2a, correction 4:** the live document now advertises
+it. The text below is left intact per this repo's rule that superseded reasoning is marked,
+not deleted, but do not plan against it. **Seven of the twelve rows depend on one** — pattern B's single hosted-agent row plus
 all six of pattern C. (An eighth row, the gateway, has no user either, but is covered by
 pattern D and needs no grant.) This is the single widest blocker in this RFC.
 
@@ -293,10 +368,12 @@ Not "tests pass". The observable outcomes that would show this taxonomy is real:
   refusal being swallowed by an `EXCEPTION WHEN OTHERS ... RAISE NOTICE`, leaving a schema
   that had neither chunking nor retention while appearing to have both. Whatever this repo
   does here must assert the hypertable exists after creating it.
-- **GitHub Copilot IDE telemetry carries no identity in its payload**, and VS Code exposes no
-  settings key for OTLP headers — authentication is only possible through an environment
-  variable in the process VS Code was launched from. Attribution for that row is weaker than
-  for any other push source and may not be solvable without the plugin in §7.
+- **GitHub Copilot IDE telemetry carries no identity in its payload.** ⚠️ **Partly superseded
+  2026-08-31 — see §2a, correction 1:** `github.copilot.chat.otel.headers` *does* exist, so the
+  claim that only an environment variable can supply one is wrong. The conclusion survives for a
+  different reason: the header is static and `settings.json` syncs off-machine. Attribution for
+  that row is still weaker than for any other push source — and §7's plugin, now built, does not
+  fix it, because it is a separate row rather than a credential for this one.
 
 ## Open questions
 
@@ -315,9 +392,12 @@ Not "tests pass". The observable outcomes that would show this taxonomy is real:
 3. **Is cost recomputed from `model_pricing`, or trusted from the emitter?** Recomputing makes
    the emitter's figure a cross-check and makes cost comparable across vendors; trusting is
    simpler and keeps the vendor's own number authoritative for invoice reconciliation.
-4. **Does the GitHub Copilot IDE row stay?** It is unauthenticated and identity-less today. It
-   could be secured via the §7 plugin, deferred until that plugin exists, or dropped in favour
-   of the API row alone.
+4. **Does the GitHub Copilot IDE row stay?** ⚠️ **Re-framed 2026-08-31 — see §2a.** The plugin
+   exists now and does *not* secure this row; it is a separate row with its own credential. What
+   the measurements changed: this row does not double-count against the provider row (correction
+   2), and it carries no acceptance signal (correction 3) — so its original justification, the
+   editor-native detail in #105, is not something it delivers. The question is no longer "secure
+   it or drop it" but **"what is it for, now that we know what it contains?"**
 5. **Is Microsoft Copilot (M365) in scope?** It has no ticket. Its Graph API surface needs
    verification before a row is treated as settled.
 6. **Does `IdentityMap` cover cross-vendor identity resolution** for a developer who appears as
