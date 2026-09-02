@@ -32,6 +32,7 @@ mod managed;
 mod oauth;
 mod optout;
 mod otel;
+mod otel_port;
 mod redacted;
 mod schedule;
 mod security;
