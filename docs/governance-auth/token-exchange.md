@@ -18,7 +18,7 @@
 > not of one deployment, and an install that registers an exchange client can still use it.
 > Read it as reference, not as instructions for this gateway.
 
-Some deployments want `token`/`otel-headers` to present a *different*, downstream-minted
+Some deployments want `token`/`otel headers` to present a *different*, downstream-minted
 credential rather than the raw token issued by `--issuer` — typically exchanging the
 identity-provider access token for a project-scoped token minted by `lightbridge-authz`'s
 native `/oauth2/token` endpoint. That is what this is for.
@@ -74,7 +74,7 @@ scope               = <--exchange-scopes>            (only if set)
 ## Fail closed
 
 If exchange is enabled and the exchange fails for **any** reason — network error, malformed
-response, `invalid_grant`, `invalid_client` — `token`/`otel-headers` exit non-zero and print
+response, `invalid_grant`, `invalid_client` — `token`/`otel headers` exit non-zero and print
 nothing to stdout. There is never a silent fallback to the un-exchanged upstream token.
 
 This is structural, not a check that could be forgotten: `run` returns a `Result`, the caller

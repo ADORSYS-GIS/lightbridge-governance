@@ -89,7 +89,7 @@ governance-auth login \
 That single command authenticates, caches the session, writes the inference and telemetry
 wiring into whichever of the three clients are installed, and schedules the Copilot spool
 drain. Everything after it is automatic: Claude Code and Codex call `token` and
-`otel-headers` themselves, and a systemd user timer (or launchd agent) calls `copilot-push`
+`otel headers` themselves, and a systemd user timer (or launchd agent) calls `copilot push`
 every five minutes.
 
 ⚠️ Restart VS Code afterwards — Copilot reads its telemetry settings at window start.

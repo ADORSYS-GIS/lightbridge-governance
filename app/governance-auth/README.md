@@ -8,6 +8,22 @@ governance-auth login   ->  OIDC authorization code + PKCE  ->  session at 0600
 governance-auth token   ->  a valid access token on stdout  ->  apiKeyHelper / auth.command
 ```
 
+The rest of the tree is scoped, one scope per thing it acts on:
+
+```text
+governance-auth refresh                 force a new token now, even if the cached one is fresh
+governance-auth status                  session, telemetry wiring and drain health
+governance-auth configure               (re-)write the three tools' config and the drain schedule
+governance-auth logout                  revoke at the issuer, then clear locally
+governance-auth otel headers            OTLP headers as JSON, for `otelHeadersHelper`
+governance-auth copilot push            drain Copilot's spool to the collector
+governance-auth self update             replace this binary with the latest release
+```
+
+`token` is deliberately NOT scoped and never will be: it is the one command name embedded in
+a file this binary cannot rewrite (the VS Code extension's own argv). See `src/cli`'s module
+doc for the rule that decided the rest.
+
 📖 **Full reference: [`docs/governance-auth/`](../../docs/governance-auth/README.md)** —
 commands, the four-source configuration matrix, every file it writes and which keys it owns
 inside each, token exchange, and troubleshooting. This README is the orientation; that is the
@@ -74,7 +90,7 @@ world-readable is refused, not loaded.
   getting it wrong bricks the tool.
 - ⚠️ **A released binary must report its release tag**, injected via
   `GOVERNANCE_AUTH_RELEASE_VERSION`. When it reported the workspace version instead,
-  `self-update` updated, still saw the old version, and updated again — forever.
+  `self update` updated, still saw the old version, and updated again — forever.
 - ⚠️ **The `asset_name()` matrix and the release workflow's build matrix move together.** The
   musl/gnu split is load-bearing: a musl binary that fetched the gnu asset would update itself
   onto a build that can't start on its own distro.

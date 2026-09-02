@@ -236,7 +236,7 @@ your org pushes those, this developer needs an explicit carve-out.
 **No Copilot telemetry is arriving at the collector**
 
 Copilot does not export over the network at all: `configure` sets
-`github.copilot.chat.otel.exporterType` to `file` and `governance-auth copilot-push` ships the
+`github.copilot.chat.otel.exporterType` to `file` and `governance-auth copilot push` ships the
 spool on a timer. Check the two `status` rows in order, because they answer different
 questions:
 
@@ -262,7 +262,7 @@ paste are printed with the error.
 
 ---
 
-## Self-update
+## Self update
 
 **`no asset for your platform`**
 
@@ -273,15 +273,67 @@ with no published asset. The matrix is listed in [`commands.md`](./commands.md).
 
 An ordinary state, not a failure — `releases/latest` 404s when a repo has published none.
 
-**`self-update` updates every time you run it**
+**`self update` updates every time you run it**
 
 A binary reporting a version older than the one it just installed asks again, forever. This is
 fixed by injecting the release tag at build time, and pinned by two tests — but if you see it,
 check whether the release workflow still sets `GOVERNANCE_AUTH_RELEASE_VERSION`. Losing that
 reintroduces the loop on real releases only, never locally.
 
-**`self-update` fails asking for `--issuer`**
+**`self update` fails asking for `--issuer`**
 
-An old build resolving the OAuth config before dispatching. `self-update` talks only to the
+An old build resolving the OAuth config before dispatching. `self update` talks only to the
 GitHub releases API and needs none of it — which matters precisely because the machine most
 likely to be updating is the one with no config yet.
+
+---
+
+## Upgrading across the command rename
+
+The flat commands (`copilot-push`, `otel-headers`, `self-update`) were reorganised into scoped
+subcommands (`copilot push`, `otel headers`, `self update`). This is a hard cutover — the old
+names are gone, there is no alias — so a binary that upgrades in place can leave stale
+invocations lying around in config it wrote under the old scheme.
+
+**What keeps working, unaffected:**
+
+- `~/.claude/settings.json`'s `apiKeyHelper` and `~/.codex/config.toml`'s `auth.command` both
+  run `token`. `token` did not move.
+- The VS Code extension spawns `token` directly. Also unaffected — `configure` cannot reach
+  into the extension's own compiled invocation, which is the whole reason `token` was frozen
+  rather than folded into a scope.
+
+**What breaks silently on the next wake, not on upgrade itself:**
+
+- `otelHeadersHelper` in `~/.claude/settings.json` still runs `otel-headers`, written by a
+  pre-upgrade `configure` or `login`. That name no longer exists, so Claude Code's next
+  telemetry-header refresh fails and it stops exporting telemetry — quietly, because the
+  helper's stderr is swallowed by the caller.
+- The systemd unit and the launchd plist installed by a pre-upgrade `configure` still invoke
+  `copilot-push` as a single argument. Every wake now fails with clap's unrecognised-subcommand
+  error, the checkpoint stops advancing, and the spool grows unbounded.
+
+Both are fixed the same way: **`governance-auth configure`**. It rewrites the helper command
+and regenerates the unit/plist with the new two-word invocation.
+
+`governance-auth status` detects both conditions rather than leaving them to be found by
+accident:
+
+- The telemetry row goes red with **wiring was written by an older version**.
+- The **copilot drain** row goes red with **out of date**.
+
+So a developer who ran only `self update` — updating the binary but never re-running
+`configure` — is told to fix it, rather than discovering it only when Copilot Chat's spool
+stops draining or Claude Code's telemetry goes silent.
+
+**Typing the old command by hand:**
+
+```
+$ governance-auth self-update
+error: unrecognized subcommand 'self-update'
+
+tip: a similar subcommand exists: 'self'
+```
+
+clap's suggestion names the new top-level scope, not the full new command. The fix is
+`governance-auth self update`.

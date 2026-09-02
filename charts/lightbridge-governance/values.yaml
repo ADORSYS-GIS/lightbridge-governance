@@ -468,7 +468,7 @@ aiCliOtel:
     # Codex and VS Code Copilot use, because neither has a credential-helper hook
     # for OTLP headers. Restoring them needs a second receiver/oidc extension
     # trusting `lightbridge-api-key`, tracked separately. Claude Code is
-    # unaffected: `otelHeadersHelper` re-invokes `governance-auth otel-headers`
+    # unaffected: `otelHeadersHelper` re-invokes `governance-auth otel headers`
     # on an interval, so a short-lived exchanged token is the right credential
     # there -- which is why the previous "no client has a refresh hook, so use
     # 120d API keys" reasoning no longer holds.

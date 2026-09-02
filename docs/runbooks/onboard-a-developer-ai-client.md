@@ -74,7 +74,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-
 
 Installs into `~/.local/bin` and prints the `export PATH=...` line if that isn't on your
 `$PATH` already -- it deliberately does not edit your rc files, because `configure` (step 3)
-writes its own managed block into them. Keep it current with `governance-auth self-update`.
+writes its own managed block into them. Keep it current with `governance-auth self update`.
 
 Six platforms are published, not four: macOS arm64/x64 and Linux x64/arm64 in **both** musl
 and glibc flavours. The installer picks musl on Linux, which is the one to install -- the
@@ -247,7 +247,7 @@ both were repeated elsewhere and are worth un-learning explicitly:
 If you are auditing an older deployment that still uses exchange, the mechanics are
 unchanged and documented in `lightbridge-authz`'s `docs/token-exchange-integration.md`. The
 one behaviour worth knowing either way: exchange **fails closed** -- if it is enabled and
-the exchange fails, `token`/`otel-headers` exit non-zero and print nothing, never falling
+the exchange fails, `token`/`otel headers` exit non-zero and print nothing, never falling
 back to the un-exchanged upstream token.
 
 ## 7. Troubleshooting

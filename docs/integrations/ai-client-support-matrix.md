@@ -23,7 +23,7 @@ capability works per client; that one says *how*, and exactly where it breaks.
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
 | **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
 | **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
-| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot-push` |
+| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot push` |
 | **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
 | **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | n/a — deliberately not used, see below |
 | **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | ✅ **already consumes `/v1/models/info`** | — |
@@ -136,7 +136,7 @@ syncs off-machine. The other channel, `OTEL_EXPORTER_OTLP_HEADERS`, is a
 anyway.
 
 So neither is used. `configure` writes `exporterType: "file"` + `outfile`
-instead, and `governance-auth copilot-push` — on a systemd user timer or a
+instead, and `governance-auth copilot push` — on a systemd user timer or a
 launchd agent that `configure` installs — ships the spool with a bearer it
 refreshes per wake. Copilot never holds a credential, which removes the problem
 rather than choosing between two bad answers to it.
@@ -250,7 +250,7 @@ binary where they would silently rot as models change.
   2026-08-11 in `lgb-claude`: an expired (22h old) session refreshed
   silently, `claude -p` returned a real answer through the gateway, and a
   direct `POST /anthropic/v1/messages` returned 200. **Telemetry 401s** —
-  `otel-headers` mints a Keycloak token while the collector validates
+  `otel headers` mints a Keycloak token while the collector validates
   against lightbridge-authz
   ([#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84),
   now confirmed live rather than predicted; the collector logs the wrong

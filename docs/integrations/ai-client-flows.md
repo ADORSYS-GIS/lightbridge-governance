@@ -134,7 +134,7 @@ This is the path that is **currently broken** — see
 sequenceDiagram
     autonumber
     participant CLI as Claude Code
-    participant ga as governance-auth otel-headers
+    participant ga as governance-auth otel headers
     participant KC as Keycloak
     participant OTEL as aiCliOtel collector
 
@@ -162,7 +162,7 @@ diagram, if the two ever disagree.
 sequenceDiagram
     autonumber
     participant CLI as Claude Code
-    participant ga as governance-auth otel-headers
+    participant ga as governance-auth otel headers
     participant KC as Keycloak
     participant authz as lightbridge-authz
     participant OTEL as aiCliOtel collector
@@ -207,7 +207,7 @@ What `governance-auth` sends on the exchange request, and what it doesn't:
   requesting `client_id` regardless of what's sent, so a config knob for it
   would silently do nothing.
 - **No caching, no independent refresh.** `emit_token` calls `exchange::run`
-  fresh on every `token`/`otel-headers` invocation when exchange is on —
+  fresh on every `token`/`otel headers` invocation when exchange is on —
   there is no cached exchanged token with its own expiry, and no separate
   `refresh_token` grant against authz. Each invocation re-derives the
   exchanged token from the CURRENT upstream (Keycloak) access token,
