@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.4.0...v0.5.0) (2026-09-02)
+
+
+### Features
+
+* **governance-auth:** configure wires Copilot otel → file → upload by default ([#247](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/247)) ([8a0a360](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/8a0a360d2f7ce7cb8cfbd1637a47646dbe9f23c9))
+* **governance-auth:** drain the Copilot OTel spool to the collector ([#228](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/228)) ([6602d2f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6602d2fd86019d138c16ca9ad06b5761245d9384))
+* **governance-auth:** status shows whether telemetry will actually export ([#217](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/217)) ([98d9dfa](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/98d9dfa5d39bccdff790747ce25ece76a414f316))
+* **vscode:** a governed LanguageModelChatProvider extension, verified live ([#215](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/215)) ([1b07a53](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1b07a53c0246169ea3c9d2667cfd44eb62589a78))
+
+
+### Bug Fixes
+
+* **ci:** governance-check reads the PR body at run time, not from the frozen payload ([#220](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/220)) ([ad5e764](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/ad5e764eedebe8a1de71febe7f4804c87c00f23e)), closes [#219](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/219)
+* **governance-auth:** first run was a dead end ([#214](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/214)) ([fc3dad1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/fc3dad10aab2a16deb4c44798cf5593b0ad9d03b))
+
+
+### Documentation
+
+* a default flow for the three tools, and upgrade the RFC-0003 matrix ([#218](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/218)) ([2fa5a72](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2fa5a72ddbcf45c3d3e4571d3b6b6e7e2ca5164b))
+
 ## [0.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.3.1...v0.4.0) (2026-08-31)
 
 
