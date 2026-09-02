@@ -102,7 +102,9 @@ remove_schedule() {
         fi
         rm -f "${units}/${UNIT}.timer" "${units}/${UNIT}.service"
         say "Removed ${units}/${UNIT}.{service,timer}"
-        command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -123,7 +125,9 @@ revoke_session() {
 # defaults. Only one of the three exists on any given machine.
 remove_dir() {
     for candidate in "${1:+$1/governance-auth}" "$2" "$3"; do
-        [ -n "$candidate" ] && [ -d "$candidate" ] || continue
+        if [ -z "$candidate" ] || [ ! -d "$candidate" ]; then
+            continue
+        fi
         rm -rf "$candidate" && say "Removed ${candidate}"
     done
 }

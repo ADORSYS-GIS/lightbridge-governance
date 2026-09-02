@@ -16,6 +16,7 @@ on:
     paths:
       - scripts/install.sh
       - scripts/uninstall.sh
+      - scripts/vendor-callback-page.sh
       - docs/install/**
       - .github/workflows/pages.yml
   # A release does not change the scripts, but it does change what "latest"
@@ -44,11 +45,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck --shell=sh --severity=style scripts/install.sh scripts/uninstall.sh
+        # ⚠️ `--severity=style` is the MOST inclusive tier, not the least --
+        # shellcheck reports the named level and everything above it. It is
+        # also the tier CI runs, so a laxer local run proves nothing: SC2015
+        # slipped through on a shellcheck 0.11.0 laptop and failed the deploy.
+        #
+        # `vendor-callback-page.sh` is here because it SHIPS and humans run it,
+        # not because this workflow deploys it. `test-redact-live.sh` is
+        # deliberately absent: it is bash (`pipefail`, `$'..'`) and linting it
+        # as `sh` reports its own shebang as an error.
+        run: |
+          shellcheck --shell=sh --severity=style \
+            scripts/install.sh scripts/uninstall.sh scripts/vendor-callback-page.sh
       # `sh -n` catches what shellcheck's static pass does not: that the file
       # actually parses as POSIX sh on the interpreter that will run it.
       - name: parse as POSIX sh
-        run: sh -n scripts/install.sh && sh -n scripts/uninstall.sh
+        run: |
+          sh -n scripts/install.sh
+          sh -n scripts/uninstall.sh
+          sh -n scripts/vendor-callback-page.sh
       # The scripts name the asset for every platform; `update.rs` names them
       # again for self-update. They must agree, and the failure mode if they
       # do not is silent -- install works, self-update then 404s for ever.
