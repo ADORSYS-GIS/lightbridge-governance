@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 
-import { hasCredential } from './auth.js';
+import { resolveAuthState } from './auth.js';
+import { authFailureAdvice } from './auth-failure.js';
+import { invalidateAuthState } from './auth-state.js';
 import { invalidateCatalogue } from './catalogue.js';
 import { readConfig } from './config.js';
 import { log } from './log.js';
@@ -19,15 +21,22 @@ import type { LightbridgeChatProvider } from './provider.js';
 export function registerManageCommand(provider: LightbridgeChatProvider): vscode.Disposable {
   return vscode.commands.registerCommand('lightbridge.manage', async () => {
     const config = readConfig();
-    const signedIn = await hasCredential(config);
+    const auth = await resolveAuthState(config);
+    // Names the actual reason rather than "not signed in" for all nine of them.
+    // A developer whose editor cannot find the binary is not signed out, and
+    // telling them to log in is a loop with no exit.
+    const problem = auth.signedIn
+      ? undefined
+      : authFailureAdvice(auth.kind ?? 'unknown', config.governanceAuthPath);
 
     const picked = await vscode.window.showQuickPick(
       [
         {
-          label: signedIn ? '$(pass) Signed in' : '$(warning) Not signed in',
-          detail: signedIn
-            ? `Credential supplied by '${config.governanceAuthPath} token'.`
-            : `Run 'governance-auth login' to sign in.`,
+          label: problem ? `$(warning) ${problem.title}` : '$(pass) Signed in',
+          detail:
+            problem?.fixCommand !== undefined
+              ? `Opens a terminal on '${problem.fixCommand}'.`
+              : (problem?.detail ?? `Credential supplied by '${config.governanceAuthPath} token'.`),
           id: 'signin',
         },
         {
@@ -47,18 +56,19 @@ export function registerManageCommand(provider: LightbridgeChatProvider): vscode
 
     switch (picked?.id) {
       case 'signin':
-        // A terminal, not a spawned browser: `governance-auth login` owns the
-        // flow, and a developer needs to see its output to act on a failure.
-        vscode.window.createTerminal('governance-auth').show();
-        vscode.window.showInformationMessage(
-          `Run '${config.governanceAuthPath} login' in the terminal, then refresh the catalogue.`,
-        );
+        // Delegated so the terminal, the command it carries and the cache
+        // invalidations are written once. Two copies of "how do you sign in"
+        // is how one of them ends up stale.
+        await vscode.commands.executeCommand('lightbridge.signIn');
         break;
       case 'settings':
         await vscode.commands.executeCommand('workbench.action.openSettings', 'lightbridge');
         break;
       case 'refresh':
         invalidateCatalogue();
+        // The session is re-checked too: "refresh" from a developer who has
+        // just signed in elsewhere must not be answered from a cached "no".
+        invalidateAuthState();
         provider.refresh();
         log().info('Model catalogue invalidated by user request.');
         break;

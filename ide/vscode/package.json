@@ -37,6 +37,11 @@
         "category": "Lightbridge"
       },
       {
+        "command": "lightbridge.signIn",
+        "title": "Sign in with governance-auth",
+        "category": "Lightbridge"
+      },
+      {
         "command": "lightbridge.showLog",
         "title": "Show log",
         "category": "Lightbridge"
