@@ -89,12 +89,24 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
-      # `enablement: true` creates the Pages site on first run rather than
-      # requiring somebody to click through Settings -- the repo had no Pages
-      # site when this workflow was written.
+      # ⚠️ NO `enablement: true`, and this is measured rather than assumed.
+      # It was set, and the first two runs failed with:
+      #
+      #   Create Pages site failed. Error: Resource not accessible by integration
+      #
+      # Creating a Pages site needs repo-ADMIN permissions, which the workflow's
+      # `GITHUB_TOKEN` cannot hold no matter what `permissions:` declares --
+      # `pages: write` grants deploying to an existing site, not creating one.
+      # Leaving the flag on meant a confusing failure that reads like an org
+      # policy block; taking it off means this step simply finds the site an
+      # admin enabled once, by hand.
+      #
+      # ONE-TIME SETUP, by a repo admin:
+      #   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+      #
+      # Until that is done this job fails here, which is the correct place to
+      # fail: the alternative is publishing nothing while reporting success.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - name: Assemble the site
         run: |
           set -euo pipefail
