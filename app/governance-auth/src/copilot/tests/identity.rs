@@ -41,6 +41,32 @@ fn lines(count: usize) -> String {
     (0..count).map(|_| format!("{}\n", log_line())).collect()
 }
 
+/// A **replacement** spool's records, carrying a different trace and span id.
+///
+/// ⚠️ Not `lines()`, and the difference is load-bearing. `log_line()` is a
+/// constant, so `lines(9)` has `lines(3)` as an exact byte-prefix -- which
+/// leaves the head digest unable to tell the two files apart and rests the
+/// whole rotation assertion on the *inode* differing. Linux reuses a
+/// just-freed inode number freely, so this file's rotation test passed or
+/// failed by luck: green on APFS and on most CI runs, observed failing on
+/// ext4/overlayfs with `left: None`. Reproduced deterministically by keeping
+/// the inode fixed, which is what a reuse amounts to.
+///
+/// A real rotation never looks like that. VS Code recreates the outfile for a
+/// NEW session, so its first record carries new ids -- which is what this
+/// writes. Same byte length, so the "longer than the old offset" property the
+/// fixture depends on is unchanged.
+fn replacement_lines(count: usize) -> String {
+    (0..count)
+        .map(|_| {
+            format!(
+                "{}\n",
+                log_line().replace("0123456789abcdef", "fedcba9876543210")
+            )
+        })
+        .collect()
+}
+
 /// THE case. A brand-new file that has already outgrown the old offset is
 /// still a new file, and `size < offset` cannot see it.
 #[test]
@@ -55,7 +81,7 @@ fn a_longer_replacement_file_is_a_rotation_even_though_it_is_longer() {
 
     // VS Code recreated its outfile and the developer kept working.
     std::fs::remove_file(&path).expect("removing the old spool");
-    std::fs::write(&path, lines(9)).expect("writing the replacement");
+    std::fs::write(&path, replacement_lines(9)).expect("writing the replacement");
     assert!(
         std::fs::metadata(&path).expect("stat").len() > first.next_offset,
         "the fixture is only meaningful when the new file has outgrown the old offset"
@@ -128,4 +154,24 @@ fn truncation_in_place_is_reported_as_a_truncation_not_a_replacement() {
     let after = spool::drain(&path, first.next_offset, Some(&identity)).expect("second drain");
     assert_eq!(after.restarted, Some(Restart::Truncated));
     assert_eq!(after.lines.len(), 1);
+}
+
+/// Pins the trap [`replacement_lines`] exists to avoid, so a later tidy-up that
+/// "simplifies" it back to `lines` fails here instead of flaking in CI.
+#[test]
+fn a_replacement_fixture_must_differ_in_its_head_not_only_in_length() {
+    assert!(
+        lines(9).starts_with(&lines(3)),
+        "the trap must still be real, or this guard is testing nothing"
+    );
+    assert!(
+        !replacement_lines(9).starts_with(&lines(3)),
+        "a replacement spool must differ in the bytes the head digest covers, \
+         because the inode is not guaranteed to differ"
+    );
+    assert_eq!(
+        replacement_lines(9).len(),
+        lines(9).len(),
+        "same length, so the fixture still outgrows the old offset"
+    );
 }
