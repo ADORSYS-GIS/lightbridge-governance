@@ -86,7 +86,7 @@ still written, and `configure` says out loud that nothing went to any client.
 
 Passing an access token here does not work, and fails in the worst possible way. Neither
 Claude Code nor Codex re-reads its config mid-session, and neither has a credential-helper
-hook for OTLP headers — so a 300-second token exports for five minutes and then fails
+hook for OTLP headers — so a 900-second token (the lifetime authz-idp mints, measured 2026-09-02: issued 20:34:31Z, expired 20:49:31Z) exports for fifteen minutes and then fails
 *silently* for the rest of the session. This option is for a credential minted for ingest and
 nothing else. Leave it unset and `otel headers` refreshes the header on every call instead;
 [`status`](./commands.md) reports which of the two is actually in effect.
