@@ -54,6 +54,7 @@ pub(super) fn unsurveyed_drain() -> Drain {
         schedule: None,
         collector: false,
         stale: None,
+        profile: crate::profile::Profile::Manual,
     }
 }
 

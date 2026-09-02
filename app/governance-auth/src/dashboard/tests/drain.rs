@@ -14,10 +14,16 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::{dashboard::style::Colour, schedule::Schedule};
+use crate::{dashboard::style::Colour, profile::Profile, schedule::Schedule};
 
+/// `manual`, matching every test below written before the profile split --
+/// see [`daemon_profile_drain`] for the `daemon`-profile fixtures.
 fn drain(installed: bool, active: Option<bool>, collector: bool) -> Drain {
-    stale_drain(installed, active, collector, Some(false))
+    stale_drain(installed, active, collector, Some(false), Profile::Manual)
+}
+
+fn daemon_profile_drain(installed: bool, active: Option<bool>) -> Drain {
+    stale_drain(installed, active, true, Some(false), Profile::Daemon)
 }
 
 fn stale_drain(
@@ -25,6 +31,7 @@ fn stale_drain(
     active: Option<bool>,
     collector: bool,
     stale: Option<bool>,
+    profile: Profile,
 ) -> Drain {
     Drain {
         schedule: Some(Schedule {
@@ -36,6 +43,7 @@ fn stale_drain(
         }),
         collector,
         stale,
+        profile,
     }
 }
 
@@ -46,7 +54,8 @@ fn stale_drain(
 /// before `active`, not after.
 #[test]
 fn a_schedule_written_by_an_older_version_is_red_and_names_configure() {
-    let (value, colour, note) = stale_drain(true, Some(true), true, Some(true)).row();
+    let (value, colour, note) =
+        stale_drain(true, Some(true), true, Some(true), Profile::Manual).row();
     assert_eq!(value, "out of date", "{note}");
     assert_eq!(colour, Colour::Red);
     assert!(note.contains("governance-auth configure"), "{note}");
@@ -145,4 +154,44 @@ fn no_collector_and_no_schedule_is_plain_information() {
     assert_eq!(value, "not scheduled");
     assert_eq!(colour, Colour::None);
     assert_eq!(note, "no collector configured");
+}
+
+/// Found running #270+#271 together against a real machine, not by any unit
+/// test: every fixture above predates the profile split, so `collector:
+/// true, schedule.installed: false` only ever meant "`configure` failed" to
+/// them. #270 AC5 made it also mean "working as designed, under `daemon`" --
+/// this pins that the row tells the two apart, and -- as important -- that
+/// the note stops telling the reader to run `configure`, which does nothing
+/// under `daemon` (the timer is deliberately never installed there).
+#[test]
+fn daemon_profile_with_no_schedule_is_yellow_not_red_and_names_the_real_fix() {
+    let (value, colour, note) = daemon_profile_drain(false, None).row();
+    assert_eq!(value, "not scheduled");
+    assert_eq!(
+        colour,
+        Colour::Yellow,
+        "not a `configure` failure -- #270 AC5 removes this timer under `daemon` on purpose"
+    );
+    assert!(
+        !note.contains("governance-auth configure"),
+        "must not suggest a fix that does nothing under `daemon`: {note}"
+    );
+    assert!(
+        note.contains("manual"),
+        "must name the fix that actually works: {note}"
+    );
+}
+
+/// The mirror of the leftover case above, under `daemon`: #270 AC5's
+/// retraction should have removed this, so still finding it installed is
+/// the backstop for a removal that failed, not silence.
+#[test]
+fn a_leftover_drain_under_daemon_profile_is_yellow_not_silent() {
+    let (value, colour, note) = daemon_profile_drain(true, Some(true)).row();
+    assert_eq!(value, "scheduled, daemon profile");
+    assert_eq!(colour, Colour::Yellow);
+    assert!(
+        note.contains("daemon") && note.contains("configure"),
+        "must name the leftover and how to resolve it, got: {note}"
+    );
 }
