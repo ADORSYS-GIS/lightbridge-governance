@@ -1,0 +1,14 @@
+{{- /*
+Body shared with the AI-CLI collector's policy -- see
+`lightbridge-governance.publicOtelNetworkPolicy` in _helpers.tpl, which carries
+the full "why there is no `egress:` section" incident writeup
+(lightbridge-governance#85/#87/#88/#89). Read it before adding one back: it
+applies to this collector identically, and for the same cluster-level reason.
+
+The policy's endpointSelector pins `app.kubernetes.io/instance` to THIS
+collector's CR name, which is the only thing keeping the three collectors'
+policies from applying to each other.
+*/}}
+{{- if and .Values.opencodeOtel.enabled .Values.networkPolicy.enabled }}
+{{- include "lightbridge-governance.publicOtelNetworkPolicy" (dict "root" . "otel" .Values.opencodeOtel "name" (include "lightbridge-governance.opencodeOtelName" .)) }}
+{{- end }}

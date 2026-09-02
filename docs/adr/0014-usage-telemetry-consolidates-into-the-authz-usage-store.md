@@ -45,6 +45,13 @@ connector's per-provider normalizer design (RFC-0002, generalised per #30) is po
 ingest surface — including its dispatch-by-source registry and the identity-from-credential rule
 (ADR-0013 invariant 2).
 
+> **Amendment (2026-09-02).** "the `aiCliOtel` collector chart" is now **two** public
+> collectors in that chart — `aiCliOtel` and `opencodeOtel` — for the reason recorded in
+> RFC-0003 §2's 2026-09-02 amendment: one trusted `audience` per `oidcauthextension`
+> instance, and two client fleets whose tokens carry different `aud` claims from the same
+> issuer. Nothing else in this decision changes: both stay here, both become clients of the
+> usage ingest surface, and neither owns a table.
+
 ### 3. Existing data migrates; nothing is silently dropped
 
 Copilot dailies are replayed from the S3 raw archive through the new day-grain ingest path

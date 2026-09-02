@@ -1,56 +1,7 @@
-{{- if and .Values.aiCliOtel.enabled .Values.aiCliOtel.ingress.enabled }}
 {{- /*
-Public TLS entrypoint for the AI-CLI OTLP collector.
-
-Traefik rather than the Envoy core-gateway, deliberately: otel.<domain>
-already resolves to the Traefik load balancer (the wildcard *.ai.camer.digital
-record), exactly as auth.ai.camer.digital does, so this needs no DNS change
-and no new Gateway listener. Authentication does NOT come from Authorino here
--- the collector authenticates its own callers via the oidc extension (see
-templates/otelcollector-ai-cli.yaml), so nothing in the Envoy/Authorino path
-is required for this host.
-
-TLS is issued by cert-manager's ingress-shim: the `cluster-issuer` annotation
-plus the `tls:` block below is enough for it to create and renew the
-Certificate. There is no hand-written Certificate resource on purpose -- one
-would duplicate what the annotation already does and give two controllers an
-opinion about the same Secret.
-
-The backend Service is named `<collector CR name>-collector`, which is the
-OpenTelemetry Operator's own naming convention (the same one
-templates/servicemonitor-copilot-otel.yaml relies on for the copilot
-collector).
+Body shared with the OpenCode collector's ingress -- see
+`lightbridge-governance.publicOtelIngress` in _helpers.tpl.
 */}}
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ include "lightbridge-governance.aiCliOtelName" . }}
-  labels:
-    app: {{ .Values.name }}
-  annotations:
-    cert-manager.io/cluster-issuer: {{ .Values.aiCliOtel.ingress.clusterIssuer | quote }}
-    {{- with .Values.aiCliOtel.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-spec:
-  ingressClassName: {{ .Values.aiCliOtel.ingress.className | quote }}
-  rules:
-    - host: {{ .Values.aiCliOtel.ingress.host | quote }}
-      http:
-        paths:
-          # OTLP/HTTP puts each signal on its own path (/v1/traces,
-          # /v1/metrics, /v1/logs), so this is a prefix match on `/` rather
-          # than three exact rules -- the SDKs append the suffix themselves
-          # from the base endpoint governance-auth writes.
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ printf "%s-collector" (include "lightbridge-governance.aiCliOtelName" .) }}
-                port:
-                  number: 4318
-  tls:
-    - secretName: {{ printf "%s-tls" .Values.aiCliOtel.ingress.host }}
-      hosts:
-        - {{ .Values.aiCliOtel.ingress.host | quote }}
+{{- if and .Values.aiCliOtel.enabled .Values.aiCliOtel.ingress.enabled }}
+{{- include "lightbridge-governance.publicOtelIngress" (dict "root" . "otel" .Values.aiCliOtel "name" (include "lightbridge-governance.aiCliOtelName" .)) }}
 {{- end }}
