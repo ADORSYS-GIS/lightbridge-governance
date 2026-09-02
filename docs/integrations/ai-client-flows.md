@@ -332,11 +332,30 @@ long-lived is written to disk by us.
 ⚠️ **Not verified from this repository.** The device-code flow, the
 `tokenCommand` helper and the `@vymalo/opencode-oauth2` cache all live outside
 this repo; what was verified here is only the `aud: opencode-cli` claim in a
-real token and the 401 it produced against the `aiCliOtel` collector. This
-repo's own `docs/integrations/ai-client-support-matrix.md` still records
-OpenCode's `oauth2.issuer` as `https://auth.verif.fyi/realms/camer-digital`
-(Keycloak) — that snippet is **stale**: an `auth.verif.fyi`-issued token would
-have failed the collector's issuer/signature check, not its audience check.
+real token and the 401 it produced against the `aiCliOtel` collector.
+(`ai-client-support-matrix.md` recorded OpenCode's issuer as the Keycloak realm
+`https://auth.verif.fyi/realms/camer-digital`; that was corrected to
+`auth.ai.camer.digital` — an `auth.verif.fyi`-issued token would have failed the
+collector's issuer/signature check, not its audience check.)
+
+### Why `governance-auth` exports no OTLP endpoint
+
+One audience per collector means the endpoint is **per-client**, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` is a *generic* OpenTelemetry variable: exported
+from a shell rc it reaches every OTLP exporter on the machine, ahead of each
+one's own configured default. `governance-auth` used to write it (plus
+`_PROTOCOL`, `_HEADERS`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`,
+`OTEL_RESOURCE_ATTRIBUTES`) into `~/.config/governance-auth/otel.env`, so on
+2026-09-02 OpenCode — whose plugin resolves `env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+opts.endpoint` — exported to `otel.ai.camer.digital` and 401'd on every span,
+on every machine that had ever run `governance-auth`.
+
+It writes none of them now. Each client is reached through its own file:
+`~/.claude/settings.json`, `~/.codex/config.toml`, and VS Code's `settings.json`.
+The shell keeps only `GOVERNANCE_AUTH_ISSUER`, `GOVERNANCE_AUTH_CLIENT_ID` and
+`ANTHROPIC_BASE_URL`, none of which is per-client. A laptop configured by an
+older build is fixed by re-running `governance-auth configure` — `self update`
+alone replaces the binary and leaves the stale exports in place.
 
 ### Still open: Codex and VS Code Copilot
 
