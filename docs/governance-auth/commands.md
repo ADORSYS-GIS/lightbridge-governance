@@ -99,8 +99,13 @@ What it does:
    moment on a cold store don't both try to refresh.
 2. Loads the cached session. Absent → `no cached session for this issuer/client; run
    'governance-auth login' first`, non-zero exit, nothing on stdout.
-3. If the session is inside the expiry skew, refreshes it and stores the result. A rejected
-   refresh is a hard failure — it never retries with a stale credential and never emits one.
+3. If the session has too little life left, refreshes it and stores the result — still under
+   the lock from step 1, so two concurrent invocations can never both spend the same
+   single-use refresh token. "Too little" is `otel_headers_debounce_ms` **plus** the 30s
+   clock skew (270s at the default), not the skew alone: whatever this command prints is
+   cached by Claude Code for that whole window, so a token merely valid *now* is not enough.
+   A rejected refresh is a hard failure — it never retries with a stale credential and never
+   emits one.
 4. If token exchange is enabled, exchanges the token (see
    [`token-exchange.md`](./token-exchange.md)). A failed exchange is a hard failure; it
    never falls back to the un-exchanged upstream token.
@@ -119,11 +124,11 @@ Forces a credential refresh right now, even when the cached session is still fre
 governance-auth refresh
 ```
 
-The difference from `token`: `token` only refreshes when the cached session is inside the
-expiry skew, otherwise it prints the cached access token unchanged. `refresh` always goes to
-the authorization server, regardless of how long the current token has left. Use it after a
-server-side change — a role added, a scope edited — or when debugging, rather than waiting
-for the cached token to age into the skew window.
+The difference from `token`: `token` only refreshes when the cached session can no longer
+cover the caller's cache window plus the skew, otherwise it prints the cached access token
+unchanged. `refresh` always goes to the authorization server, regardless of how long the
+current token has left. Use it after a server-side change — a role added, a scope edited — or
+when debugging, rather than waiting for the cached token to age into the refresh window.
 
 **Prints nothing on stdout.** The refreshed token goes to the session cache, same as any
 other refresh; `token` remains the only command that ever emits a credential. All reporting

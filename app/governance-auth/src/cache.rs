@@ -29,11 +29,14 @@
 //! [`crate::oauth::discovery`]).
 //!
 //! [`load`] migrates a session found at the legacy cache path, once.
+//!
+//! Storage only. WHEN a stored session still counts as usable is
+//! [`crate::freshness`]'s decision, not this module's.
 
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result};
@@ -41,13 +44,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::redacted::Redacted;
-
-/// How far ahead of the real expiry a cached token is treated as unusable.
-/// Matches the margin the org's own `opencode-oauth2` plugin uses
-/// (`tokenExpirySkewMs`), so a caller with a short re-check interval (Codex's
-/// `refresh_interval_ms`) never hands a token to the tool a moment before
-/// Keycloak would reject it.
-const SKEW_SECONDS: u64 = 30;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Fallback ceiling used ONLY when this process genuinely can't determine
@@ -71,25 +67,16 @@ pub struct CachedSession {
     pub access_token: Redacted<String>,
     pub refresh_token: Option<Redacted<String>>,
     pub expires_at: u64,
-}
-
-impl CachedSession {
-    pub fn is_fresh(&self) -> Result<bool> {
-        Ok(self.expires_at > now_unix()?.saturating_add(SKEW_SECONDS))
-    }
-
-    pub fn seconds_until_expiry(&self) -> Result<i64> {
-        Ok(i64::try_from(self.expires_at)
-            .unwrap_or(i64::MAX)
-            .saturating_sub(i64::try_from(now_unix()?).unwrap_or(i64::MAX)))
-    }
-}
-
-fn now_unix() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("reading system clock")?
-        .as_secs())
+    /// How long this access token was minted to live, as the token endpoint
+    /// reported it (`expires_in`). Recorded so `crate::freshness` can tell a
+    /// demand no token from this server could ever satisfy from an ordinary
+    /// near-expiry one, without a second round trip.
+    ///
+    /// `Option` only because a session written before this field existed has
+    /// none; `serde(default)` is what keeps such a file loadable rather than
+    /// logging the developer out on upgrade.
+    #[serde(default)]
+    pub lifetime_secs: Option<u64>,
 }
 
 /// `$XDG_CACHE_HOME` (or `~/.cache`) on Linux, `~/Library/Caches` on macOS.

@@ -408,6 +408,19 @@ token that expired moments ago. Claude Code re-runs the helper on a 401, so this
 but only *after* a failed request. Keeping the TTL under the token lifetime avoids the
 failure instead of recovering from it.
 
+**Setting the TTL below the token lifetime is necessary but not sufficient**, which is the
+half that had to be learnt in production (2026-09-02, ~30 `oidc: token is expired` rejections
+per 15-minute token). What matters is not the age of the token when it is handed over but
+whether it survives to the *end* of the window it is handed into. A 900s token with 31s left
+passed the old freshness check — "more than the 30s clock skew" — and was then sent by Claude
+Code for the next 240s, dead for 209 of them.
+
+So the rule these two variables imply is enforced on this side as well: `token` and `otel
+headers` refresh whenever the cached session has less than **the debounce plus the 30s skew**
+(270s at the default) of life left, so anything they print outlives the cache it is going
+into. `crate::freshness` owns that decision; `copilot push` and `status`, which use the token
+themselves and hand it to nothing that caches it, keep the plain 30s skew.
+
 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` exists because this gateway serves model names
 Claude Code doesn't ship in its built-in list; without discovery they never appear in the
 `/model` picker at all. It does **not** silence the "not a model this version recognizes"

@@ -41,7 +41,7 @@ governance-auth login                       # once, interactively
 
 governance-auth token                       # every request, invoked by the client
   ├─ load session (under a file lock)
-  ├─ refresh if within the expiry skew  ── fails closed if the refresh is rejected
+  ├─ refresh unless it outlives the caller's cache window + skew ── fails closed if rejected
   ├─ optionally exchange it (RFC 8693)  ── fails closed if the exchange is rejected
   └─ print the access token to stdout, and nothing else
 ```

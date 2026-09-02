@@ -114,12 +114,18 @@ pub fn into_session(config: &OauthConfig, response: RawTokenResponse) -> Result<
         .duration_since(UNIX_EPOCH)
         .context("reading system clock")?
         .as_secs();
+    // The EFFECTIVE lifetime, not the raw `expires_in`: a server that omits
+    // the field is treated as issuing 60s tokens for `expires_at`, and
+    // `crate::freshness`'s cap has to reason about the same number this
+    // session was actually stamped with.
+    let lifetime_secs = response.expires_in.unwrap_or(60);
     Ok(CachedSession {
         issuer: config.issuer.clone(),
         client_id: config.client_id.clone(),
         access_token: response.access_token,
         refresh_token: response.refresh_token,
-        expires_at: now.saturating_add(response.expires_in.unwrap_or(60)),
+        expires_at: now.saturating_add(lifetime_secs),
+        lifetime_secs: Some(lifetime_secs),
     })
 }
 
