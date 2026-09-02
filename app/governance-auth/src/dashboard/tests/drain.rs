@@ -95,3 +95,28 @@ fn the_row_appears_in_the_rendered_table() {
     assert!(out.contains("copilot drain"), "{out}");
     assert!(out.contains("every 300s"), "{out}");
 }
+
+#[test]
+fn a_leftover_schedule_with_no_collector_is_not_reported_as_unscheduled() {
+    // The row used to answer `!collector` first and in no colour, so a timer
+    // that `configure` failed to remove read as "nothing to see here" while it
+    // woke every five minutes and failed. Both facts are true at once; the
+    // one worth printing is the one a developer can act on.
+    let (value, colour, note) = drain(true, Some(true), false).row();
+    assert_eq!(value, "scheduled, no collector");
+    assert_eq!(colour, Colour::Yellow);
+    assert!(
+        note.contains("still installed") && note.contains("--otel-endpoint"),
+        "must name the leftover and how to resolve it, got: {note}"
+    );
+}
+
+#[test]
+fn no_collector_and_no_schedule_is_plain_information() {
+    // The other half of the pair: with nothing installed there is nothing to
+    // act on, and colouring this would train the reader to ignore the row.
+    let (value, colour, note) = drain(false, None, false).row();
+    assert_eq!(value, "not scheduled");
+    assert_eq!(colour, Colour::None);
+    assert_eq!(note, "no collector configured");
+}

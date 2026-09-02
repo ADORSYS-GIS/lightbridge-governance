@@ -46,6 +46,22 @@ impl Drain {
         };
 
         if !self.collector {
+            // A LEFTOVER schedule is worth naming rather than papering over.
+            // `configure` removes the timer when the collector goes away, so
+            // one still on disk means that removal did not happen -- and it
+            // wakes every INTERVAL_SECONDS to fail, for ever, while a bare
+            // "not scheduled" in no colour reads as nothing to see here.
+            if schedule.installed {
+                return (
+                    "scheduled, no collector".to_owned(),
+                    Colour::Yellow,
+                    format!(
+                        "{} is still installed and fails on every wake: re-run `governance-auth \
+                         configure --otel-endpoint <url>`, or remove it by hand",
+                        schedule.path.display()
+                    ),
+                );
+            }
             return (
                 "not scheduled".to_owned(),
                 Colour::None,

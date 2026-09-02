@@ -152,9 +152,15 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         gateway_url: config.gateway_url.clone(),
     };
 
-    let outcomes = otel::configure_all(&home, &settings)?;
+    // ⚠️ Held, not `?`d, and surfaced at the end instead. `configure_all`
+    // REFUSES a JSONC `settings.json` rather than destroying its comments --
+    // and that developer is precisely the one who then pastes the exporter
+    // keys by hand and ends up spooling to a disk nothing drains, which is the
+    // failure this whole path exists to remove. The schedule below does not
+    // depend on that write having succeeded, so it must not be skipped by it.
+    let written = otel::configure_all(&home, &settings);
     let mut needs_static_token = false;
-    for outcome in &outcomes {
+    for outcome in written.iter().flatten() {
         match outcome {
             otel::Outcome::Written(path) => {
                 eprintln!("Configured: {}", path.display());
@@ -181,7 +187,7 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
     // file above is already written, and a machine with no user systemd
     // session must not turn a successful `configure` into a failure.
     if let Err(error) = schedule::apply(&home, config) {
-        eprintln!("warning: could not schedule the Copilot drain: {error:#}");
+        eprintln!("warning: could not update the Copilot drain schedule: {error:#}");
     }
 
     // Codex reads a static `Authorization` string once at start and has no
@@ -196,6 +202,9 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
              are unaffected."
         );
     }
+
+    // Now, and not before the schedule: see the note on `written`.
+    written?;
     Ok(())
 }
 

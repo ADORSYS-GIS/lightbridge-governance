@@ -176,14 +176,4 @@ fn the_timer_drains_exactly_the_file_copilot_is_told_to_write() {
 /// Falsification: replace the body of `systemd::classify` with
 /// `Some(!stdout.trim().is_empty())` and the "could not be asked" case fails --
 /// checked, and it is the only test in the crate that does.
-#[test]
-fn an_unaskable_systemd_is_unknown_not_stopped() {
-    assert_eq!(systemd::classify("active\n"), Some(true));
-    assert_eq!(systemd::classify("inactive\n"), Some(false));
-    assert_eq!(systemd::classify("failed\n"), Some(false));
-    assert_eq!(
-        systemd::classify(""),
-        None,
-        "no user manager to ask is not the same as a stopped timer"
-    );
-}
+mod survey;

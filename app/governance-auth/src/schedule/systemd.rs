@@ -148,8 +148,23 @@ fn timer_unit() -> String {
 /// files carry no credential, only flags, and a 0600 unit is a surprising
 /// thing to find in a systemd tree.
 fn write(path: &Path, body: &str) -> Result<()> {
-    let tmp = path.with_extension("governance-auth-tmp");
+    let tmp = tmp_path(path);
     fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
+}
+
+/// ⚠️ APPENDS the marker, never `with_extension`. Both units live in one
+/// directory and differ only by extension, so `with_extension` -- which
+/// REPLACES it -- hands `…push.service` and `…push.timer` the identical temp
+/// name. Sequentially that is merely ugly; two `configure` runs at once can
+/// interleave write-tmp/write-tmp/rename/rename and land the timer's body in
+/// the service file. systemd ignores a file with no unit suffix, so the temp
+/// name itself is safe to leave in that directory for the instant it exists.
+pub(super) fn tmp_path(path: &Path) -> PathBuf {
+    let name = path.file_name().map_or_else(
+        || UNIT.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    path.with_file_name(format!("{name}.governance-auth-tmp"))
 }
