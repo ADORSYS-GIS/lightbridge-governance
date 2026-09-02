@@ -60,10 +60,10 @@ pub enum TokenBehavior {
 #[derive(Clone, Default)]
 pub struct DiscoveryOverrides {
     pub token_endpoint: Option<String>,
-    /// Reproduces `lightbridge-authz`'s real discovery document, which serves
-    /// no authorization endpoint and therefore omits the field entirely --
-    /// deliberately and, per OIDC Discovery §3, legitimately (that field is
-    /// REQUIRED only of providers that actually support one).
+    /// Simulates a discovery document that omits the field -- legitimately,
+    /// per OIDC Discovery §3 (REQUIRED only of providers that serve one).
+    /// It used to reproduce `lightbridge-authz`, which now serves
+    /// `/authorize` (its ADR-0025), so it is any other such server instead.
     ///
     /// Exists because the default mock advertising it made every test pass
     /// while `--exchange-issuer` failed in production.

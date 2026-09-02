@@ -256,7 +256,7 @@ back to the un-exchanged upstream token.
   says; the cache was empty (first run, or `logout` was called) and `token` correctly
   refused to launch an interactive browser on its own.
 - **`token` fails after previously working** -- the refresh token was rejected
-  (`invalid_grant`): the Keycloak session was revoked, expired past its offline-session
+  (`invalid_grant`): the session was revoked, expired past its offline-session
   lifetime, or the client registration changed. Run `login` again; `governance-auth`
   never retries with a stale credential.
 - **Claude Code error mentions the WAF / a 403 with an HTML body** -- not this binary.

@@ -115,11 +115,11 @@ async fn token_exchange_enabled_emits_the_exchanged_token_not_the_upstream_one()
 /// real OIDC discovery round trip and uses it, not just that it compiles.
 #[tokio::test]
 async fn token_exchange_via_exchange_issuer_discovery_emits_the_exchanged_token() -> Result<()> {
-    // ⚠️ The exchange server advertises NO `authorization_endpoint`, mirroring
-    // `lightbridge-authz` exactly. This test previously used the default mock,
-    // which DID advertise one -- so it passed while the identical command
-    // failed in production with `missing field 'authorization_endpoint'`.
-    // Removing `omit_authorization_endpoint` reproduces that gap.
+    // ⚠️ The exchange server advertises NO `authorization_endpoint` -- a shape
+    // OIDC Discovery §3 permits, and the one authz had before its ADR-0025.
+    // This test previously used the default mock, which DID advertise one, so
+    // it passed while the identical command failed in production with
+    // `missing field 'authorization_endpoint'`. Dropping the override hides it.
     let exchange_idp = MockIdp::start_with_discovery_overrides(
         TokenBehavior::Succeed {
             access_token: "exchanged-token".to_owned(),
