@@ -174,3 +174,12 @@ jobs:
           echo "Validating ${rules} rule(s) across ${groups} group(s):"
           yq '[.groups[].rules[].alert] | .[]' /tmp/promrules.yaml
           promtool check rules /tmp/promrules.yaml
+
+      # Pattern A (RFC-0003 §4): the public aiCliOtel collector must demand OIDC
+      # auth, or anyone who can reach the endpoint can write telemetry rows
+      # (ticket #170 AC1-3). The refusal mechanism is inside the collector's
+      # `oidcauthextension`, not Rust this repo controls, so the only thing we
+      # can pin here is the structural presence of the gate in the rendered
+      # manifest. Uses the mikefarah `yq` installed above.
+      - name: Assert aiCliOtel OIDC auth gate renders
+        run: charts/lightbridge-governance/tests/assert-oidc-auth.sh charts/lightbridge-governance

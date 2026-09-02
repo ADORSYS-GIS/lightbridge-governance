@@ -393,6 +393,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_a_missing_shared_secret_before_touching_the_body_or_db() {
+        let state = unreachable_state();
+        let mut headers = full_headers("the-real-token");
+        headers.remove("x-internal-token");
+        let result = handle(&state, &headers, &valid_otlp()).await;
+        assert_eq!(result, Err(RejectReason::BadSharedSecret));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_missing_integration_header() {
+        let state = unreachable_state();
+        let mut headers = headers_with_token("the-real-token");
+        headers.insert(
+            "governance.tenant.id",
+            HeaderValue::from_str("tenant-1").unwrap(),
+        );
+        let result = handle(&state, &headers, &valid_otlp()).await;
+        assert_eq!(result, Err(RejectReason::MissingIntegrationHeader));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_missing_provider_header() {
+        let state = unreachable_state();
+        let mut headers = headers_with_token("the-real-token");
+        headers.insert(
+            "governance.tenant.id",
+            HeaderValue::from_str("tenant-1").unwrap(),
+        );
+        headers.insert(
+            "governance.integration.id",
+            HeaderValue::from_str("integration-1").unwrap(),
+        );
+        let result = handle(&state, &headers, &valid_otlp()).await;
+        assert_eq!(result, Err(RejectReason::MissingProviderHeader));
+    }
+
+    #[tokio::test]
     async fn rejects_a_missing_tenant_header() {
         let state = unreachable_state();
         let mut headers = headers_with_token("the-real-token");
@@ -441,13 +478,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limits_after_the_window_is_exhausted() {
+    async fn an_unreachable_db_refuses_rather_than_accepts() {
         let state = IngestState {
             rate_limiter: Arc::new(RateLimiter::new(1, 60)),
             ..unreachable_state()
         };
-        // First call passes the limiter, then fails at the DB (which is
-        // unreachable) -- proving the limiter ran before persistence.
+        // AC3: a well-formed, correctly-authenticated request whose storage
+        // dependency is unreachable must be *refused* (IngestFailed), never
+        // accepted. First call passes the limiter, then fails at the DB (which
+        // is unreachable) -- proving the limiter ran before persistence, and
+        // that an outage produces a refusal, not a bypass.
         let first = handle(&state, &full_headers("the-real-token"), &valid_otlp()).await;
         assert_eq!(first, Err(RejectReason::IngestFailed));
         // Second call is throttled before the DB is touched.
