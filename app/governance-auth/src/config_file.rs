@@ -93,13 +93,13 @@ pub struct ConfigFile {
     otel_token: Option<Redacted<String>>,
     otel_token_file: Option<String>,
     pub gateway_url: Option<String>,
-    /// See `config::OauthConfigArgs::copilot_spool_path`.
+    /// See the option matrix in `docs/governance-auth/configuration.md`.
     pub copilot_spool_path: Option<String>,
     pub otel_headers_debounce_ms: Option<u64>,
-    /// See `config::OauthConfigArgs::open_browser`'s doc (issue #141).
+    /// Off by default (issue #141) -- see the docs above.
     pub open_browser: Option<bool>,
-    /// See `config::OauthConfigArgs::token_exchange`'s doc (issue #140), and
-    /// the four fields below it -- all part of the same opt-in block.
+    /// Off by default (issue #140); the four fields below it are part of the
+    /// same opt-in block. See the docs above.
     pub token_exchange: Option<bool>,
     pub exchange_issuer: Option<String>,
     pub exchange_token_endpoint: Option<String>,

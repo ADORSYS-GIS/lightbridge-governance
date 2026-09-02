@@ -79,7 +79,9 @@ use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, update};
                   export config, and the schedule that drains VS Code Copilot's telemetry \
                   spool.\n\n\
                   Every configuration option is accepted BEFORE or AFTER the command, so one \
-                  command line can be embedded in another tool's config file."
+                  command line can be embedded in another tool's config file.",
+    after_help = "Full option matrix, precedence and config-file format: \
+                  docs/governance-auth/configuration.md"
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -91,23 +93,26 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Interactive first-time login: prints an authorize URL to visit (or,
-    /// with `--device-code`, a verification URL and code, then polls) and
-    /// caches the resulting session. Does NOT open a browser by default --
-    /// see `--open-browser` on the configuration options (issue #141).
+    /// Run the interactive login once and cache the session.
+    ///
+    /// Prints an authorize URL to visit -- or, with `--device-code`, a
+    /// verification URL and a code, then polls. Does NOT open a browser by
+    /// default; see `--open-browser`.
     Login {
-        /// Use the device-authorization flow instead of the loopback browser
-        /// flow. For headless sessions (SSH, cloud dev boxes) with no local
-        /// browser at all. Independent of `--open-browser`, which only
-        /// affects the loopback flow -- there is nothing to open a browser to
-        /// here, the verification URL is meant for a different device.
+        /// Use the device-authorization flow, for a headless session with
+        /// no local browser.
+        ///
+        /// Independent of `--open-browser`, which only affects the loopback
+        /// flow: there is nothing to open a browser to here, because the
+        /// verification URL is meant for a different device.
         #[arg(long)]
         device_code: bool,
     },
-    /// Print a currently-valid access token to stdout -- nothing else on
-    /// stdout, ever. This is the command to wire into `apiKeyHelper` /
-    /// `auth.command`. Fails closed and non-interactively if there's no valid
-    /// session.
+    /// Print a currently-valid access token to stdout.
+    ///
+    /// Nothing else goes on stdout, ever. This is the command to wire into
+    /// `apiKeyHelper` / `auth.command`. Fails closed and non-interactively
+    /// when there is no valid session.
     Token,
     /// Force a refresh now, even when the cached session is still fresh.
     ///
@@ -116,11 +121,16 @@ enum Command {
     /// a new token is a change at the server. Prints nothing on stdout and
     /// never logs in interactively: it renews a session or it fails.
     Refresh,
-    /// Print whether a cached session exists, its freshness, and whether the
-    /// telemetry wiring and the Copilot drain are actually working.
+    /// Report the session, the telemetry wiring and the Copilot drain.
+    ///
+    /// Prints whether a cached session exists and how fresh it is, and
+    /// whether the wiring `configure` wrote is still the wiring this binary
+    /// generates today.
     Status,
-    /// Re-apply the Claude Code / Codex / VS Code configuration and the drain
-    /// schedule, without re-running the interactive login.
+    /// Re-apply the tool configuration and the drain schedule.
+    ///
+    /// Rewrites the Claude Code / Codex / VS Code wiring without re-running
+    /// the interactive login.
     ///
     /// `login` already does this. Run it for an existing session whose
     /// endpoint or ingest token changed, after installing one of those tools

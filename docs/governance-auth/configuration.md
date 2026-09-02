@@ -26,7 +26,7 @@ either platform, so the machine-wide path is a fixed constant.
 
 | Flag | Env var | Config key | Default | What it is |
 |---|---|---|---|---|
-| `--issuer` | `GOVERNANCE_AUTH_ISSUER` | `issuer` | **required** | Base URL of the issuing OIDC realm. Endpoints are found underneath it by discovery, never hand-derived. |
+| `--issuer` | `GOVERNANCE_AUTH_ISSUER` | `issuer` | **required** | Base URL of the issuing OIDC provider, with **no realm path** — a `/realms/…` suffix 404s at discovery. Endpoints are found underneath it by discovery, never hand-derived. |
 | `--client-id` | `GOVERNANCE_AUTH_CLIENT_ID` | `client_id` | **required** | Public OAuth2 client id. Public — no client secret ships in a binary distributed to laptops. |
 | `--scopes` | `GOVERNANCE_AUTH_SCOPES` | `scopes` | `openid profile offline_access` | Space-separated scopes requested at login. |
 | `--audience` | `GOVERNANCE_AUTH_AUDIENCE` | `audience` | — | Optional `resource`/`audience` parameter, if the server needs one to scope the token to the gateway. |
@@ -46,6 +46,43 @@ Three flags are **not** global config, because they belong to one subcommand onl
 `login --device-code`, `self update --dry-run` and `copilot push --dry-run`.
 
 `RUST_LOG` is honoured for tracing output, which goes to stderr like everything else.
+
+### `--otel-token` is not your access token
+
+Passing an access token here does not work, and fails in the worst possible way. Neither
+Claude Code nor Codex re-reads its config mid-session, and neither has a credential-helper
+hook for OTLP headers — so a 300-second token exports for five minutes and then fails
+*silently* for the rest of the session. This option is for a credential minted for ingest and
+nothing else. Leave it unset and `otel headers` refreshes the header on every call instead;
+[`status`](./commands.md) reports which of the two is actually in effect.
+
+### `--open-browser` is off by default
+
+SSH sessions, containers, CI and VM-based testing all inherit a `DISPLAY`/`xdg-open` that
+either fails or hijacks an unrelated desktop, and the authorize URL is printed either way —
+so auto-opening is wrong more often than it is right ([#141]). Only `login`'s loopback
+(non-`--device-code`) path reads it; there is nothing to open in the device flow, whose
+verification URL is meant for a different device.
+
+[#141]: https://github.com/ADORSYS-GIS/lightbridge-governance/issues/141
+
+### `--gateway-url` turns on inference wiring, `--otel-endpoint` turns on telemetry
+
+They are independent knobs: supply either, both, or neither. The per-client paths underneath
+the gateway are Envoy AI Gateway's layout, both verified live —
+`<gateway>/anthropic/v1/messages` and `<gateway>/v1/chat/completions` each return 200.
+
+### `--token-exchange` and its four companions
+
+Off by default, opt-in only ([#140]), and fail-closed once on: a misconfigured or failing
+exchange never falls back to emitting the un-exchanged upstream token.
+`--exchange-issuer` is deliberately a **separate** option from `--issuer` — "authenticate at
+A, present credentials minted by B" is the entire point, so the two must be able to differ.
+`--exchange-client-id` is likewise not `--client-id`: that specific client id has to appear in
+the subject token's `aud` claim for the exchange to succeed at all. See
+[`token-exchange.md`](./token-exchange.md).
+
+[#140]: https://github.com/ADORSYS-GIS/lightbridge-governance/issues/140
 
 ### `240000` is not an arbitrary number
 
@@ -124,6 +161,38 @@ Setting both `otel_token` and `otel_token_file` is an error. Silently preferring
 be a misconfiguration nobody would ever notice.
 
 ---
+
+## For maintainers: help text is user-facing
+
+clap derive takes a flag's `--help` text **from its Rust doc comment**. A note written next to
+a field in `config.rs` is therefore printed verbatim to whoever runs
+`governance-auth copilot push --help`. That is how `--help` came to open with
+`see [\`crate::security\`]`, `crate::copilot::resolve_spool_path` and three paragraphs on why a
+field is `Option` rather than a clap `default_value`.
+
+The rule: **a `///` on a field of `OauthConfigArgs` is user documentation and nothing else.**
+One line, no Rust paths, no rationale, and a `long_help` only where a wrong value costs an
+afternoon. Everything a maintainer needs goes in a plain `//` comment — which neither clap nor
+rustdoc renders — or in this file.
+
+## For maintainers: every option is `global = true`
+
+Without it, clap accepts these only *before* the subcommand
+(`governance-auth --issuer … token`), because they are flattened onto the top-level `Cli`
+rather than duplicated per subcommand. The main use case is a single command line embedded in
+`apiKeyHelper`/`auth.command`, which both vendors' docs and this repo's runbook write
+subcommand-first — composing that with explicit flags used to fail with
+`error: unexpected argument '--issuer' found`. Found against a real `apiKeyHelper`, not by
+inspection; `tests/cli_arg_order.rs` pins both orders now.
+
+Two consequences worth knowing before narrowing any option's scope:
+
+- `global` **forbids `required`** (`Global arguments cannot be required`), which is why
+  `resolve` — not clap — is what enforces that issuer and client id are present.
+- A global option appears in *every* subcommand's `--help`. Making one non-global would shrink
+  that listing, but it would also stop `governance-auth login --otel-endpoint …` from parsing,
+  which is the order a person actually types. The listing is the price; keep it and spend the
+  effort on making each line worth reading.
 
 ## For maintainers: the `default_value` trap
 

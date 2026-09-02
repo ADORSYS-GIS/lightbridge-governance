@@ -7,6 +7,8 @@
 //! vendors' helper hooks compose (`tests/cli_arg_order.rs` proves the same
 //! thing end to end, through the real binary).
 
+mod help;
+
 use clap::CommandFactory;
 
 use super::*;
