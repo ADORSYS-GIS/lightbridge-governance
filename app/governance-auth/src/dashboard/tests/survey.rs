@@ -42,6 +42,7 @@ fn config() -> crate::config::OauthConfig {
         otel_endpoint: Some("https://otel.example".to_owned()),
         otel_token: None,
         gateway_url: None,
+        profile: crate::profile::Profile::Daemon,
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,

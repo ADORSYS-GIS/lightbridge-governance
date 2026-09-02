@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Managed by governance-auth -- rewritten on every `governance-auth
+     configure --profile daemon`, so edits here are lost. Switching to
+     `--profile manual` removes it and unloads the job (ADR-0016). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{ label|xml }}</string>
+  <key>ProgramArguments</key>
+  <array>
+{%- for arg in argv %}
+    <string>{{ arg|xml }}</string>
+{%- endfor %}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Not `StartInterval`: unlike the Copilot drain this must stay running,
+       not wake periodically. `KeepAlive` is launchd's "restart on exit"
+       for exactly that -- a dead daemon is a silent telemetry hole
+       (ADR-0016's Negatives). -->
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Same file governance-auth logs to itself (see the drain's plist for
+       why sharing it is safe: both writers are O_APPEND, and
+       `logging::rotate` copy-truncates rather than renaming). -->
+  <key>StandardErrorPath</key>
+  <string>{{ log_path|xml }}</string>
+</dict>
+</plist>

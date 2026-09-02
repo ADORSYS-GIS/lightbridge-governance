@@ -26,6 +26,19 @@
 /// the string form because that is what their host files hold.
 pub const COPILOT_PUSH: [&str; 2] = ["copilot", "push"];
 
+/// The daemon's subcommand, as argv -- the shape ADR-0016 and #268 name
+/// (`governance-auth serve --otel`), spelled here for the same reason
+/// [`COPILOT_PUSH`] is.
+///
+/// ⚠️ Unlike `COPILOT_PUSH`, this is a contract on a command that does not
+/// exist on this branch yet: `serve --otel` is #268's own deliverable ("the
+/// daemon's internals" -- #270 is explicitly out of scope for it), still
+/// unmerged as of this constant's addition.
+/// `every_generated_command_is_a_command_this_binary_has` deliberately does
+/// NOT check this one for exactly that reason -- add it to that test's list
+/// once #268 lands and this stops being aspirational.
+pub const SERVE_OTEL: [&str; 2] = ["serve", "--otel"];
+
 /// The subcommand each generated command line ends with, leading space
 /// included. Exposed separately from the builders below so
 /// [`crate::dashboard`] can ask "does the string in this config file still end

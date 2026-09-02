@@ -93,6 +93,11 @@ pub struct ConfigFile {
     otel_token: Option<Redacted<String>>,
     otel_token_file: Option<String>,
     pub gateway_url: Option<String>,
+    /// `"daemon"` or `"manual"` (ADR-0016). Kept as a raw string here, like
+    /// every other field in this file-only layer -- `config::resolve` is
+    /// where it's parsed into [`crate::profile::Profile`], the same split
+    /// `otel_endpoint`/`parse_issuer` already use.
+    pub profile: Option<String>,
     /// See the option matrix in `docs/governance-auth/configuration.md`.
     pub copilot_spool_path: Option<String>,
     pub otel_headers_debounce_ms: Option<u64>,
@@ -305,6 +310,7 @@ mod tests {
              audience = \"aud\"\n\
              otel_endpoint = \"https://otel.example\"\n\
              gateway_url = \"https://gw.example\"\n\
+             profile = \"manual\"\n\
              otel_headers_debounce_ms = 60000\n\
              open_browser = true\n\
              token_exchange = true\n\
@@ -329,6 +335,7 @@ mod tests {
         assert_eq!(file.audience.as_deref(), Some("aud"));
         assert_eq!(file.otel_endpoint.as_deref(), Some("https://otel.example"));
         assert_eq!(file.gateway_url.as_deref(), Some("https://gw.example"));
+        assert_eq!(file.profile.as_deref(), Some("manual"));
         assert_eq!(file.otel_headers_debounce_ms, Some(60_000));
         assert_eq!(file.open_browser, Some(true));
         assert_eq!(file.token_exchange, Some(true));

@@ -1,0 +1,20 @@
+# Managed by governance-auth -- rewritten on every `governance-auth configure
+# --profile daemon`, so edits here are lost. Switching to `--profile manual`
+# removes it (ADR-0016).
+[Unit]
+Description=Local OTLP collector daemon -- forwards every client's telemetry with a freshly minted bearer, so no client ever holds one
+Documentation=https://adorsys-gis.github.io/ai-governance/
+
+[Service]
+# Not `oneshot`: unlike the Copilot drain this must stay running, not wake
+# periodically -- a client fire-and-forgets OTLP at it at any moment.
+Type=simple
+# Absolute path: a user service does not inherit your shell's PATH.
+ExecStart={% for arg in argv %}{{ arg|systemd_quote }}{% if not loop.last %} {% endif %}{% endfor %}
+# A dead daemon is a silent telemetry hole (ADR-0016's Negatives), so it
+# restarts on its own rather than staying down until the next `configure`.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

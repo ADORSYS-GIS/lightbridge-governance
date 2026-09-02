@@ -922,6 +922,84 @@ mod tests {
         );
     }
 
+    /// #270 AC4/AC6: switching profiles retracts the OTHER profile's keys
+    /// via the digest rule, and a key the developer hand-edited survives
+    /// the retraction that would otherwise have removed it. `manual` here
+    /// is `settings()` itself (its fixture already carries a token and no
+    /// `headers_helper` -- exactly what `TelemetryWiring::resolve` produces
+    /// under `manual`); `daemon` substitutes the loopback endpoint and
+    /// drops the token, mirroring that same resolution.
+    ///
+    /// Falsification per the ticket's own Test Expectations: this test was
+    /// run against a build with the `!is_daemon` guard on
+    /// `TelemetryWiring::token` deleted, and it failed on the `manual ->
+    /// daemon` assertion below for the predicted reason (the header
+    /// survived) before being restored.
+    #[test]
+    fn switching_profiles_retracts_the_other_profiles_keys_but_not_a_hand_edit() {
+        let home = tempdir();
+        fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        let codex_path = home.path().join(".codex").join("config.toml");
+
+        let manual = settings();
+        let daemon = OtelSettings {
+            endpoint: Some(crate::otel_port::OTEL_LOOPBACK_ENDPOINT.to_owned()),
+            token: None,
+            headers_helper: None,
+            ..settings()
+        };
+
+        // manual: writes a static Authorization header (this fixture's token).
+        configure_all(home.path(), &manual, ClientOptOut::default()).expect("manual run");
+        let after_manual = fs::read_to_string(&codex_path).expect("read codex config");
+        assert!(
+            after_manual.contains("Authorization = \"Bearer ingest-token\""),
+            "manual must write the static header: {after_manual}"
+        );
+
+        // daemon: the header is no longer owned, so it must be retracted --
+        // not merely left unwritten by the writer, which never removes a
+        // key itself (`retract_stale`'s job, exercised here end to end).
+        configure_all(home.path(), &daemon, ClientOptOut::default()).expect("daemon run");
+        let after_daemon = fs::read_to_string(&codex_path).expect("read codex config");
+        assert!(
+            !after_daemon.contains("Authorization"),
+            "daemon must retract the header manual wrote: {after_daemon}"
+        );
+        assert!(
+            after_daemon.contains(crate::otel_port::OTEL_LOOPBACK_ENDPOINT),
+            "daemon must point Codex at loopback: {after_daemon}"
+        );
+
+        // Re-run manual (writes the header fresh, with a freshly recorded
+        // digest), then hand-edit that value directly on disk -- simulating
+        // a developer who touched it -- before switching to daemon again.
+        // THIS is where the digest rule is exercised: the header is once
+        // more a retraction candidate, but its current value no longer
+        // matches what this binary last recorded writing.
+        configure_all(home.path(), &manual, ClientOptOut::default()).expect("manual run again");
+        let hand_edited = fs::read_to_string(&codex_path)
+            .expect("read codex config")
+            .replace(
+                "Authorization = \"Bearer ingest-token\"",
+                "Authorization = \"Bearer developers-own-token\"",
+            );
+        assert_ne!(
+            hand_edited,
+            fs::read_to_string(&codex_path).expect("read codex config"),
+            "the replace must have matched something, or this test proves nothing"
+        );
+        fs::write(&codex_path, &hand_edited).expect("hand-edit codex config");
+
+        configure_all(home.path(), &daemon, ClientOptOut::default()).expect("daemon run again");
+        let after_hand_edit = fs::read_to_string(&codex_path).expect("read codex config");
+        assert!(
+            after_hand_edit.contains("Authorization = \"Bearer developers-own-token\""),
+            "a hand-edited value must survive retraction, not be deleted with the key: \
+             {after_hand_edit}"
+        );
+    }
+
     /// path -> contents, for every file under `root`.
     fn snapshot(root: &Path) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
