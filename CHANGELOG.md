@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.1.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.0.0...v2.1.0) (2026-09-02)
+
+
+### Features
+
+* **governance-auth:** --no-claude/--no-codex/--no-vscode leave a client alone ([#274](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/274)) ([95328d8](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/95328d8250fa9a3f9dbf330743f2f74acf2ae37c))
+* **install:** fall back to the newest release that has the asset ([#267](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/267)) ([de741d9](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/de741d9409ac43edbecbc711681b84c5ee9bc712)), closes [#265](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/265)
+
+
+### Reverts
+
+* **release:** drop the draft-release flow, and record why ([#266](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/266)) ([3c3b5d1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/3c3b5d179ed3edd6fc70caf631ea498325a970ae))
+
+
+### Code Refactoring
+
+* **governance-auth:** flag help is for users, rationale is for docs ([#273](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/273)) ([a3571f9](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/a3571f9d7f91ca44dd9ab526d6751e921e582211))
+
+
+### Documentation
+
+* **governance-auth:** retire the "authz serves no /authorize" claim ([#168](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/168)) ([#195](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/195)) ([14eca94](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/14eca94932031275fd30c970e23509e858f219c4))
+
 ## [2.0.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v1.0.0...v2.0.0) (2026-09-02)
 
 
