@@ -23,7 +23,23 @@ fn plist_path(home: &Path) -> PathBuf {
 
 /// launchd has no journal, so the job's stderr has to land somewhere a human
 /// can find. `~/Library/Logs` is where Console.app already looks.
+///
+/// ⚠️ Deliberately the SAME file [`crate::logging`] writes, not a sibling.
+/// The agent captures what tracing structurally cannot -- a panic, a failure
+/// before the subscriber is installed -- and splitting the two would leave
+/// whoever debugs a 03:00 drain failure with two files and no way to tell
+/// which is authoritative. Sharing it is safe because both writers are
+/// `O_APPEND` and `logging::rotate` copy-truncates rather than renaming, so
+/// neither is ever orphaned on a dead inode. It is also what puts a bound on
+/// this capture, which nothing did before.
 fn log_path(home: &Path) -> PathBuf {
+    crate::logging::path_in(home)
+}
+
+/// Where builds before that reconciliation sent the same stderr. Nothing
+/// rotated it, so an existing install has an unbounded file here that
+/// nothing will ever write to or trim again.
+fn legacy_log_path(home: &Path) -> PathBuf {
     home.join("Library")
         .join("Logs")
         .join("governance-auth-copilot-push.log")
@@ -54,6 +70,9 @@ pub fn install(home: &Path, invocation: &Invocation) -> Result<()> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     write(&path, &body)?;
+    // Best-effort: leaving it costs disk for ever, and removing it costs a
+    // record nothing has appended to since this install was upgraded.
+    let _ = fs::remove_file(legacy_log_path(home));
     eprintln!("Configured: {}", path.display());
 
     // ⚠️ `bootstrap` alone is not idempotent: on an already-loaded label it

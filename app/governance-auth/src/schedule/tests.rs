@@ -137,8 +137,10 @@ fn the_plist_escapes_xml_rather_than_emitting_a_broken_agent() {
     );
     assert!(plist.contains("<integer>300</integer>"));
     assert!(
-        plist.contains("/Users/dev/Library/Logs/governance-auth-copilot-push.log"),
-        "launchd has no journal, so stderr must land where Console.app looks"
+        plist.contains("/Users/dev/Library/Logs/governance-auth/governance-auth.log"),
+        "launchd has no journal, so stderr must land where Console.app looks \
+         -- and in the SAME rotated file `crate::logging` writes, not a \
+         second, unbounded one beside it"
     );
 }
 
