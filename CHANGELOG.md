@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.6.0...v1.0.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **governance-auth:** scope the command tree, and add a forced refresh ([#261](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/261))
+
+### Features
+
+* **governance-auth:** copilot-push reclaims the spool once it is caught up ([#257](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/257)) ([c5f9da2](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c5f9da257ba3702b5d0e172bc00b323fe8e5e18a))
+* **governance-auth:** scope the command tree, and add a forced refresh ([#261](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/261)) ([cb562fa](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/cb562fac71cf53bfb43c1b48f481a4962b74d0cd))
+
+
+### Bug Fixes
+
+* **release:** cutting a release broke `curl | sh` until the assets built ([#256](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/256)) ([4706976](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4706976b76c788175d13e938d80590a43bb920de))
+
+
+### Documentation
+
+* **adr:** a local collector daemon replaces per-client OTLP credentials ([#258](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/258)) ([1d1c667](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1d1c667ddd72c602b3c55e7777116319a83a5abe))
+
 ## [0.6.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.5.0...v0.6.0) (2026-09-02)
 
 
