@@ -20,6 +20,7 @@ use std::{collections::BTreeMap, fs};
 use super::settings;
 use crate::{
     managed::{self, Manifest, digest, testutil::tempdir},
+    optout::ClientOptOut,
     otel::configure_all,
     vscode::user_dir,
 };
@@ -80,7 +81,7 @@ fn the_direct_exporter_is_retracted_not_left_beside_the_file_one() {
     let home = tempdir();
     plant_old_build(home.path());
 
-    configure_all(home.path(), &settings()).expect("configure");
+    configure_all(home.path(), &settings(), ClientOptOut::default()).expect("configure");
 
     let value: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(user_dir(home.path(), "Code").join("settings.json")).expect("read"),

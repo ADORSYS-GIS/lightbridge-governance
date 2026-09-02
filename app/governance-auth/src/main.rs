@@ -30,6 +30,7 @@ mod dashboard;
 mod logging;
 mod managed;
 mod oauth;
+mod optout;
 mod otel;
 mod redacted;
 mod schedule;

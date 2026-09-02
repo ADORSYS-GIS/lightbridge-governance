@@ -23,12 +23,18 @@ use crate::{
     cache::{self, CachedSession, FileLock},
     cli,
     config::OauthConfig,
-    config_file, config_persist, otel,
+    config_file, config_persist,
+    optout::ClientOptOut,
+    otel,
     redacted::Redacted,
-    schedule,
 };
 
-pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bool) -> Result<()> {
+pub async fn login(
+    http: &reqwest::Client,
+    config: &OauthConfig,
+    device_code: bool,
+    optout: ClientOptOut,
+) -> Result<()> {
     let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
     let metadata = discovery::discover(http, &config.issuer).await?;
 
@@ -55,7 +61,7 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
     // strictly worse than an un-instrumented client. Reported loudly instead.
     // `configure` (the subcommand) propagates the same error, because there
     // the developer asked for exactly this and nothing else.
-    if let Err(error) = apply_telemetry(config, &session) {
+    if let Err(error) = apply_telemetry(config, &session, optout) {
         eprintln!("warning: could not configure telemetry: {error:#}");
     }
     Ok(())
@@ -74,7 +80,11 @@ pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bo
 /// `apiKeyHelper`/`ANTHROPIC_BASE_URL`/Codex's provider block have nothing to
 /// do with telemetry. That's why the "nothing configured at all" check below
 /// is the only thing that can end this function before doing real work.
-fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> {
+fn apply_telemetry(
+    config: &OauthConfig,
+    session: &CachedSession,
+    optout: ClientOptOut,
+) -> Result<()> {
     let telemetry_requested = config.otel_endpoint.is_some();
     let inference_requested = config.gateway_url.is_some();
 
@@ -145,37 +155,24 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
     // keys by hand and ends up spooling to a disk nothing drains, which is the
     // failure this whole path exists to remove. The schedule below does not
     // depend on that write having succeeded, so it must not be skipped by it.
-    let written = otel::configure_all(&home, &settings);
-    let mut needs_static_token = false;
-    for outcome in written.iter().flatten() {
-        match outcome {
-            otel::Outcome::Written(path) => {
-                eprintln!("Configured: {}", path.display());
-                // Codex is now the ONLY client without a dynamic-headers hook:
-                // Claude Code refreshes via `otelHeadersHelper`, and VS Code
-                // Copilot no longer exports for itself at all -- it writes a
-                // file that `copilot push` ships with a bearer it refreshes.
-                // Only when telemetry was actually requested, because a
-                // gateway-only run writes `config.toml` for the provider block
-                // alone, which needs no OTLP token.
-                needs_static_token |= telemetry_requested
-                    && path.file_name().is_some_and(|name| name == "config.toml");
-            }
-            otel::Outcome::Skipped(dir) => {
-                eprintln!("Skipped: {} not present.", dir.display());
-            }
-        }
-    }
+    let written = otel::configure_all(&home, &settings, optout);
+    // `telemetry_requested &&` because a gateway-only run writes `config.toml`
+    // for the provider block alone, which needs no OTLP token at all.
+    let needs_static_token = match &written {
+        Ok(outcomes) => telemetry_requested && otel::Outcome::report(outcomes),
+        Err(_) => false,
+    };
+    optout.report_if_every_client_declined();
 
     // The upload half of the Copilot path. Copilot appends to the spool and
     // stops; nothing in VS Code ships it, so without this the file exporter
     // configured above would fill a disk and export nothing. Non-fatal for the
     // same reason `login` tolerates a failed `apply_telemetry`: every config
     // file above is already written, and a machine with no user systemd
-    // session must not turn a successful `configure` into a failure.
-    if let Err(error) = schedule::apply(&home, config) {
-        eprintln!("warning: could not update the Copilot drain schedule: {error:#}");
-    }
+    // session must not turn a successful `configure` into a failure. Whether
+    // `--no-vscode` reaches the timer -- and why leaving it alone is neither
+    // installing nor removing it -- is `crate::optout`'s module doc.
+    optout.apply_schedule(&home, config);
 
     // Codex reads a static `Authorization` string once at start and has no
     // hook to refresh it, so this warning is about exactly one client now.
@@ -308,10 +305,10 @@ pub(super) async fn refresh_or_fail(
 /// Re-applies the telemetry configuration for an already-cached session.
 /// Unlike `login`'s call, a failure here IS an error: the developer asked for
 /// exactly this and nothing else, so silently doing nothing would be a lie.
-pub fn configure(config: &OauthConfig) -> Result<()> {
+pub fn configure(config: &OauthConfig, optout: ClientOptOut) -> Result<()> {
     let session = cache::load(&config.issuer, &config.client_id)?
         .context("no cached session for this issuer/client; run `governance-auth login` first")?;
-    apply_telemetry(config, &session)?;
+    apply_telemetry(config, &session, optout)?;
     // Persist here as well as on `login`. Writing only on `login` meant an
     // existing install never got a config file: upgrading keeps a valid cached
     // session, so `login` is never run again, so every later command kept
@@ -450,7 +447,7 @@ mod tests {
     /// comment on `login`'s call site).
     #[test]
     fn configure_fails_loudly_when_neither_otel_endpoint_nor_gateway_url_is_set() {
-        let error = apply_telemetry(&config(), &session())
+        let error = apply_telemetry(&config(), &session(), ClientOptOut::default())
             .expect_err("neither flag set must be a hard error, not a silent no-op");
         let rendered = format!("{error:#}");
         assert!(

@@ -42,8 +42,43 @@ either platform, so the machine-wide path is a fixed constant.
 | `--exchange-client-id` | `GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID` | `exchange_client_id` | — | `client_id` presented on the exchange. **Required** once exchange is on. |
 | `--exchange-scopes` | `GOVERNANCE_AUTH_EXCHANGE_SCOPES` | `exchange_scopes` | — | Scopes requested on the exchange. Omitting it takes the server's allow-list. |
 
-Three flags are **not** global config, because they belong to one subcommand only:
-`login --device-code`, `self update --dry-run` and `copilot push --dry-run`.
+Some flags are **not** global config, because they belong to particular subcommands only:
+`login --device-code`, `self update --dry-run`, `copilot push --dry-run`, and the three client
+opt-outs below.
+
+### `--no-claude`, `--no-codex`, `--no-vscode`
+
+On `configure` **and** on `login` — the two commands that write client configuration. Each one
+leaves that client entirely alone:
+
+| | with the flag |
+|---|---|
+| Its config file | not written, not read, not created |
+| Keys we wrote on an earlier run | **kept**, and still recorded as ours |
+| `--no-vscode` and the Copilot drain timer | left as it is — neither installed nor removed |
+| The client isn't installed | a no-op, not an error |
+
+**"Left alone" is not "no longer managed", and the difference is destructive.** `configure`
+records the keys it writes and *retracts* — deletes — anything it recorded last time and did
+not write this time. That retraction is what cleaned `otlpEndpoint` off every machine when the
+VS Code exporter cut over. So a client dropped only from the *write* falls out of that record,
+and the next run deletes its keys from your `settings.json`. An opted-out client is therefore
+excluded from the retraction too, and its manifest entry carried forward untouched, so a later
+run *without* the flag still knows which keys are ours. `optout::tests::retraction` is the
+guard, and it fails on the naive implementation.
+
+These flags are **per invocation, not a stored preference** — there is no `no_codex` config
+key. The next `configure` or `login` without the flag configures that client again. That is
+recoverable (it re-adds keys); the retraction it prevents is not.
+
+They are on `login` because `login` writes the same configuration, and on a fresh machine it is
+the *first* command run and the only chance to keep a client untouched before it is first
+written. There is no `unconfigure`.
+
+All three at once is accepted, not an error — unlike supplying neither `--otel-endpoint` nor
+`--gateway-url`, where there is no configuration to compute at all. Here there is: the shell
+environment file and this binary's own saved settings are not a client's config, so they are
+still written, and `configure` says out loud that nothing went to any client.
 
 `RUST_LOG` is honoured for tracing output, which goes to stderr like everything else.
 

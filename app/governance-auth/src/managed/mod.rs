@@ -45,12 +45,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod formats;
+mod plan;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
 pub use formats::Format;
+pub use plan::plan;
 
 /// `<config>/governance-auth/managed.json`.
 pub fn manifest_path(home: &Path) -> PathBuf {
