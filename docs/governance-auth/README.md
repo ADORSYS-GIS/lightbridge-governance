@@ -36,7 +36,8 @@ governance-auth login                       # once, interactively
   ├─ OIDC discovery against --issuer
   ├─ authorization code + PKCE  (loopback :17452-17456)  or --device-code
   ├─ session → <state>/governance-auth/<hash>.json, mode 0600
-  └─ configure: writes Claude Code / Codex / VS Code / shell rc
+  └─ configure: writes Claude Code / Codex / VS Code / shell rc,
+     and installs the timer that drains Copilot's OTel spool
 
 governance-auth token                       # every request, invoked by the client
   ├─ load session (under a file lock)
@@ -56,9 +57,13 @@ governance-auth login \
   --otel-token "$OTLP_INGEST_TOKEN"
 ```
 
-That single command authenticates, caches the session, and writes the inference and
-telemetry wiring into whichever of the three clients are installed. Everything after it is
-automatic: the clients call `token` and `otel-headers` themselves.
+That single command authenticates, caches the session, writes the inference and telemetry
+wiring into whichever of the three clients are installed, and schedules the Copilot spool
+drain. Everything after it is automatic: Claude Code and Codex call `token` and
+`otel-headers` themselves, and a systemd user timer (or launchd agent) calls `copilot-push`
+every five minutes.
+
+⚠️ Restart VS Code afterwards — Copilot reads its telemetry settings at window start.
 
 Put `--issuer`/`--client-id` in a config file or in `GOVERNANCE_AUTH_*` env vars so later
 commands don't need them — see [`configuration.md`](./configuration.md).

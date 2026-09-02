@@ -129,32 +129,40 @@ Written for each flavour present: `Code`, `Code - Insiders`, `VSCodium`.
 | Key | Value | Gated on |
 |---|---|---|
 | `github.copilot.chat.otel.enabled` | `true` | collector |
-| `github.copilot.chat.otel.exporterType` | `otlp-http` | collector |
-| `github.copilot.chat.otel.otlpEndpoint` | the collector | collector |
+| `github.copilot.chat.otel.exporterType` | `file` | collector |
+| `github.copilot.chat.otel.outfile` | the resolved spool path | collector |
 | `github.copilot.chat.otel.captureContent` | `false` | collector |
 
-🚨 **This half does not authenticate, and the collector returns 401.** No
-Authorization header is written, so Copilot's spans are rejected. The only way
-to supply one today is an environment variable in the process VS Code was
-launched from:
+**Copilot does not export over the network at all. It appends to a file, and
+`copilot-push` ships it on a schedule `configure` installs.**
 
-```bash
-source ~/.config/governance-auth/otel.env   # then launch VS Code from that shell
-code
-```
+| Platform | Schedule | Files |
+|---|---|---|
+| Linux | systemd user timer, every 300s | `~/.config/systemd/user/governance-auth-copilot-push.{service,timer}` |
+| macOS | launchd agent, `StartInterval 300` | `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist` |
 
-A desktop-launcher VS Code never sees that variable. `configure` surfaces this
-rather than writing a config that looks complete while silently dropping every
-span, and since #217 `status` reports it directly — the row reads
-**`<endpoint>, no credential — Codex and VS Code cannot export`**. That is the
-check to trust, because from inside the editor a rejected exporter looks
-identical to a working one.
+That makes Copilot the **second self-renewing client** after Claude Code, by a
+different route: Claude Code refreshes its own header through
+`otelHeadersHelper`; Copilot never holds a credential at all, and the drain
+obtains a fresh bearer per wake. **Codex is now the only client that needs a
+long-lived `--otel-token`.**
 
-**`github.copilot.chat.otel.headers` does exist** (an `{ "key": "value" }` map
-applied directly to the exporter), so a header *could* be written — but it would
-be static, and `settings.json` is covered by Settings Sync, which would carry a
-bearer off-machine. That is why it is not used. Deciding what to do here is
-tracked with the matrix row for this source.
+🚨 **This used to be the broken half.** `exporterType` was `otlp-http` with no
+Authorization header, so the collector returned 401 on every span while the
+config looked complete. `github.copilot.chat.otel.headers` *does* exist — an
+`{ "key": "value" }` map applied to the exporter — but it is **static**, and
+`settings.json` is covered by Settings Sync, so writing a bearer there carries
+it off-machine. The file exporter avoids the choice entirely.
+
+⚠️ Restart VS Code after `configure`. Copilot reads these at window start.
+
+⚠️ Nothing bounds the spool's growth (measured 73 KB → 315 KB in six minutes of
+ordinary use). `copilot-push` never truncates a file VS Code holds open for
+append; reclaiming disk is Copilot's own rotation or a human's. Tracked in
+[#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
+[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241) — it
+was an opt-in risk while the file exporter was opt-in, and it is a default one
+now.
 
 ### The shell — `~/.config/governance-auth/otel.env` (and `.fish`)
 

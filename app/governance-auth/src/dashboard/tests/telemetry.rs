@@ -37,10 +37,13 @@ fn a_configured_endpoint_is_shown() {
 }
 
 /// The condition `apply_telemetry` already warns about, surfaced where a human
-/// will actually look. Claude Code refreshes its own headers; Codex and VS Code
-/// cannot, so without a static token their exports are rejected -- silently.
+/// will actually look. Codex reads a static `Authorization` once at start with
+/// no hook to refresh it, so without a token its exports are rejected --
+/// silently. It is the ONLY client in that position since the Copilot
+/// file-exporter cutover, and naming any other would send someone to the wrong
+/// place.
 #[test]
-fn an_endpoint_without_a_token_names_who_it_breaks() {
+fn an_endpoint_without_a_token_names_the_one_client_it_breaks() {
     let out = table(
         "i",
         "c",
@@ -50,12 +53,12 @@ fn an_endpoint_without_a_token_names_who_it_breaks() {
     );
     let line = row(&out);
     assert!(line.contains("https://otel.example"), "{line}");
-    assert!(line.contains("Codex") && line.contains("VS Code"), "{line}");
-    // Claude Code is unaffected; saying otherwise would be wrong and would
-    // send someone looking in the wrong place.
+    assert!(line.contains("Codex"), "{line}");
+    // Neither of the other two is affected: Claude Code refreshes its own
+    // header, and Copilot holds no credential at all now.
     assert!(
-        !line.contains("Claude"),
-        "Claude Code is unaffected: {line}"
+        !line.contains("Claude") && !line.contains("VS Code"),
+        "only Codex is affected: {line}"
     );
 }
 

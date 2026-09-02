@@ -1,0 +1,23 @@
+# Managed by governance-auth -- rewritten on every `governance-auth configure`,
+# so edits here are lost. `configure` with no --otel-endpoint removes it and
+# stops the timer.
+[Unit]
+Description=Drain the GitHub Copilot OTel spool to the governed collector
+Documentation=https://adorsys-gis.github.io/ai-governance/
+
+[Service]
+Type=oneshot
+# Absolute path: a user timer does not inherit your shell's PATH.
+ExecStart={% for arg in argv %}{{ arg|systemd_quote }}{% if not loop.last %} {% endif %}{% endfor %}
+# ⚠️ NOT optional. systemd.service(5) defaults `TimeoutStartSec=` for a
+# `Type=oneshot` unit to *infinity*, so without this line a wake that gets
+# stuck is never killed -- it just sits there holding copilot-push.lock, and
+# every later wake queues behind it. Deliberately shorter than the timer
+# interval so wakes cannot pile up.
+#
+# It is a REAL kill, not a theoretical one. The HTTP read timeout (15s) bounds
+# one stall, not a whole wake, and a wake that bisects a refused batch may make
+# up to 512 requests per signal. What makes being killed safe is not this
+# number -- it is that progress is durable as it happens, so a killed wake
+# keeps everything it delivered and the next one resumes.
+TimeoutStartSec={{ timeout_seconds }}

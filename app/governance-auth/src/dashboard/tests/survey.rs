@@ -67,8 +67,8 @@ fn claude_codes_env_form_of_the_header_counts_too() {
     assert!(survey(home.path()).has_static_token);
 }
 
-/// Telemetry applied, but no credential written -- the case Codex and VS Code
-/// silently fail on.
+/// Telemetry applied, but no credential written -- the case Codex silently
+/// fails on.
 #[test]
 fn telemetry_without_a_header_is_applied_but_untokened() {
     let home = crate::managed::testutil::tempdir();

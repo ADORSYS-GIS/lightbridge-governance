@@ -233,13 +233,26 @@ into this binary. See [#151](https://github.com/ADORSYS-GIS/lightbridge-governan
 `apiKeyHelper` cannot coexist with `forceLoginMethod`/`forceLoginOrgUUID` managed settings. If
 your org pushes those, this developer needs an explicit carve-out.
 
-**VS Code Copilot telemetry is rejected**
+**No Copilot telemetry is arriving at the collector**
 
-There is no VS Code setting for OTLP headers — authentication is only possible through
-`OTEL_EXPORTER_OTLP_HEADERS` in the environment VS Code was **launched from**. `configure`
-writes the `otel.env` file and the rc-file `source` line, but a VS Code already running, or
-one launched from a desktop launcher rather than a shell, won't have it. Restart it from a
-fresh shell.
+Copilot does not export over the network at all: `configure` sets
+`github.copilot.chat.otel.exporterType` to `file` and `governance-auth copilot-push` ships the
+spool on a timer. Check the two `status` rows in order, because they answer different
+questions:
+
+- **`copilot drain`** — is the schedule installed and running? `not scheduled` means run
+  `governance-auth configure`; `installed, not running` prints the command that starts it;
+  `installed` (yellow) means the scheduler could not be asked, which is normal in a container.
+- **`copilot spool`** — is the drain keeping what it reads? `not enabled` means Copilot has
+  written nothing yet: **restart VS Code** (it reads these settings at window start) and send
+  one chat turn.
+
+⚠️ Upgrading from a build that wrote `exporterType: "otlp-http"` needs one `configure` to
+retract it — and a **VS Code restart** after that, since the old exporter is still live in the
+running window.
+
+⚠️ `configure` cannot edit a JSONC `settings.json` (see below), so on those machines the
+exporter is still whatever it was. The error names the exact keys to paste.
 
 **`<path> is not plain JSON`**
 

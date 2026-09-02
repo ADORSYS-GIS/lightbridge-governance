@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 
-use super::{Session, Spool, Telemetry, attended, plain, render, targets};
+use super::{Drain, Session, Spool, Telemetry, attended, plain, render, targets};
 use crate::{cache, config::OauthConfig};
 
 pub fn status(config: &OauthConfig) -> Result<()> {
@@ -49,6 +49,9 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     // Reads two local files and never the network, same as the rest of this
     // command -- see `super::spool`.
     let spool = Spool::survey(config);
+    // Reads the unit/plist and asks the platform's scheduler whether it is
+    // loaded -- one short local command, no network. See `super::drain`.
+    let drain = Drain::survey(home.as_deref(), config.otel_endpoint.is_some());
     eprintln!(
         "{}",
         render(
@@ -57,6 +60,7 @@ pub fn status(config: &OauthConfig) -> Result<()> {
             &state,
             &telemetry,
             &spool,
+            &drain,
             &target_rows,
         )
     );

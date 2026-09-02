@@ -23,9 +23,9 @@ capability works per client; that one says *how*, and exactly where it breaks.
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
 | **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
 | **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
-| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ `github.copilot.chat.otel.otlpEndpoint` |
-| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ❌ static only |
-| **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | ⚠️ env var only — no setting exists |
+| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot-push` |
+| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
+| **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | n/a — deliberately not used, see below |
 | **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | ✅ **already consumes `/v1/models/info`** | — |
 | **Config file is safely mergeable** | ✅ JSON | ✅ TOML via `toml_edit` | ⚠️ JSONC — same hazard as VS Code | ⚠️ JSONC — refused if it has comments |
 
@@ -126,14 +126,24 @@ Consequences, both load-bearing:
   tidy — leaving both would be genuinely misleading, since the one you can
   see in `env` is the one being ignored.
 
-### VS Code Copilot has no setting for OTLP auth headers
+### VS Code Copilot cannot hold a refreshing OTLP credential, so it holds none
 
-Endpoint, protocol and content-capture are settings; authentication is
-`OTEL_EXPORTER_OTLP_HEADERS` only. Hence the shell-rc wiring — and note that
-variable is **global**: every OTLP exporter started from that shell attaches
-the header to whatever collector it targets. Copilot's `COPILOT_OTEL_*`
-overrides cover endpoint/protocol/capture but not headers, so this is
-inherent to authenticating Copilot at all.
+`github.copilot.chat.otel.headers` **does** exist (verified live 2026-08-31,
+correcting RFC-0003's *Risks* section), but it is a **static** map and
+`settings.json` is covered by Settings Sync — a long-lived bearer written there
+syncs off-machine. The other channel, `OTEL_EXPORTER_OTLP_HEADERS`, is a
+**global** OpenTelemetry variable that a desktop-launched VS Code never sees
+anyway.
+
+So neither is used. `configure` writes `exporterType: "file"` + `outfile`
+instead, and `governance-auth copilot-push` — on a systemd user timer or a
+launchd agent that `configure` installs — ships the spool with a bearer it
+refreshes per wake. Copilot never holds a credential, which removes the problem
+rather than choosing between two bad answers to it.
+
+⚠️ The cost is a spool file nothing bounds
+([#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230)),
+measured growing 73 KB → 315 KB in six minutes of ordinary use.
 
 ### A JSONC `settings.json` is refused, not rewritten
 
@@ -255,7 +265,10 @@ binary where they would silently rot as models change.
   [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) —
   a lightbridge-authz key in `otel.exporter.otlp-http.headers` is accepted
   by the collector today (verified: 200, span reached Alloy).
-- **VS Code Copilot — telemetry only**, and its auth needs a shell env var.
+- **VS Code Copilot — telemetry only**, via the file exporter plus a drain
+  `configure` schedules. It is the only client whose telemetry credential lives
+  entirely outside the editor, which is also why it is the only one Settings
+  Sync cannot leak.
 
 The two clients that solved model metadata (opencode) and telemetry auth
 (Claude Code) did it in completely different ways, which is the argument for

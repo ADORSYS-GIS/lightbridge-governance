@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod units;
 fn exports() -> Vec<(&'static str, String)> {
     vec![
         ("GOVERNANCE_AUTH_ISSUER", "https://auth.example".to_owned()),

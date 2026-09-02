@@ -54,13 +54,17 @@ fn discarding(discarded: u64, age: Option<u64>) -> Spool {
 }
 
 #[test]
-fn no_spool_file_reads_as_not_enabled_with_the_setting_to_paste() {
+fn no_spool_file_reads_as_not_enabled_with_the_way_to_get_one() {
+    // The advice changed with the cutover and the test has to change with it:
+    // `configure` writes `exporterType`/`outfile` now, so telling a developer
+    // to paste them by hand sends them to edit a file this binary owns. What
+    // is still on them is restarting VS Code and sending a turn.
     let (value, colour, note) = spool(None, 0, None, None).row();
     assert_eq!(value, "not enabled");
     assert_eq!(colour, Colour::Yellow, "an unused feature is not a fault");
     assert!(
-        note.contains("exporterType") && note.contains("outfile"),
-        "the note must name what to set, got: {note}"
+        note.contains("governance-auth configure") && note.contains("restart VS Code"),
+        "the note must say how to get a spool, got: {note}"
     );
 }
 
@@ -172,6 +176,7 @@ fn the_row_appears_in_the_rendered_table() {
         &session(true, true),
         &otel(None, false),
         &spool(Some(9000), 0, None, None),
+        &unsurveyed_drain(),
         &[],
     );
     assert!(out.contains("copilot spool"), "{out}");

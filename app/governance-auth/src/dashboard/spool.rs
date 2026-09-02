@@ -3,18 +3,18 @@
 //!
 //! ## Why this row exists at all
 //!
-//! `copilot-push` is driven by a systemd user timer or a launchd agent that
-//! this binary deliberately does not install. Anything it does not install it
-//! also cannot monitor -- and a timer that was never enabled, or that fails on
-//! every wake, looks exactly like a working one from inside VS Code. The row
-//! below is the only place a developer finds out.
+//! `copilot-push` runs on the schedule [`crate::schedule`] installs, and a
+//! wake that fails on every fire looks exactly like a working one from inside
+//! VS Code -- Copilot appends to the spool either way. The `copilot drain` row
+//! next door reports whether the schedule is *running*; this one reports
+//! whether it is *keeping what it reads*. Independent answers, both needed.
 //!
 //! So the states are chosen around that failure, not around tidiness:
 //!
 //! | State | Meaning |
 //! |---|---|
 //! | checkpoint unreadable (red) | `copilot-push.json` will not parse |
-//! | not enabled (yellow) | no spool file: Copilot's file exporter is off |
+//! | not enabled (yellow) | no spool file yet: Copilot has not exported |
 //! | `<n>` record(s) discarded (red/yellow) | data was consumed and never delivered |
 //! | held, waiting for a later record (yellow) | see below |
 //! | up to date (green)   | spool exists, nothing pending, nothing lost |
@@ -116,11 +116,15 @@ impl Spool {
         }
 
         if !status.present() {
+            // Not "you forgot to configure it": `configure` writes the file
+            // exporter itself now, so a missing spool means Copilot has not
+            // exported yet -- ordinary until the first turn after a restart.
             return (
                 "not enabled".to_owned(),
                 Colour::Yellow,
                 format!(
-                    "set github.copilot.chat.otel.exporterType=\"file\" and outfile={}",
+                    "no spool at {}: run `governance-auth configure`, then restart VS Code and \
+                     send one chat turn",
                     status.path.display()
                 ),
             );

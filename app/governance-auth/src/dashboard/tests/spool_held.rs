@@ -49,6 +49,7 @@ fn the_held_row_reaches_the_rendered_table() {
         &session(true, true),
         &otel(None, false),
         &held(None),
+        &unsurveyed_drain(),
         &[],
     );
     assert!(out.contains("held, waiting for a later record"), "{out}");

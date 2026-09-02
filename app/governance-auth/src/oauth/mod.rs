@@ -22,6 +22,7 @@ use crate::{
     config::OauthConfig,
     config_file, config_persist, otel,
     redacted::Redacted,
+    schedule,
 };
 
 pub async fn login(http: &reqwest::Client, config: &OauthConfig, device_code: bool) -> Result<()> {
@@ -113,6 +114,10 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         issuer: config.issuer.clone(),
         client_id: config.client_id.clone(),
         endpoint: config.otel_endpoint.clone(),
+        // One resolution for both halves of the Copilot path: what VS Code is
+        // told to write and what `copilot-push` drains. See
+        // `crate::copilot::resolve_spool_path`.
+        copilot_spool: crate::copilot::resolve_spool_path(config)?,
         token: config.otel_token.clone().map(Redacted::new),
         resource_attributes,
         // Point Claude Code at this very binary for fresh headers. Built
@@ -147,25 +152,27 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         gateway_url: config.gateway_url.clone(),
     };
 
-    let outcomes = otel::configure_all(&home, &settings)?;
-    let mut wrote_vscode = false;
+    // ⚠️ Held, not `?`d, and surfaced at the end instead. `configure_all`
+    // REFUSES a JSONC `settings.json` rather than destroying its comments --
+    // and that developer is precisely the one who then pastes the exporter
+    // keys by hand and ends up spooling to a disk nothing drains, which is the
+    // failure this whole path exists to remove. The schedule below does not
+    // depend on that write having succeeded, so it must not be skipped by it.
+    let written = otel::configure_all(&home, &settings);
     let mut needs_static_token = false;
-    for outcome in &outcomes {
+    for outcome in written.iter().flatten() {
         match outcome {
             otel::Outcome::Written(path) => {
                 eprintln!("Configured: {}", path.display());
-                // Codex and VS Code have no dynamic-headers hook, so they're
-                // the only ones a missing static token actually breaks --
-                // and only when telemetry was actually requested; a gateway-
-                // only run can write Codex's `config.toml` for the provider
-                // block alone, which needs no OTLP token at all.
+                // Codex is now the ONLY client without a dynamic-headers hook:
+                // Claude Code refreshes via `otelHeadersHelper`, and VS Code
+                // Copilot no longer exports for itself at all -- it writes a
+                // file that `copilot-push` ships with a bearer it refreshes.
+                // Only when telemetry was actually requested, because a
+                // gateway-only run writes `config.toml` for the provider block
+                // alone, which needs no OTLP token.
                 needs_static_token |= telemetry_requested
-                    && (path.file_name().is_some_and(|name| name == "config.toml")
-                        || path.parent().is_some_and(|dir| dir.ends_with("User")));
-                // VS Code's settings live under `<flavour>/User/`, which is
-                // how a written VS Code config is told apart from the two
-                // CLI ones without threading a tool tag through `Outcome`.
-                wrote_vscode |= path.parent().is_some_and(|dir| dir.ends_with("User"));
+                    && path.file_name().is_some_and(|name| name == "config.toml");
             }
             otel::Outcome::Skipped(dir) => {
                 eprintln!("Skipped: {} not present.", dir.display());
@@ -173,31 +180,31 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         }
     }
 
-    // VS Code exposes the endpoint as a setting but authentication ONLY as an
-    // environment variable, so this is the one target whose config this binary
-    // genuinely cannot finish. Saying so is the difference between "Copilot
-    // telemetry is rejected and nobody knows why" and a one-line fix.
-    if wrote_vscode && let Some(env) = otel::vscode_manual_env(&settings) {
+    // The upload half of the Copilot path. Copilot appends to the spool and
+    // stops; nothing in VS Code ships it, so without this the file exporter
+    // configured above would fill a disk and export nothing. Non-fatal for the
+    // same reason `login` tolerates a failed `apply_telemetry`: every config
+    // file above is already written, and a machine with no user systemd
+    // session must not turn a successful `configure` into a failure.
+    if let Err(error) = schedule::apply(&home, config) {
+        eprintln!("warning: could not update the Copilot drain schedule: {error:#}");
+    }
+
+    // Codex reads a static `Authorization` string once at start and has no
+    // hook to refresh it, so this warning is about exactly one client now.
+    // Naming the others would be crying wolf, and a warning people stop
+    // reading is worse than none.
+    if config.otel_token.is_none() && needs_static_token {
         eprintln!(
-            "\nACTION REQUIRED for VS Code Copilot: it has no setting for OTLP auth headers.\n\
-             Export this in the environment you launch VS Code from, or its telemetry will be\n\
-             rejected by the collector:\n\n  export {env}\n"
+            "warning: no --otel-token supplied, so no OTLP credential was written for Codex, \
+             which cannot refresh its own. Its telemetry will be rejected by an authenticating \
+             collector. Claude Code (otelHeadersHelper) and VS Code Copilot (the spool drain) \
+             are unaffected."
         );
     }
 
-    // Only the clients WITHOUT a dynamic-headers hook need the static token.
-    // Claude Code refreshes its own via `otelHeadersHelper`, so warning about
-    // a missing `--otel-token` when Claude Code was the only thing configured
-    // would be false alarm -- and a warning that cries wolf is one people
-    // stop reading.
-    if config.otel_token.is_none() && needs_static_token {
-        eprintln!(
-            "warning: no --otel-token supplied, so no OTLP credential was written for the \
-             clients that can't refresh their own (Codex, VS Code Copilot). Their telemetry \
-             will be rejected by an authenticating collector. Claude Code is unaffected -- it \
-             refreshes via otelHeadersHelper."
-        );
-    }
+    // Now, and not before the schedule: see the note on `written`.
+    written?;
     Ok(())
 }
 
