@@ -14,7 +14,7 @@
   "app/governance-ctl/src/metrics.rs": 499,
   "app/governance-ctl/src/sync.rs": 1178,
   "app/governance-ctl/src/test_support.rs": 247,
-  "app/lightbridge-governance/src/ingest.rs": 457,
+  "app/lightbridge-governance/src/ingest.rs": 497,
   "app/lightbridge-governance/src/main.rs": 233,
   "app/lightbridge-governance/src/metrics.rs": 1119,
   "app/lightbridge-governance/src/resolve.rs": 603,
