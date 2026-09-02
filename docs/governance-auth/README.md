@@ -48,6 +48,12 @@ governance-auth token                       # every request, invoked by the clie
 
 ## Install
 
+> **Maintainers:** the install URLs below serve from GitHub Pages, which a repo admin must enable
+> once — *Settings → Pages → Build and deployment → Source: **GitHub Actions***. The publishing
+> workflow cannot do it: creating a Pages site needs admin permissions that a workflow's
+> `GITHUB_TOKEN` cannot hold. Until then these URLs return 404.
+
+
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/install.sh | sh
 ```
