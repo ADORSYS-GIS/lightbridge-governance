@@ -120,7 +120,18 @@ fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(P
         for kind in ["exporter", "metrics_exporter"] {
             codex.push(format!("otel.{kind}.otlp-http.endpoint"));
             codex.push(format!("otel.{kind}.otlp-http.protocol"));
-            codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+            // Matches `configure_codex`'s own condition exactly -- unlike
+            // `endpoint`/`protocol`, this key is NOT written every run.
+            // Listing it unconditionally on `telemetry` alone (#270 AC4's
+            // own verification found this) makes it a false "still owned"
+            // whenever `--otel-token` is unset after a run that HAD one:
+            // the writer leaves the stale header untouched (merge
+            // semantics), `plan` reads it back and records it as ours
+            // again, and `retract_stale` never sees it as stale -- a
+            // credential that should have been removed lingers forever.
+            if settings.token.is_some() {
+                codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+            }
         }
     }
 

@@ -23,6 +23,9 @@ fn config() -> OauthConfig {
         otel_endpoint: Some("https://otel.example.com".to_owned()),
         otel_token: None,
         gateway_url: None,
+        // `manual` -- not the fixture's `daemon` value elsewhere -- because
+        // this whole module's `Invocation` is `manual`-only now (#270 AC5).
+        profile: crate::profile::Profile::Manual,
         copilot_spool_path: Some("/state/copilot-otel.jsonl".to_owned()),
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
@@ -39,6 +42,17 @@ fn no_collector_means_no_schedule_rather_than_one_pointing_nowhere() {
         resolved.is_none(),
         "a timer with no collector would wake every five minutes to fail"
     );
+}
+
+/// #270 AC5: switching to `daemon` removes this timer even with a collector
+/// still configured -- the daemon (once #272 rewires Copilot) is what
+/// forwards the spool under that profile, so a `manual`-only timer draining
+/// the same file would double-export.
+#[test]
+fn daemon_profile_means_no_schedule_even_with_a_collector_configured() {
+    let mut config = config();
+    config.profile = crate::profile::Profile::Daemon;
+    assert!(Invocation::resolve(&config).expect("resolve").is_none());
 }
 
 #[test]

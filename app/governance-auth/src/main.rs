@@ -35,6 +35,7 @@ mod optout;
 mod otel;
 mod otel_daemon;
 mod otel_port;
+mod profile;
 mod redacted;
 mod schedule;
 mod security;

@@ -13,6 +13,7 @@ mod discovery;
 mod exchange;
 mod pkce;
 mod refresh;
+mod telemetry_wiring;
 mod token_endpoint;
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +30,7 @@ use anyhow::{Context, Result, bail};
 pub use callback_port::CALLBACK_PORTS;
 pub use discovery::OidcMetadata;
 pub use refresh::run as refresh;
+use telemetry_wiring::TelemetryWiring;
 
 use crate::{
     cache::{self, CachedSession, FileLock},
@@ -135,23 +137,31 @@ fn apply_telemetry(
     let mut resource_attributes = otel::identity_attributes(session.access_token.expose());
     resource_attributes.insert("service.namespace".to_owned(), "ai-cli".to_owned());
 
+    let wiring = TelemetryWiring::resolve(config);
+
     let settings = otel::OtelSettings {
         issuer: config.issuer.clone(),
         client_id: config.client_id.clone(),
-        endpoint: config.otel_endpoint.clone(),
+        endpoint: wiring.endpoint,
         // One resolution for both halves of the Copilot path: what VS Code is
         // told to write and what `copilot push` drains. See
         // `crate::copilot::resolve_spool_path`.
         copilot_spool: crate::copilot::resolve_spool_path(config)?,
-        token: config.otel_token.clone().map(Redacted::new),
+        // `None` under `daemon` regardless of `--otel-token`: loopback needs
+        // no client credential (see `TelemetryWiring::resolve`), and writing
+        // one anyway would be exactly the long-lived secret ADR-0016 exists
+        // to remove.
+        token: wiring.token,
         resource_attributes,
         // Point Claude Code at this very binary for fresh headers. `None`
-        // when telemetry wasn't requested: writing a helper for a collector
-        // that isn't configured would give Claude Code a working refresh
-        // loop pointed at nothing. The spelling is `crate::cli::invoke`'s, so
-        // renaming the command updates this file without anyone remembering
-        // to.
-        headers_helper: telemetry_requested
+        // when telemetry wasn't requested, OR under `daemon`: there is no
+        // credential to refresh when the client sends none at all (see
+        // `token` above). Writing a helper for a collector that isn't
+        // configured -- or a header nothing reads -- would give Claude Code
+        // a working refresh loop pointed at nothing. The spelling is
+        // `crate::cli::invoke`'s, so renaming the command updates this file
+        // without anyone remembering to.
+        headers_helper: (telemetry_requested && wiring.wants_headers_helper)
             .then(|| cli::otel_headers_command(&config.issuer, &config.client_id)),
         headers_helper_debounce_ms: config.otel_headers_debounce_ms,
         // Built unconditionally -- harmless when inference wiring isn't
@@ -170,8 +180,16 @@ fn apply_telemetry(
     let written = otel::configure_all(&home, &settings, optout);
     // `telemetry_requested &&` because a gateway-only run writes `config.toml`
     // for the provider block alone, which needs no OTLP token at all.
+    // `report(outcomes)` is called whenever `telemetry_requested` is true --
+    // unconditionally on profile -- so what got written is still printed
+    // under `daemon`; only the *warning this feeds* is additionally gated
+    // `&& wiring.wants_headers_helper` below (true only under `manual`),
+    // since `daemon` needs no static token at all (see `settings.token`'s
+    // comment above).
     let needs_static_token = match &written {
-        Ok(outcomes) => telemetry_requested && otel::Outcome::report(outcomes),
+        Ok(outcomes) => {
+            telemetry_requested && otel::Outcome::report(outcomes) && wiring.wants_headers_helper
+        }
         Err(_) => false,
     };
     optout.report_if_every_client_declined();
@@ -185,6 +203,16 @@ fn apply_telemetry(
     // `--no-vscode` reaches the timer -- and why leaving it alone is neither
     // installing nor removing it -- is `crate::optout`'s module doc.
     optout.apply_schedule(&home, config);
+
+    // The daemon service (ADR-0016, #270). Unlike the line above, this is
+    // not part of `ClientOptOut`: it is shared infrastructure every client's
+    // telemetry passes through under the `daemon` profile, not one client's
+    // concern. `schedule::daemon::apply` already resolves to a no-op removal
+    // under `manual` or with no collector configured, so this call is
+    // unconditional; non-fatal for the same reason the line above is.
+    if let Err(error) = crate::schedule::daemon::apply(&home, config) {
+        eprintln!("warning: could not update the daemon service: {error:#}");
+    }
 
     // Codex reads a static `Authorization` string once at start and has no
     // hook to refresh it, so this warning is about exactly one client now.
@@ -456,6 +484,7 @@ mod tests {
             otel_endpoint: None,
             otel_token: None,
             gateway_url: None,
+            profile: crate::profile::Profile::Daemon,
             copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,

@@ -35,6 +35,7 @@
 //! that file, and a wake that fails every five minutes because a key moved is
 //! precisely the silent failure this module exists to remove.
 
+pub mod daemon;
 mod launchd;
 mod staleness;
 mod systemd;
@@ -75,9 +76,18 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// `None` when no collector is configured: there is nowhere to push, so
-    /// the schedule is removed rather than installed pointing at nothing.
+    /// `None` when no collector is configured, or under the `daemon`
+    /// profile (ADR-0016 / #270 AC5): the daemon forwards Copilot's spool
+    /// itself once #272 rewires its exporter, so a `manual`-only timer
+    /// draining the same file would double-export. Either way there is
+    /// nothing for this timer to do, so it is removed rather than installed
+    /// pointing at nothing -- the same rule that already applied to a
+    /// missing endpoint, now also applied to the profile that owns this
+    /// path.
     fn resolve(config: &OauthConfig) -> Result<Option<Self>> {
+        if config.profile != crate::profile::Profile::Manual {
+            return Ok(None);
+        }
         let Some(endpoint) = config.otel_endpoint.as_deref() else {
             return Ok(None);
         };

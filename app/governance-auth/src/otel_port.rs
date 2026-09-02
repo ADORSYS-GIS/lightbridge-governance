@@ -20,13 +20,10 @@ pub const OTEL_PORT: u16 = 17457;
 /// accepts **any** path on this endpoint: Codex posts to its configured
 /// endpoint verbatim, appending no signal path; signal-path normalisation
 /// belongs to the receiver in #268 proper.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "shipped contract for #268's `serve --otel` daemon and #270/#271; remove once a non-test consumer exists"
-    )
-)]
+///
+/// Consumed by `oauth::apply_telemetry` (#270 AC1) -- the `dead_code`
+/// suppression that used to sit here has been removed rather than left
+/// stale, per the reason it originally gave.
 pub const OTEL_LOOPBACK_ENDPOINT: &str = const_format::formatcp!("http://127.0.0.1:{}", OTEL_PORT);
 
 /// The only `Host` header values [`super::otel_daemon::receive`] trusts,

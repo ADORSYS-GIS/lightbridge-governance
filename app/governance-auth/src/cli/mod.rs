@@ -47,7 +47,7 @@ mod verbs;
 use anyhow::{Result, bail};
 use clap::Parser;
 pub use invoke::{
-    COPILOT_PUSH, OTEL_HEADERS_TAIL, TOKEN_TAIL, otel_headers_command, token_command,
+    COPILOT_PUSH, OTEL_HEADERS_TAIL, SERVE_OTEL, TOKEN_TAIL, otel_headers_command, token_command,
 };
 use scopes::{CopilotCommand, OtelCommand, SelfCommand};
 use verbs::Command;
