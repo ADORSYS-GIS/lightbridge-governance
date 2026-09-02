@@ -89,7 +89,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 pub use status::SpoolStatus;
 
-use crate::{config::OauthConfig, oauth};
+use crate::{config::OauthConfig, freshness::Freshness, oauth};
 
 /// Runs one drain.
 ///
@@ -104,10 +104,16 @@ pub async fn run(http: &reqwest::Client, config: &OauthConfig, dry_run: bool) ->
 
     // ⚠️ FIRST, always. See the module doc: everything below this line
     // consumes data, and none of it may run without a valid credential.
-    let session = oauth::current_session(http, config).await.context(
-        "refusing to read the Copilot spool without a valid session -- nothing was consumed and \
-         the checkpoint was not moved",
-    )?;
+    // `Freshness::Skew`, not the credential-helper window: this token is
+    // used by THIS process, on the POSTs a few lines below, and handed to
+    // nothing that caches it. Demanding the helper's margin here would
+    // rotate the refresh token far more often than the drain needs.
+    let session = oauth::current_session(http, config, Freshness::Skew)
+        .await
+        .context(
+            "refusing to read the Copilot spool without a valid session -- nothing was consumed \
+             and the checkpoint was not moved",
+        )?;
     let bearer = oauth::emit_token(http, config, session).await.context(
         "refusing to read the Copilot spool without a valid bearer -- nothing was consumed and \
          the checkpoint was not moved",

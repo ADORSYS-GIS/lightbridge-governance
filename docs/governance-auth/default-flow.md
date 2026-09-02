@@ -102,8 +102,10 @@ later, and a value you have since edited yourself is never removed.
 
 **Claude Code is the only tool with a fully self-renewing credential**, because
 it supports a headers *helper*: a hook that re-runs `governance-auth
-otel headers` on a debounce shorter than the token lifetime. Nothing goes stale
-and no long-lived secret is stored.
+otel headers` on a debounce. Nothing goes stale and no long-lived secret is
+stored — the debounce is a *cache* window, so `otel headers` refuses to print a
+token that could not survive to the end of it (debounce + 30s skew), rather than
+one merely valid at the moment it is printed.
 
 ### Codex — `~/.codex/config.toml`
 

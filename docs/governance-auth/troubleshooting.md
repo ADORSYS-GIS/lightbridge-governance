@@ -203,6 +203,36 @@ grep OTEL_ ~/.config/governance-auth/otel.env ~/.config/governance-auth/otel.fis
 No output is the fixed state. Then open a new shell (or `unset` the variables in the current
 one — sourcing the new file cannot remove what the old one already exported).
 
+**The collector logs a burst of `oidc: token is expired` roughly once per token lifetime**
+
+The classic shape is ~30 rejections clustered together, then silence, then another burst one
+access-token lifetime later — and the `governance-auth` session refresh landing a few seconds
+*after* the expiry stamped in the collector's own error.
+
+That is a token that was still valid when it was handed over and died inside the caller's
+cache. Claude Code does not re-invoke the helpers on demand: it caches `otel headers` output
+for `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` and `token` output for
+`CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, both written from `otel_headers_debounce_ms` (240 000ms
+by default). A build that only checked the 30s clock skew would hand over a token with 31s of
+life left and Claude Code would keep sending it for the next four minutes.
+
+Fixed: `token`/`otel headers` now refuse a token that cannot outlive
+`otel_headers_debounce_ms` **plus** the 30s skew — 270s at the default. Take the fix with
+`self update`; no reconfiguration is needed.
+
+If the bursts continue afterwards, look for this on stderr:
+
+```
+warning: the caller caches this token for 240s, which with the 30s clock skew is more than
+half the 300s lifetime this authorization server issues.
+```
+
+That means the realm's `accessTokenLifespan` is too short for the debounce, so the rule cannot
+be satisfied by any token and is capped rather than looped (see
+[`configuration.md`](./configuration.md#240000-is-not-an-arbitrary-number)). Lower
+`otel_headers_debounce_ms`, or raise the token lifetime, until the lifetime is at least twice
+the debounce-plus-skew.
+
 **Codex proceeds unauthenticated**
 
 Almost always the helper path. Codex spawns the auth command **directly, not through a

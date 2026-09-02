@@ -34,7 +34,7 @@ either platform, so the machine-wide path is a fixed constant.
 | `--otel-endpoint` | `GOVERNANCE_AUTH_OTEL_ENDPOINT` | `otel_endpoint` | — | OTLP collector **base** URL. Presence turns on **telemetry** wiring. Do not append a signal path. |
 | `--otel-token` | `GOVERNANCE_AUTH_OTEL_TOKEN` | `otel_token` / `otel_token_file` | — | Long-lived OTLP ingest credential. See [Secrets](#secrets-in-config-files). |
 | `--copilot-spool-path` | `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` | `copilot_spool_path` | `<state dir>/governance-auth/copilot-otel.jsonl` | Where VS Code Copilot Chat's file exporter writes, for [`copilot push`](./commands.md#copilot-push) to drain. `configure` writes the resolved value into `github.copilot.chat.otel.outfile` **and** into the drain's schedule, so the two cannot disagree. Not checked for existence — Copilot creates it on its first export. |
-| `--otel-headers-debounce-ms` | `GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS` | `otel_headers_debounce_ms` | `240000` | How often Claude Code re-runs the helpers. Must stay **below** the access-token lifetime. |
+| `--otel-headers-debounce-ms` | `GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS` | `otel_headers_debounce_ms` | `240000` | How often Claude Code re-runs the helpers, and so how much life a token must have left before `token`/`otel headers` will print it. Needs `accessTokenLifespan` >= 2 x (this + 30s). |
 | `--open-browser` | `GOVERNANCE_AUTH_OPEN_BROWSER` | `open_browser` | `false` | Whether `login`'s loopback flow launches a browser. Usable bare (`--open-browser`) or explicit (`--open-browser=false`). |
 | `--token-exchange` | `GOVERNANCE_AUTH_TOKEN_EXCHANGE` | `token_exchange` | `false` | Opt into RFC 8693 exchange in `token`/`otel headers`. See [`token-exchange.md`](./token-exchange.md). |
 | `--exchange-issuer` | `GOVERNANCE_AUTH_EXCHANGE_ISSUER` | `exchange_issuer` | — | Exchange server, resolved by discovery. |
@@ -86,7 +86,7 @@ still written, and `configure` says out loud that nothing went to any client.
 
 Passing an access token here does not work, and fails in the worst possible way. Neither
 Claude Code nor Codex re-reads its config mid-session, and neither has a credential-helper
-hook for OTLP headers — so a 300-second token exports for five minutes and then fails
+hook for OTLP headers — so a 900-second token (the lifetime authz-idp mints, measured 2026-09-02: issued 20:34:31Z, expired 20:49:31Z) exports for fifteen minutes and then fails
 *silently* for the rest of the session. This option is for a credential minted for ingest and
 nothing else. Leave it unset and `otel headers` refreshes the header on every call instead;
 [`status`](./commands.md) reports which of the two is actually in effect.
@@ -121,10 +121,30 @@ the subject token's `aud` claim for the exchange to succeed at all. See
 
 ### `240000` is not an arbitrary number
 
-Claude Code's own helper debounce default is **29 minutes**. An access token here lives 300
-seconds. Left alone, that means exporting telemetry with an expired token for most of every
-half hour — and failing *silently* while doing it. 240s sits comfortably inside the token
-window. If your realm's `accessTokenLifespan` differs, this value has to move with it.
+Claude Code's own helper debounce default is **29 minutes**. Left alone, that means exporting
+telemetry with an expired token for most of every half hour — and failing *silently* while
+doing it. If your realm's `accessTokenLifespan` differs, this value has to move with it.
+
+This setting is not only advice to Claude Code; it is also the input to a decision this binary
+makes. Because `token` and `otel headers` output is cached for exactly this long
+(`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` / `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS`, both
+written from it), those two commands refresh whenever the cached session has less than
+**debounce + 30s skew** left — 270s at the default. A token that is merely valid at the moment
+it is printed is not good enough; it has to still be valid at the far end of the window it is
+being handed into.
+
+The relationship to the token lifetime is therefore stricter than "debounce < lifetime":
+
+> `accessTokenLifespan` should be at least **2 × (debounce + 30s)** — 540s for the default
+> 240 000ms.
+
+Below that, no token the authorization server can mint would ever satisfy the rule, and a
+literal reading would refresh on every single invocation — spending one single-use refresh
+token per call and inviting the reuse-detection cascade. Instead the requirement is capped at
+half the observed token lifetime and a one-line warning naming `--otel-headers-debounce-ms`
+goes to **stderr** (never stdout, which carries the credential). The helper keeps working,
+degraded, and says so; see
+[`troubleshooting.md`](./troubleshooting.md#client-wiring).
 
 ## Config file format
 

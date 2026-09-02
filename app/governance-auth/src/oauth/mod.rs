@@ -24,6 +24,7 @@ use crate::{
     cli,
     config::OauthConfig,
     config_file, config_persist,
+    freshness::Freshness,
     optout::ClientOptOut,
     otel,
     redacted::Redacted,
@@ -193,7 +194,10 @@ fn apply_telemetry(
 }
 
 pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
-    let session = current_session(http, config).await?;
+    // Not `Freshness::Skew`: Claude Code caches this stdout for
+    // `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` -- this very setting.
+    let freshness = Freshness::for_helper(config.otel_headers_debounce_ms);
+    let session = current_session(http, config, freshness).await?;
     let access_token = emit_token(http, config, session).await?;
 
     // The ONLY thing this command ever writes to stdout. Everything else --
@@ -250,7 +254,10 @@ pub(crate) async fn emit_token(
 /// rejected refresh writes nothing to stdout and exits non-zero, which the
 /// hook surfaces in `/status` rather than silently exporting unauthenticated.
 pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
-    let session = current_session(http, config).await?;
+    // Re-invoked only every `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS`, so
+    // what is printed here must stay valid for that whole window.
+    let freshness = Freshness::for_helper(config.otel_headers_debounce_ms);
+    let session = current_session(http, config, freshness).await?;
     let access_token = emit_token(http, config, session).await?;
     let headers = serde_json::json!({
         "Authorization": format!("Bearer {}", access_token.expose()),
@@ -261,14 +268,20 @@ pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Resul
     Ok(())
 }
 
-/// Loads the cached session, refreshing it if it's within the expiry skew.
-/// Shared by `token` and `otel headers` so the two can't drift on when a
-/// refresh happens or on what "fails closed" means. `refresh` deliberately
-/// does NOT go through here: it must renew a session that is still fresh,
-/// which is the one thing this function will not do.
+/// Loads the cached session, refreshing it when it has less life left than
+/// `freshness` demands. Shared by `token`, `otel headers` and `copilot push`
+/// so they can't drift on when a refresh happens or on what "fails closed"
+/// means -- only on how much lifetime each needs (see [`Freshness`]).
+/// `refresh` deliberately does NOT go through here: it must renew a session
+/// that is still fresh.
+///
+/// The whole read-decide-refresh-write sequence runs under `_lock`, held to
+/// this function's end: two invocations racing here would both spend the same
+/// single-use refresh token and trip the server's reuse-detection cascade.
 pub(crate) async fn current_session(
     http: &reqwest::Client,
     config: &OauthConfig,
+    freshness: Freshness,
 ) -> Result<CachedSession> {
     let _lock = FileLock::acquire(&config.issuer, &config.client_id)?;
 
@@ -276,7 +289,7 @@ pub(crate) async fn current_session(
         bail!("no cached session for this issuer/client; run `governance-auth login` first");
     };
 
-    if session.is_fresh()? {
+    if session.is_fresh_for(freshness.required_remaining_secs(&session))? {
         return Ok(session);
     }
     let refreshed = refresh_or_fail(http, config, &session).await?;
@@ -419,6 +432,7 @@ mod tests {
             access_token: Redacted::new("access-token".to_owned()),
             refresh_token: None,
             expires_at: 0,
+            lifetime_secs: None,
         }
     }
 
