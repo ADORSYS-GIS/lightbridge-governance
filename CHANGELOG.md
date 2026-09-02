@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.5.0...v0.6.0) (2026-09-02)
+
+
+### Features
+
+* **governance-auth:** log to a rotating file, not just to stderr ([#250](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/250)) ([7184f62](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7184f62389a975aba372eca07ddd92ba57733ef0))
+* **governance-auth:** serve the callback page built in converse-frontends ([#251](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/251)) ([92bd690](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/92bd690b6e1d65d6214160e6af06b02ffc3ca6bc))
+* **install:** publish install.sh and uninstall.sh to GitHub Pages ([#248](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/248)) ([4abe03b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4abe03baecda597b397a4d712a58ffe077b515a7))
+
+
+### Bug Fixes
+
+* **ci:** Pages cannot self-enable; say so instead of failing obscurely ([#255](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/255)) ([8d1415c](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/8d1415c550ec592b324efe4d33786b18f69c9162))
+* **ci:** the Pages deploy failed, so the documented installer 404s ([#254](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/254)) ([3d1139b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/3d1139ba6b7a54ae2d2bf9b4f6004e8d3c11b90d)), closes [#225](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/225)
+* **vscode:** tell the developer when governance-auth is signed out ([#249](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/249)) ([726dd00](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/726dd00cff8a536c9c01525f7870db5efa5a9eb3))
+
 ## [0.5.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v0.4.0...v0.5.0) (2026-09-02)
 
 
