@@ -86,9 +86,29 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
+      # ⚠️ NOT the tag, on the release path. **A draft release has no git tag** --
+      # GitHub creates the tag only when the release is published. Since the
+      # release is now cut as a draft (release-please-config.json), `github.ref`
+      # resolves to a tag that does not exist yet and EVERY build dies at
+      # checkout.
+      #
+      # Measured on v1.0.0: six `The process '/usr/bin/git' failed with exit
+      # code 1` at `actions/checkout`, `publish` correctly skipped by its
+      # `needs:` gate, and a draft release that could therefore never publish
+      # itself. A human had to publish it by hand, which created the tag and
+      # left a published release carrying zero assets -- the exact state the
+      # draft flow exists to prevent, arrived at from the other direction.
+      #
+      # `target_commitish` is the commit (or branch) the release points at and
+      # is populated on a draft, so it resolves before the tag exists.
+      # `inputs.tag` still wins for a `workflow_dispatch` backfill, where the
+      # release is already published and its tag is real.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: >-
+            ${{ github.event.inputs.tag
+                || github.event.release.target_commitish
+                || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -48,6 +48,11 @@ governance-auth token                       # every request, invoked by the clie
 
 ## Install
 
+> **Maintainers:** ⚠️ A draft release has **no git tag** — GitHub creates the tag only on publish.
+> Anything in the release path that resolves a ref must therefore use the release's
+> `target_commitish`, not its `tag_name`. Getting this wrong fails every build at checkout and
+> leaves a draft that can never publish itself (measured on v1.0.0).
+>
 > **Maintainers:** releases are cut as **drafts** and published only once all twelve binary assets
 > have uploaded — `releases/latest/download/` skips drafts, so the install command below keeps
 > resolving to the previous release instead of a tag with no binaries. If a release is stuck as a
