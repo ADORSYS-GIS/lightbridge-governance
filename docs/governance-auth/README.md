@@ -46,6 +46,35 @@ governance-auth token                       # every request, invoked by the clie
   └─ print the access token to stdout, and nothing else
 ```
 
+## Install
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/install.sh | sh
+```
+
+Six targets are published per release (macOS arm64/x64, Linux x64/arm64, each in musl and
+glibc). The installer picks one from `uname`, **verifies the published `.sha256` before
+anything reaches your `$PATH`**, and prints the `export PATH=...` line rather than editing
+your rc files — `configure` writes its own managed block into those, and two writers to one
+`.zshrc` is a mess somebody untangles by hand.
+
+`--version <tag>` pins a release and `--bin-dir <dir>` moves the location; `--libc gnu`
+selects the glibc build, which you want only if musl's lack of NSS breaks DNS resolution on
+your machine. Options, the uninstaller, and the script as readable plain text:
+<https://adorsys-gis.github.io/lightbridge-governance/>
+
+To remove it — binary, drain schedule, session (revoked at the IdP, not just deleted) and
+local state:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/uninstall.sh | sh
+```
+
+⚠️ Run `governance-auth configure` with no `--gateway-url`/`--otel-endpoint` **before**
+uninstalling if you want the keys it wrote into Claude Code, Codex and VS Code retracted
+automatically. Afterwards the binary that owns them is gone and the uninstaller can only
+tell you which keys to delete by hand.
+
 ## Quickstart
 
 ```bash

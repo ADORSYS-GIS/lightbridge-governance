@@ -68,9 +68,24 @@ every file this binary touches -- is [`docs/governance-auth/`](../governance-aut
 
 ## 1. Install `governance-auth`
 
-Download the release binary for your platform (macOS arm64/x64, Linux x64/arm64) and put
-it on `$PATH`. There is no package manager entry yet -- copy it into
-`~/.local/bin` or equivalent. Keep it current with `governance-auth self-update`.
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/install.sh | sh
+```
+
+Installs into `~/.local/bin` and prints the `export PATH=...` line if that isn't on your
+`$PATH` already -- it deliberately does not edit your rc files, because `configure` (step 3)
+writes its own managed block into them. Keep it current with `governance-auth self-update`.
+
+Six platforms are published, not four: macOS arm64/x64 and Linux x64/arm64 in **both** musl
+and glibc flavours. The installer picks musl on Linux, which is the one to install -- the
+glibc assets link against 2.39 and do not start on Ubuntu 22.04, Debian 12, RHEL 9 or Amazon
+Linux 2023, failing in the dynamic loader before `main` in a way that reads as a corrupt
+download rather than an OS mismatch.
+
+`--version <tag>` pins a release, `--bin-dir <dir>` moves the install location, and the
+checksum is verified before anything is put on your `$PATH` -- a missing or mismatched
+`.sha256` is a refusal, not a warning. Full options and the uninstaller:
+<https://adorsys-gis.github.io/lightbridge-governance/>
 
 ⚠️ Use an **absolute** path everywhere a config file names this binary. Codex spawns the
 auth command directly rather than through a shell, so a bare `governance-auth` doesn't

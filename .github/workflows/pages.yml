@@ -1,0 +1,99 @@
+name: Publish install scripts
+
+# Publishes `install.sh` and `uninstall.sh` to GitHub Pages, so the documented
+# one-liner has a URL that never changes:
+#
+#   https://adorsys-gis.github.io/lightbridge-governance/install.sh
+#
+# ⚠️ Pages serves ONE copy of these scripts -- whatever is on `main`. That is
+# deliberate and it is not the same axis as the binary's version: the script
+# takes `--version <tag>` to pin the BINARY, while the script itself always
+# comes from main. A Coder image that wants both pinned should vendor the
+# script rather than curl it (see docs/install/index.html).
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/install.sh
+      - scripts/uninstall.sh
+      - docs/install/**
+      - .github/workflows/pages.yml
+  # A release does not change the scripts, but it does change what "latest"
+  # resolves to, so republishing keeps the rendered version table honest.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# ⚠️ `cancel-in-progress: false`, unlike every other workflow here. Cancelling
+# a Pages deployment mid-flight can leave the site on a half-published state,
+# and these two files are an install path people are actively curling.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Gate, not decoration: these scripts are piped straight into `sh` on other
+  # people's machines. A quoting bug here is a quoting bug on their laptop.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck --shell=sh --severity=style scripts/install.sh scripts/uninstall.sh
+      # `sh -n` catches what shellcheck's static pass does not: that the file
+      # actually parses as POSIX sh on the interpreter that will run it.
+      - name: parse as POSIX sh
+        run: sh -n scripts/install.sh && sh -n scripts/uninstall.sh
+      # The scripts name the asset for every platform; `update.rs` names them
+      # again for self-update. They must agree, and the failure mode if they
+      # do not is silent -- install works, self-update then 404s for ever.
+      - name: install.sh and asset_name() name the same six targets
+        run: |
+          set -euo pipefail
+          grep -o '"governance-auth-[a-z0-9_-]\+"' app/governance-auth/src/update.rs \
+            | tr -d '"' | grep -v '^governance-auth-$' | sed 's/^governance-auth-//' | sort -u > /tmp/rust.txt
+          # The shell builds these from a $1 that is musl|gnu, so expand both.
+          grep -oE '(x86_64|aarch64)-(unknown-linux-\$1|apple-darwin)' scripts/install.sh \
+            | sed 's/\$1/musl/' | sort -u > /tmp/sh-musl.txt
+          grep -oE '(x86_64|aarch64)-(unknown-linux-\$1|apple-darwin)' scripts/install.sh \
+            | sed 's/\$1/gnu/' | sort -u >> /tmp/sh-musl.txt
+          sort -u /tmp/sh-musl.txt > /tmp/sh.txt
+          diff /tmp/rust.txt /tmp/sh.txt \
+            || { echo "::error::install.sh and update.rs::asset_name() disagree on the target list"; exit 1; }
+
+  publish:
+    needs: lint
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      # `enablement: true` creates the Pages site on first run rather than
+      # requiring somebody to click through Settings -- the repo had no Pages
+      # site when this workflow was written.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp scripts/install.sh scripts/uninstall.sh _site/
+          cp docs/install/index.html _site/
+          # Pages serves unknown extensions as octet-stream, which is fine for
+          # `curl | sh` but makes the URL undownloadable-looking in a browser.
+          # A .txt alias lets someone read the script before running it, which
+          # is the review step every `curl | sh` doc tells people to take.
+          cp scripts/install.sh _site/install.sh.txt
+          cp scripts/uninstall.sh _site/uninstall.sh.txt
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
