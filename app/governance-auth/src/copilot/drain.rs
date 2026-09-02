@@ -1,63 +1,96 @@
-//! One authenticated pass over the spool: lock, read, transform, export,
-//! record.
+//! One wake: take the lock, then sweep the spool until it is caught up or a
+//! bound says stop.
 //!
-//! Split out of [`super`] so that module stays what it says it is -- the
-//! fail-closed ordering and nothing else. Everything here runs only after a
-//! bearer exists, which is why none of it takes a config or can reach the
-//! authorization server.
+//! [`super::sweep`] is one read -> export -> checkpoint pass and owns everything about
+//! how a pass behaves. This module owns only how many of them a wake makes, and
+//! why that is not one.
 //!
-//! ## Where the two signals part company
+//! ## Why a wake is a loop
 //!
-//! Metrics and logs are posted to different endpoints and are accepted or
-//! refused independently, so they carry independent offsets. With one shared
-//! offset, "metrics accepted, logs rejected" left the whole range pending and
-//! re-posted the *accepted* metrics on every later wake -- duplicated usage
-//! data that nothing on this side could notice, because from here the run had
-//! simply failed. Both are attempted every run for the same reason: a failure
-//! on one says nothing about the other.
+//! [`super::spool`] reads at most `MAX_READ` = 8 MiB per call, which bounds the
+//! `Vec<u8>` it reads into. Until this loop existed that also bounded the
+//! *wake*, because a wake was exactly one sweep. Measured on a maintainer's
+//! Linux desktop, 2026-09-02, from two `status` calls either side of one wake:
 //!
-//! ## Why a failed pass still moves an offset
+//! - spool 164 MB, pending before 155,755,698 bytes, pending after 147,370,638
+//! - so **8,385,060 bytes in one wake** -- 8 MiB, cut back to the last complete
+//!   line -- at one wake per 300 s: **27 KB/s**
+//! - 147 MB of backlog is then ~18 wakes, ≈1.5 hours, and only if Copilot
+//!   writes nothing more. Above 27 KB/s of writing it never catches up at all.
 //!
-//! [`export::signal`] resolves a range left to right and reports the prefix it
-//! got through, so "the pass failed" and "the pass delivered nothing" are
-//! different answers. Advancing over the prefix regardless is the whole fix
-//! for the duplicate-delivery defect: what the collector took is recorded the
-//! moment the pass ends, however it ends.
+//! That is not only slow, it is self-defeating: [`super::spool::reclaim`] fires only
+//! when `size == offset`, so the spools with the most to reclaim were the ones
+//! whose backlog guaranteed the precondition could never be met. The machines
+//! that most needed the file bounded waited longest for it. With the loop, the
+//! sweep that finishes the backlog is the one holding `size == offset`, and the
+//! reclaim fires in that same wake -- 164 MB drained and truncated in one wake
+//! where a fast collector allows, and in a handful otherwise.
 //!
-//! ## When the loss counter moves
+//! Raising `MAX_READ` instead was rejected: it trades memory for throughput and
+//! still leaves a fixed ceiling per wake, so it does not fix the general case.
+//! Looping leaves peak memory exactly where it was -- one 8 MiB read at a time,
+//! the previous sweep's lines dropped before the next is read.
 //!
-//! Records lost in the transform are attributed to the bytes the **shared**
-//! offset just advanced over -- the range both signals now agree on. Counting
-//! them over the whole drain would count them again on the next run, which
-//! re-reads whatever the shared offset did not cover. Records the collector
-//! refused are counted immediately instead: that signal's offset has moved
-//! past them, so nothing will re-discover them.
+//! ## The three bounds, and why a wake needs all three
 //!
-//! Both of those now happen inside [`super::journal`], in the same write as
-//! the offset they belong to. An offset that survives a kill and a loss count
-//! that does not would resume past records nothing ever counted, which is the
-//! conservation rule breaking at every interrupted wake rather than never.
+//! 1. **[`Swept::complete`]** -- correctness, not throttling. A sweep that did
+//!    not resolve everything it read ends the wake, because sweeping again
+//!    would re-offer records this wake has already offered and charge
+//!    [`super::quarantine`] two refusals for one wake's evidence. It also makes
+//!    every continued sweep read strictly new bytes, so the offset advances
+//!    strictly and the loop cannot spin on a sweep that delivers nothing.
+//! 2. **[`BUDGET`]** -- wall clock, checked between sweeps.
+//! 3. **[`MAX_PASSES`]** -- a count that does not depend on how fast the
+//!    machine or the collector is.
 //!
-//! ## Why the reclaim is last, and on both exits
-//!
-//! [`spool::reclaim`] may only destroy bytes the checkpoint has already
-//! passed, so it runs after the checkpoint is final, never before. Both exits
-//! offer it, and the *empty* one matters most: a wake that found nothing new
-//! has a spool quiescent since the last wake -- what the precondition wants.
+//! ⚠️ Both 2 and 3 are in-process on purpose. systemd's `TimeoutStartSec=240`
+//! (`schedule::systemd`) SIGKILLs an overrunning wake, but launchd has no
+//! equivalent at all -- `schedule::launchd` and
+//! `docs/governance-auth/commands.md` both spell that out -- so on macOS an
+//! in-process bound is the *only* bound there is.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::{
-    batch, checkpoint,
-    journal::Journal,
-    lock,
-    pass::{self, Endpoint, Outcome, Target},
-    spool::{self, Restart, reclaim},
+    checkpoint, lock,
+    sweep::{self, Swept, Wake},
 };
 use crate::redacted::Redacted;
 
+/// Wall clock the sweeps may take, checked *between* them, so the true ceiling
+/// is this plus one sweep.
+///
+/// 60 s answers four separate constraints at once, and it is the smallest of
+/// them that decides it:
+///
+/// - a quarter of systemd's `TimeoutStartSec=240`, leaving room for the
+///   authentication that precedes the drain and for one overrunning final sweep
+///   (a sweep that bisects a refused batch may make up to 512 requests per
+///   signal -- an exposure that predates this loop and that no budget here can
+///   shrink, since the check happens between sweeps);
+/// - half of `lock::HELD_BY_A_LIVE_DRAIN`, the 120 s a *second* drain waits
+///   before giving up on the lock. The wake holds `copilot-push.lock`
+///   throughout, and `status` tells developers to run `copilot-push` by hand
+///   exactly when there is a backlog, so the hand-run has to still get in;
+/// - a fifth of the 300 s timer interval, so wakes cannot queue;
+/// - and long enough to matter: a sweep uploads up to ~16 MiB (both signals),
+///   so 60 s is roughly 20 sweeps against a collector on a fast link -- the
+///   whole 164 MB backlog above -- and proportionally fewer on a slow one,
+///   which is exactly the trade a clock bound should make.
+const BUDGET: Duration = Duration::from_secs(60);
+
+/// Sweeps one wake may make. At 8 MiB a sweep that is 512 MiB, ~3x the largest
+/// spool ever measured here. Deliberately not tight: [`BUDGET`] is the bound
+/// that binds on any machine where a sweep is slow, and this one is what keeps
+/// a wake finite where sweeps are fast enough that the clock never fires.
+const MAX_PASSES: u32 = 64;
+
+/// Drains until the spool is caught up, a sweep stops short, or a bound hits.
 pub async fn once(
     http: &reqwest::Client,
     endpoint: &str,
@@ -66,135 +99,87 @@ pub async fn once(
     dry_run: bool,
 ) -> Result<()> {
     let state_dir = crate::cache::state_dir()?;
-    // Held for the whole read-modify-write below. See `lock`'s module doc.
+    // Held for the whole loop below, not just one sweep. See `lock`'s module
+    // doc, and `BUDGET` for what that costs a concurrent hand-run.
     let _guard = lock::acquire(&state_dir)?;
-
-    let checkpoint_path = checkpoint::path(&state_dir);
-    let state = checkpoint::load(&checkpoint_path)?;
-    let reclaim_at = checkpoint_path.clone();
-
-    let drained = spool::drain(spool_path, state.offset, state.spool.as_ref())?;
-    if drained.missing {
-        eprintln!(
-            "There is no spool at {}. Nothing was drained and the checkpoint stays at byte {} -- \
-             a path that is not there says nothing about how far the real spool got. Check \
-             --copilot-spool-path if this is unexpected.",
-            spool_path.display(),
-            state.offset
-        );
-        return Ok(());
-    }
-
-    if let Some(restart) = drained.restarted {
-        eprintln!("{}", restarted(spool_path, restart, state.offset));
-    }
-    let mut journal = Journal::new(
-        checkpoint_path,
-        &drained.lines,
-        state,
-        drained.identity,
-        drained.restarted.is_some(),
-    );
-
-    if drained.lines.is_empty() {
-        eprintln!(
-            "Nothing new in {} ({} bytes, offset {}).",
-            spool_path.display(),
-            drained.size,
-            drained.next_offset
-        );
-        // A rotation is the one thing an empty drain still has to persist, or
-        // the next run re-detects and re-reports the same restart.
-        if drained.restarted.is_some() && !dry_run {
-            journal.commit()?;
-        }
-        reclaim::best_effort(spool_path, &reclaim_at, journal.state(), dry_run);
-        return Ok(());
-    }
-
-    eprintln!("{}", batch::build(&drained.lines).counts.describe());
-
-    if dry_run {
-        eprintln!(
-            "--dry-run: nothing was posted and the checkpoint stays at byte {}.",
-            journal.state().offset
-        );
-        return Ok(());
-    }
-
-    let now = checkpoint::now_unix()?;
-    let target = Target {
-        lines: &drained.lines,
-        end_offset: drained.next_offset,
-        now,
-    };
-    let to = Endpoint {
+    let wake = Wake {
         http,
-        base: endpoint,
+        endpoint,
         bearer,
+        spool: spool_path,
+        checkpoint: checkpoint::path(&state_dir),
+        dry_run,
     };
-    let outcome = pass::both(&to, &mut journal, target).await;
 
-    journal.finished(outcome.pushed, outcome.stalled, now);
-    journal.commit()?;
-    report(&journal, &outcome);
-    reclaim::best_effort(spool_path, &reclaim_at, journal.state(), dry_run);
+    let started = Instant::now();
+    let mut tally = Tally::default();
+    let failed = loop {
+        let swept = sweep::once(&wake, tally.records).await?;
+        tally.add(&swept);
+        // ⚠️ `complete` first among equals: see the module doc. The other two
+        // are "nothing left" and "the collector stopped taking things".
+        if swept.failed.is_some() || !swept.complete || swept.pending == 0 {
+            break swept.failed;
+        }
+        if tally.passes >= MAX_PASSES {
+            tally.stopped_on = Some(format!("this wake's ceiling of {MAX_PASSES} sweeps"));
+            break None;
+        }
+        if started.elapsed() >= BUDGET {
+            tally.stopped_on = Some(format!("this wake's budget of {}s", BUDGET.as_secs()));
+            break None;
+        }
+    };
+    tally.report(spool_path);
 
-    pass::settled(&outcome)
-        .context("the collector did not accept every signal; those bytes stay pending")
+    failed.map_or(Ok(()), Err)
 }
 
-/// The two restarts read differently on purpose: one sends the reader looking
-/// for a truncation and the other for a file swap, and being sent to the wrong
-/// one is worse than being told nothing.
-fn restarted(path: &Path, why: Restart, offset: u64) -> String {
-    match why {
-        Restart::Truncated => format!(
-            "The spool at {} is shorter than the recorded offset ({offset} bytes): it was \
-             truncated or rotated, so the drain restarted at byte 0.",
-            path.display()
-        ),
-        Restart::Replaced => format!(
-            "The spool at {} is not the file byte {offset} was measured against -- it was \
-             replaced, not appended to (VS Code recreating its outfile does this). The drain \
-             restarted at byte 0, so records the old file already delivered may arrive again if \
-             the two files share content.",
-            path.display()
-        ),
-    }
+/// The wake's running total, and what it says at the end.
+#[derive(Default)]
+struct Tally {
+    passes: u32,
+    /// Bytes the shared offset advanced over across every sweep.
+    bytes: u64,
+    records: u64,
+    /// Bytes still undelivered as of the last sweep.
+    pending: u64,
+    /// Which bound ended the loop, if a bound did.
+    stopped_on: Option<String>,
 }
 
-fn report(journal: &Journal<'_>, outcome: &Outcome) {
-    let state = journal.state();
-    if outcome.pushed > 0 {
-        eprintln!(
-            "Pushed {} record(s); checkpoint at byte {}.",
-            outcome.pushed, state.offset
-        );
+impl Tally {
+    fn add(&mut self, swept: &Swept) {
+        self.passes = self.passes.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(swept.advanced);
+        self.records = self.records.saturating_add(swept.pushed);
+        self.pending = swept.pending;
     }
-    if outcome.held > 0 {
-        eprintln!(
-            "{} record(s) the collector refused on their own are held, not discarded: a single \
-             400 can come from a proxy rather than from the payload. The next wake decides.",
-            outcome.held
+
+    /// Silent for the ordinary one-sweep wake, which already reports itself:
+    /// a backlogged machine has to *look* different in the journal from a
+    /// healthy one, and it cannot do that if every wake prints the same line.
+    fn report(&self, spool: &Path) {
+        if self.passes <= 1 && self.stopped_on.is_none() {
+            return;
+        }
+        let head = format!(
+            "Drained {} sweeps of {} in one wake: {} byte(s), {} record(s).",
+            self.passes,
+            spool.display(),
+            self.bytes,
+            self.records
         );
-    }
-    if outcome.stalled {
-        eprintln!(
-            "The refused record is the LAST one in the spool, so there is nothing after it to \
-             prove the collector still works with -- and giving up on no evidence is how a \
-             misconfigured collector empties a spool. This does not clear on the next wake: it \
-             clears when Copilot writes another record. Re-running now repeats exactly this."
-        );
-    }
-    let discarded = journal.lost();
-    if discarded > 0 {
-        eprintln!(
-            "⚠️  discarded {discarded} record(s) that will never reach the collector ({} in \
-             total since this checkpoint was created). `governance-auth status` shows this until \
-             it ages out; a number that climbs after a VS Code update means the spool's shapes \
-             moved and this parser needs revisiting.",
-            state.discarded_total
-        );
+        match (&self.stopped_on, self.pending) {
+            (Some(bound), pending) => eprintln!(
+                "{head} Stopped on {bound} with {pending} byte(s) still pending; every byte it \
+                 did drain is checkpointed and the next wake continues from there."
+            ),
+            (None, 0) => eprintln!("{head} The spool is caught up."),
+            (None, pending) => eprintln!(
+                "{head} {pending} byte(s) are still pending because a sweep could not resolve \
+                 everything it read -- the reason is above this line. Nothing was lost."
+            ),
+        }
     }
 }

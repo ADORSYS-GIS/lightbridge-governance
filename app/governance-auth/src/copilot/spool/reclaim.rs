@@ -109,6 +109,22 @@ use crate::copilot::checkpoint::{self, Checkpoint};
 /// arrives within minutes.
 pub const RECLAIM_ABOVE: u64 = 1024 * 1024;
 
+// ## How this reads against a backlog, and why that needed fixing
+//
+// `size == offset` is a precondition a backlogged machine could not meet.
+// [`super`]'s `MAX_READ` capped a wake at 8 MiB, so a 164 MB spool (measured
+// 2026-09-02) drained at 27 KB/s and stayed uncaught-up for ~18 wakes -- for
+// ever if Copilot sustained more than that. The spools with the most to
+// reclaim were the ones that could never present the precondition.
+//
+// [`crate::copilot::drain`] now sweeps repeatedly within one wake, each sweep
+// still reading at most 8 MiB, and the sweep that finishes a backlog is the
+// first one to hold `size == offset` -- `copilot_push_backlog.rs` measures
+// 23.6 MB drained and reclaimed in a single wake. The loop is what makes this
+// module reachable on the machines it was written for. Nothing below changed:
+// the size is still re-read from the open descriptor per sweep, so a sweep
+// that finished only part of a growing spool declines as it always did.
+
 /// Reclaims if it is allowed to, and reports either way on stderr.
 ///
 /// Nothing here is fatal. A spool that could not be reclaimed is a spool that

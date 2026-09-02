@@ -43,10 +43,18 @@ pub use identity::{Identity, Restart};
 /// command reads with no configuration at all are the same string.
 pub const DEFAULT_FILE_NAME: &str = "copilot-otel.jsonl";
 
-/// Most bytes read in one drain. Bounds memory on a spool that grew while
+/// Most bytes read in one call. Bounds memory on a spool that grew while
 /// nobody was draining it; the checkpoint advances by however much was
-/// consumed, so the next run simply continues. 8 MiB is ~2,600 records at the
+/// consumed, so the next call simply continues. 8 MiB is ~2,600 records at the
 /// observed ~3 KiB/record.
+///
+/// ⚠️ This is a **memory** bound and nothing else. It used to be a throughput
+/// bound as well, because one wake made exactly one of these calls -- measured
+/// at 8,385,060 bytes per wake against a 164 MB spool, so 27 KB/s at the
+/// five-minute interval and ~18 wakes to catch up. [`crate::copilot::drain`]
+/// now repeats the call within one wake instead, which is why raising this
+/// number is not the answer to a backlog: it would trade memory for throughput
+/// and still leave a fixed ceiling per wake.
 const MAX_READ: u64 = 8 * 1024 * 1024;
 
 /// One complete record and where it starts in the file. The offset is what

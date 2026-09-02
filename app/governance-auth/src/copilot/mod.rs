@@ -53,6 +53,13 @@
 //! has not already passed. That precondition narrows rather than closes the
 //! race with a concurrent append; the module doc states its measured bound
 //! instead of pretending it is zero.
+//!
+//! That precondition is also why a wake is a **loop**. One wake used to read
+//! 8 MiB and stop, which on the 164 MB spool measured on 2026-09-02 was
+//! 27 KB/s -- so the spool never became caught up and the reclaim never fired
+//! on the machines that needed it. [`drain`] now sweeps until the spool is
+//! caught up or one of its two bounds says stop; each sweep still reads at
+//! most 8 MiB, so peak memory is where it was.
 
 mod batch;
 mod checkpoint;
@@ -72,6 +79,7 @@ mod quarantine;
 mod record;
 mod spool;
 mod status;
+mod sweep;
 
 #[cfg(test)]
 mod tests;

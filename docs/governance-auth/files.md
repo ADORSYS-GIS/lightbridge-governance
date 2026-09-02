@@ -223,6 +223,14 @@ Confirmed on macOS by three descriptor offsets tracking EOF in lockstep, and on 
 from `/proc/PID/fdinfo` (`flags=02102001`). See
 [`commands.md`](./commands.md#reclaiming-the-spool).
 
+⚠️ "Fully caught up" is a precondition a backlogged machine could not reach while a wake drained
+only 8 MiB: the 164 MB spool measured on 2026-09-02 was moving 8,385,060 bytes per wake, about
+27 KB/s, so the spools with the most to reclaim were the ones that never presented the
+precondition. A wake now repeats the drain until the spool is caught up or one of its bounds
+stops it (see [commands.md](commands.md) → *A wake drains a backlog, not 8 MiB*), which is what
+makes this reclaim reachable at all on those machines — 23.6 MB drained and truncated in a
+single wake in `copilot_push_backlog.rs`.
+
 ### Copilot drain schedule
 
 ```
