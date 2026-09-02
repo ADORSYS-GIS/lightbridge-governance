@@ -16,6 +16,18 @@
 //! an explicit flag over the env var when both are present); the file
 //! layers are [`crate::config_file`]'s job; only the final "nothing was
 //! configured at all" fallback lives here, in `resolve`.
+//!
+//! ## clap prints the field docs below, verbatim
+//!
+//! A `///` on a field of [`OauthConfigArgs`] IS that flag's `--help` text, so
+//! it is user documentation and nothing else: one line, no Rust paths, no
+//! rationale, and a `long_help` only where a wrong value costs an afternoon.
+//! `--help` once opened with `see [`crate::security`]` and three paragraphs on
+//! clap's `Option` handling because that rule did not exist. Maintainer notes
+//! belong in a plain `//` comment, which neither clap nor rustdoc renders, or
+//! in `docs/governance-auth/configuration.md` -- which is also where the two
+//! mechanics every field depends on are argued: the `default_value` trap, and
+//! why all fifteen are `global = true` (`tests/cli_arg_order.rs` pins it).
 
 use std::path::Path;
 
@@ -35,122 +47,105 @@ const DEFAULT_SCOPES: &str = "openid profile offline_access";
 /// See [`DEFAULT_SCOPES`].
 const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS: u64 = 240_000;
 
-/// What `clap` actually parses. Fields are `Option`, not `String`/required,
-/// because clap rejects a `global = true` arg that's also `required`
-/// (`Command governance-auth: Global arguments cannot be required`) --
-/// [`Self::resolve`] is where "must actually be present" gets enforced, with
-/// a message naming the flag, not a generic clap usage dump.
-///
-/// `global = true` on every field: without it, clap only accepts them
-/// *before* the subcommand name (`governance-auth --issuer ... token`, not
-/// `governance-auth token --issuer ...`), because this is flattened onto the
-/// top-level `Cli` rather than duplicated per subcommand. That ordering
-/// requirement is a footgun for this binary's main use case: a single
-/// command-line string embedded in `apiKeyHelper`/`auth.command`, which both
-/// vendors' docs and this repo's runbook write subcommand-first
-/// (`"governance-auth token"`) -- composing that with explicit
-/// `--issuer`/`--client-id` used to fail with `error: unexpected argument
-/// '--issuer' found`. Verified against a real `apiKeyHelper` invocation, not a
-/// unit test. Since the tree gained scopes they must reach two levels down too
-/// (`crate::cli::tests` pins it), and being on every command is why the fifteen
-/// of them get a help heading rather than crowding each subcommand's options.
+/// What `clap` actually parses -- read this module's doc before touching a
+/// doc comment below, because clap prints them.
+//
+// Every field is `Option` and `global = true`. Both are load-bearing and both
+// are written up in `docs/governance-auth/configuration.md`. `global` also
+// forbids `required` (`Global arguments cannot be required`), which is why
+// `resolve` -- not clap -- enforces that issuer and client id are present, with
+// a message naming the flag instead of a clap usage dump.
 #[derive(Debug, Clone, Args)]
-#[command(next_help_heading = "Configuration (accepted by every command)")]
+#[command(next_help_heading = "Configuration (accepted before or after the command)")]
 pub struct OauthConfigArgs {
-    /// Base URL of the issuing OIDC provider, e.g.
-    /// `https://auth.ai.camer.digital` -- no realm path: `authz-idp` is the
-    /// issuer itself, and a `/realms/...` suffix 404s at discovery.
-    /// Must be `https://`, unless it's a loopback address
-    /// (`127.0.0.1`/`::1`/`localhost`) -- see [`crate::security`]. Validated
-    /// here, at parse time, rather than left to fail at first network use:
-    /// this is a credential helper, and an operator's typo shouldn't be
-    /// discovered only when a token request silently goes out in plaintext.
-    #[arg(long, env = "GOVERNANCE_AUTH_ISSUER", value_parser = parse_issuer, global = true)]
+    /// OIDC issuer base URL. Required once; `login` saves it.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_ISSUER",
+        value_parser = parse_issuer,
+        global = true,
+        long_help = "OIDC issuer base URL, e.g. `https://auth.example.com`. Required once; \
+                     `login` saves it to your config file so later runs need no flags.\n\n\
+                     Pass the issuer itself, with NO realm path: a `/realms/...` suffix 404s at \
+                     discovery. Must be `https://` unless it is loopback (`127.0.0.1`, `::1`, \
+                     `localhost`); a plaintext typo is rejected here rather than at first \
+                     network use."
+    )]
     issuer: Option<String>,
 
-    /// Public OAuth2 client id registered for this binary. Must be a public
-    /// client (no client secret ships in a binary distributed to laptops).
+    /// Public OAuth2 client id for this binary. Required once; `login` saves
+    /// it.
     #[arg(long, env = "GOVERNANCE_AUTH_CLIENT_ID", global = true)]
     client_id: Option<String>,
 
-    /// Space-separated OAuth2 scopes to request. `Option`, deliberately not
-    /// a clap `default_value`: see this module's doc for why a compiled
-    /// default has to be applied in [`Self::resolve`] instead, after the
-    /// config-file layers get a chance to supply it.
+    /// Space-separated OAuth2 scopes to request. Default:
+    /// `openid profile offline_access`.
     #[arg(long, env = "GOVERNANCE_AUTH_SCOPES", global = true)]
     scopes: Option<String>,
 
-    /// Optional `resource`/`audience` parameter, if the authorization server
-    /// needs one to scope the issued token to the gateway.
+    /// Optional `resource`/`audience` parameter, when the authorization
+    /// server needs one to scope the token to the gateway.
     #[arg(long, env = "GOVERNANCE_AUTH_AUDIENCE", global = true)]
     audience: Option<String>,
 
-    /// OTLP collector base URL written into Claude Code's and Codex's config
-    /// on `login`. Signal suffixes (`/v1/metrics`, ...) are appended by those
-    /// tools' own SDKs -- pass the base, not a per-signal path. Same
-    /// HTTPS-or-loopback rule as `--issuer`: telemetry carries prompts and
-    /// tool detail, so it must not go out in plaintext by typo.
-    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_ENDPOINT", value_parser = parse_issuer, global = true)]
+    /// OTLP collector base URL. Its presence is what turns telemetry wiring
+    /// on.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_OTEL_ENDPOINT",
+        value_parser = parse_issuer,
+        global = true,
+        long_help = "OTLP collector base URL, written into Claude Code's and Codex's config by \
+                     `configure`. Its presence is what turns telemetry wiring on.\n\n\
+                     Pass the BASE URL, not a per-signal path: those tools' own SDKs append \
+                     `/v1/metrics`, `/v1/traces` and `/v1/logs` themselves. Same \
+                     HTTPS-or-loopback rule as `--issuer` -- telemetry carries prompts and tool \
+                     detail, so it must not go out in plaintext by typo."
+    )]
     otel_endpoint: Option<String>,
 
-    /// Long-lived OTLP ingest credential. Written verbatim into both tools'
-    /// config as an `Authorization: Bearer` header.
-    ///
-    /// Deliberately NOT the Keycloak access token: neither tool re-reads its
-    /// config mid-session and neither has a credential-helper hook for OTLP
-    /// headers, so a 300s token would export for five minutes and then fail
-    /// silently. See `crate::otel`'s module doc.
-    #[arg(long, env = "GOVERNANCE_AUTH_OTEL_TOKEN", global = true)]
+    /// Long-lived OTLP ingest credential, written as an
+    /// `Authorization: Bearer` header.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_OTEL_TOKEN",
+        global = true,
+        long_help = "Long-lived OTLP ingest credential, written verbatim into both tools' \
+                     config as an `Authorization: Bearer` header.\n\n\
+                     This is NOT your access token, and passing one here does not work: neither \
+                     tool re-reads its config mid-session, so a 300-second token would export \
+                     for five minutes and then fail silently. Use a credential minted for \
+                     ingest, or leave this unset and let `otel headers` refresh the header on \
+                     every call."
+    )]
     otel_token: Option<String>,
 
-    /// Base URL of the AI gateway, e.g. `https://api.ai.camer.digital`. When
-    /// given, `configure` also writes the INFERENCE wiring (Claude Code's
-    /// `ANTHROPIC_BASE_URL` + `apiKeyHelper`, Codex's provider block) rather
-    /// than telemetry alone -- the "no bash script required" half of ADR-0010.
-    /// Left unset, `configure` touches telemetry only, exactly as before.
-    ///
-    /// The per-client paths underneath it are this gateway's (Envoy AI
-    /// Gateway) layout, both verified live: `<gateway>/anthropic/v1/messages`
-    /// and `<gateway>/v1/chat/completions` each return 200.
+    /// AI gateway base URL. Its presence is what turns inference wiring on.
     #[arg(long, env = "GOVERNANCE_AUTH_GATEWAY_URL", value_parser = parse_issuer, global = true)]
     gateway_url: Option<String>,
 
-    /// Where VS Code Copilot Chat's file exporter writes its OTel records,
-    /// which `copilot push` drains. Defaults to `copilot-otel.jsonl` in the
-    /// state directory -- resolved in `crate::copilot::resolve_spool_path`,
-    /// NOT as a clap `default_value`, because the default depends on `$HOME`
-    /// and a `default_value` fires before either config-file layer is read
-    /// (this module's doc).
-    ///
-    /// Deliberately NOT validated as a path that exists: Copilot creates the
-    /// file on its first export, so a developer configuring this before
-    /// restarting VS Code would otherwise be told their correct path is wrong.
-    #[arg(long, env = "GOVERNANCE_AUTH_COPILOT_SPOOL_PATH", global = true)]
+    /// Where VS Code Copilot Chat writes its OTel spool, for `copilot push`
+    /// to drain. Default: `copilot-otel.jsonl` under the state directory.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_COPILOT_SPOOL_PATH",
+        global = true,
+        long_help = "Where VS Code Copilot Chat's file exporter writes its OTel records, which \
+                     `copilot push` drains. Default: `copilot-otel.jsonl` under the state \
+                     directory. `configure` writes the resolved value into both VS Code's \
+                     settings and the drain's schedule, so the two cannot disagree.\n\n\
+                     Not checked for existence: Copilot creates the file on its first export, \
+                     so a correct path set before restarting VS Code is not an error."
+    )]
     copilot_spool_path: Option<String>,
 
-    /// How often Claude Code re-runs `otel headers` for fresh OTLP headers.
-    /// Default 240s, deliberately under Keycloak's 300s access-token
-    /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
-    /// exporting with an expired token for most of every half hour, and
-    /// failing silently while doing it. `Option`, not `default_value_t`: see
-    /// this module's doc.
+    /// How often Claude Code re-runs `otel headers`. Default: 240000, which
+    /// must stay under the access-token lifetime.
     #[arg(long, env = "GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS", global = true)]
     otel_headers_debounce_ms: Option<u64>,
 
-    /// Whether `login` launches the system browser automatically. OFF by
-    /// default (issue #141): SSH sessions, containers, CI and VM-based
-    /// testing all inherit a `DISPLAY`/`xdg-open` that either fails or
-    /// hijacks an unrelated desktop, and the authorize URL is printed either
-    /// way -- so auto-opening is wrong more often than it's right. Only
-    /// `login`'s loopback (non-`--device-code`) path reads this.
-    ///
-    /// `Option<bool>`, not a plain clap flag (`ArgAction::SetTrue`): a bare
-    /// `SetTrue` bakes in "false" the instant the flag is absent, before any
-    /// config-file layer is consulted -- exactly the `default_value` trap
-    /// this module's doc warns about, just for a bool instead of a string.
-    /// `num_args = 0..=1` + `default_missing_value` keeps `--open-browser`
-    /// usable bare (no `=true` needed) while still leaving the field `None`,
-    /// not `Some(false)`, when the flag is never mentioned at all.
+    /// Let `login`'s loopback flow open the system browser. Off by default;
+    /// the authorize URL is printed either way.
     #[arg(
         long,
         env = "GOVERNANCE_AUTH_OPEN_BROWSER",
@@ -160,59 +155,63 @@ pub struct OauthConfigArgs {
     )]
     open_browser: Option<bool>,
 
-    /// Whether `token`/`otel headers` exchange the cached upstream access
-    /// token for a downstream one before printing it (RFC 8693). OFF by
-    /// default -- opt-in only. See [`ExchangeTokenEndpoint`] and
-    /// [`ExchangeConfig`] for what else must be configured once this is on,
-    /// and `oauth::exchange`'s module doc for the fail-closed contract: a
-    /// misconfigured or failing exchange must never fall back to emitting
-    /// the un-exchanged upstream token. Same `Option<bool>` reasoning as
-    /// `open_browser`, above.
+    /// Exchange the access token for a downstream one (RFC 8693) before
+    /// `token`/`otel headers` print it. Off by default.
     #[arg(
         long,
         env = "GOVERNANCE_AUTH_TOKEN_EXCHANGE",
         num_args = 0..=1,
         default_missing_value = "true",
-        global = true
+        global = true,
+        help_heading = "Token exchange (RFC 8693 -- off unless --token-exchange)",
+        hide_short_help = true
     )]
     token_exchange: Option<bool>,
 
-    /// The token-exchange issuer, discovered via OIDC discovery the same way
-    /// the primary `--issuer` is -- only consulted when
-    /// `--exchange-token-endpoint` is absent (discovery costs a round trip
-    /// the explicit form skips). Deliberately a SEPARATE field from
-    /// `--issuer`: "authenticate at A, present credentials minted by B" is
-    /// the whole point of token exchange, so the two issuers must be able to
-    /// differ.
-    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_ISSUER", value_parser = parse_issuer, global = true)]
+    /// Issuer of the exchange server, resolved by discovery. Needed unless
+    /// `--exchange-token-endpoint` is given.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_EXCHANGE_ISSUER",
+        value_parser = parse_issuer,
+        global = true,
+        help_heading = "Token exchange (RFC 8693 -- off unless --token-exchange)",
+        hide_short_help = true
+    )]
     exchange_issuer: Option<String>,
 
-    /// The token-exchange endpoint, given directly rather than discovered.
-    /// Takes precedence over `--exchange-issuer` when both are set (skips a
-    /// discovery round trip for the more specific value; not an error the
-    /// way `otel_token`/`otel_token_file` both-set is, because these two
-    /// aren't independently meaningful ways to say the same secret -- one is
-    /// just a shortcut past the other's discovery step).
+    /// Exchange token endpoint given directly, skipping discovery. Wins over
+    /// `--exchange-issuer`.
     #[arg(
         long,
         env = "GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT",
         value_parser = parse_exchange_token_endpoint,
-        global = true
+        global = true,
+        help_heading = "Token exchange (RFC 8693 -- off unless --token-exchange)",
+        hide_short_help = true
     )]
     exchange_token_endpoint: Option<String>,
 
-    /// The `client_id` presented on the exchange request. Required when
-    /// `--token-exchange` is on; see lightbridge-authz's
-    /// `docs/token-exchange-integration.md` for why this specific client id
-    /// (not the primary `--client-id`) must appear in the subject token's
-    /// `aud` claim for the exchange to succeed at all.
-    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID", global = true)]
+    /// Client id presented on the exchange request. Required once
+    /// `--token-exchange` is on, and not the same client as `--client-id`.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID",
+        global = true,
+        help_heading = "Token exchange (RFC 8693 -- off unless --token-exchange)",
+        hide_short_help = true
+    )]
     exchange_client_id: Option<String>,
 
-    /// Space-separated scopes requested on the exchange, if any. Optional --
-    /// omitting it grants the exchange server's allow-list minus
-    /// `offline_access` (see the integration guide's "Scope semantics").
-    #[arg(long, env = "GOVERNANCE_AUTH_EXCHANGE_SCOPES", global = true)]
+    /// Scopes requested on the exchange. Omit to take the exchange server's
+    /// own allow-list.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_EXCHANGE_SCOPES",
+        global = true,
+        help_heading = "Token exchange (RFC 8693 -- off unless --token-exchange)",
+        hide_short_help = true
+    )]
     exchange_scopes: Option<String>,
 }
 
@@ -494,8 +493,8 @@ pub struct OauthConfig {
     pub copilot_spool_path: Option<String>,
     pub otel_headers_debounce_ms: u64,
     /// Whether `login`'s loopback flow launches the system browser
-    /// automatically. See `OauthConfigArgs::open_browser`'s doc for why this
-    /// defaults to `false` (issue #141).
+    /// automatically. Defaults to `false`; the reasoning (issue #141) is in
+    /// `docs/governance-auth/configuration.md`.
     pub open_browser: bool,
     /// Present only when token exchange (RFC 8693) is enabled -- `None` is
     /// the ONLY representation of "off", so there is no separate bool that
@@ -556,9 +555,8 @@ fn parse_issuer(raw: &str) -> Result<String, String> {
 /// `clap` value parser for `--exchange-token-endpoint`/
 /// `GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT`: the same two checks as
 /// [`parse_issuer`], but labelled "endpoint" rather than "issuer" -- this
-/// flag is explicitly NOT an issuer (see its doc comment on
-/// [`OauthConfigArgs::exchange_token_endpoint`]), it's the resolved token
-/// endpoint itself, given directly to skip a discovery round trip.
+/// flag is explicitly NOT an issuer, it's the resolved token endpoint itself,
+/// given directly to skip a discovery round trip.
 fn parse_exchange_token_endpoint(raw: &str) -> Result<String, String> {
     parse_url("endpoint", raw)
 }
@@ -1266,9 +1264,9 @@ mod tests {
         }
 
         /// An explicit `--exchange-token-endpoint` takes precedence over
-        /// `--exchange-issuer` when both are set -- documented behaviour in
-        /// `OauthConfigArgs::exchange_token_endpoint`'s doc, pinned here so
-        /// a refactor can't silently flip which one wins.
+        /// `--exchange-issuer` when both are set -- documented behaviour
+        /// (that flag's `--help` and `docs/governance-auth/configuration.md`),
+        /// pinned here so a refactor can't silently flip which one wins.
         #[test]
         fn token_exchange_explicit_token_endpoint_wins_over_issuer() {
             let dir = tempdir();

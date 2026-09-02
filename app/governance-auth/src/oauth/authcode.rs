@@ -4,8 +4,8 @@
 //! authorize URL,
 //! and blocks for exactly one HTTP request -- the redirect back from the
 //! authorization server. Launching the system browser automatically is opt-in
-//! (`config.open_browser`, issue #141) -- see that field's doc in
-//! `crate::config` for why it isn't the default.
+//! (`config.open_browser`, issue #141) -- see
+//! `docs/governance-auth/configuration.md` for why it isn't the default.
 //!
 //! ⚠️ The fixed ports are a **workaround for a server-side spec violation**,
 //! not a design preference -- RFC 8252 §7.3 makes accepting any loopback port
