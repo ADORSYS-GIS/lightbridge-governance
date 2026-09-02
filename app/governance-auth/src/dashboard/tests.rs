@@ -46,6 +46,7 @@ pub(super) fn unsurveyed_drain() -> Drain {
     Drain {
         schedule: None,
         collector: false,
+        stale: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
         endpoint: endpoint.map(ToOwned::to_owned),
         applied: endpoint.is_some(),
         has_static_token,
+        stale: false,
     }
 }
 

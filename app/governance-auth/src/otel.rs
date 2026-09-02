@@ -55,7 +55,7 @@ pub struct OtelSettings {
     /// as an empty-string endpoint.
     pub endpoint: Option<String>,
     /// Absolute path VS Code Copilot Chat's *file* exporter is told to write,
-    /// and the path `copilot-push` drains. Resolved ONCE by the caller through
+    /// and the path `copilot push` drains. Resolved ONCE by the caller through
     /// ADR-0012's five layers, so `settings.json`'s `outfile` and the drain's
     /// default cannot disagree -- which they silently would if each side
     /// computed its own. See `crate::copilot::resolve_spool_path`.

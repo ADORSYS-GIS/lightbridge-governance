@@ -18,7 +18,10 @@
 use std::path::Path;
 
 use super::style::Colour;
-use crate::schedule::{self, INTERVAL_SECONDS, Schedule};
+use crate::{
+    config::OauthConfig,
+    schedule::{self, INTERVAL_SECONDS, Schedule},
+};
 
 pub struct Drain {
     pub(super) schedule: Option<Schedule>,
@@ -26,13 +29,19 @@ pub struct Drain {
     /// to schedule and this row is information, not an alarm -- the telemetry
     /// row above already carries that.
     pub(super) collector: bool,
+    /// Whether the unit/plist on disk still matches what `configure` would
+    /// write. `None` when it could not be asked -- see
+    /// [`crate::schedule::stale`], which is also where the reason this is
+    /// checked at all lives.
+    pub(super) stale: Option<bool>,
 }
 
 impl Drain {
-    pub fn survey(home: Option<&Path>, collector: bool) -> Self {
+    pub fn survey(home: Option<&Path>, config: &OauthConfig) -> Self {
         Self {
             schedule: home.map(schedule::survey),
-            collector,
+            collector: config.otel_endpoint.is_some(),
+            stale: home.and_then(|home| schedule::stale(home, config)),
         }
     }
 
@@ -79,6 +88,22 @@ impl Drain {
                 Colour::Red,
                 format!(
                     "nothing drains the spool: run `governance-auth configure` to install {}",
+                    schedule.path.display()
+                ),
+            );
+        }
+
+        // Before `active`: a running timer that invokes a command this
+        // binary no longer has is WORSE than a stopped one -- it wakes every
+        // INTERVAL_SECONDS, fails on a parse error nobody reads, and reports
+        // itself as green on the line below. This is the row an upgrade makes
+        // wrong, so it is the row that has to say so.
+        if self.stale == Some(true) {
+            return (
+                "out of date".to_owned(),
+                Colour::Red,
+                format!(
+                    "{} does not match what this version writes: run `governance-auth configure`",
                     schedule.path.display()
                 ),
             );

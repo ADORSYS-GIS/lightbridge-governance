@@ -112,6 +112,7 @@ fn a_configured_but_unapplied_endpoint_says_so() {
         endpoint: Some("https://otel.example".to_owned()),
         applied: false,
         has_static_token: false,
+        stale: false,
     };
     let out = table("i", "c", &session(true, true), &unapplied, &[]);
     let line = row(&out);

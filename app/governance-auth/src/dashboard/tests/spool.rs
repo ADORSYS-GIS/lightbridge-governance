@@ -92,7 +92,7 @@ fn never_pushed_with_bytes_waiting_is_red() {
         "a drain that has never once succeeded must not look like an ordinary backlog"
     );
     assert!(note.contains("never pushed"), "{note}");
-    assert!(note.contains("copilot-push"), "{note}");
+    assert!(note.contains("copilot push"), "{note}");
 }
 
 /// Pending but previously successful is the ordinary state between timer

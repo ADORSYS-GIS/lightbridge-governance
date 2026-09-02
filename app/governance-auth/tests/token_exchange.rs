@@ -1,10 +1,9 @@
-//! RFC 8693 token exchange (issue #140): OFF by default, opt-in only, and
-//! FAIL CLOSED -- `token`/`otel-headers` must never fall back to the raw
-//! upstream token when exchange is enabled but fails. Uses a SECOND
-//! `MockIdp` instance as the exchange authorization server, entirely
-//! independent from the primary (upstream) one -- proving the "authenticate
-//! at A, present credentials minted by B" pair is genuinely two different
-//! servers, not the same mock answering twice.
+//! RFC 8693 token exchange (issue #140): OFF by default, opt-in only, and FAIL
+//! CLOSED -- `token`/`otel headers` must never fall back to the raw upstream
+//! token when exchange is enabled but fails. Uses a SECOND `MockIdp` instance
+//! as the exchange authorization server, entirely independent from the primary
+//! (upstream) one -- proving the "authenticate at A, present credentials
+//! minted by B" pair is two different servers, not one mock answering twice.
 
 mod support;
 
@@ -183,7 +182,8 @@ async fn otel_headers_also_emits_the_exchanged_token() -> Result<()> {
 
     let output = harness
         .run(&[
-            "otel-headers",
+            "otel",
+            "headers",
             "--token-exchange",
             "--exchange-token-endpoint",
             &format!("{}/token", exchange_idp.base_url),
@@ -376,27 +376,27 @@ async fn token_exchange_enabled_without_a_client_id_fails_closed() -> Result<()>
     Ok(())
 }
 
-/// `self-update` talks only to the GitHub releases API. Requiring OAuth config
-/// for it meant `governance-auth self-update` failed with
+/// `self update` talks only to the GitHub releases API. Requiring OAuth config
+/// for it meant `governance-auth self update` failed with
 /// `--issuer (or GOVERNANCE_AUTH_ISSUER) is required` on a machine with no
 /// config -- which is precisely the machine most likely to be updating.
 ///
 /// Reported from a clean VM running a released binary. Fails again if
-/// `resolve()` is moved back in front of the dispatch in `main.rs`.
+/// `resolve()` is moved back in front of `Cli::run`'s dispatch.
 #[tokio::test]
 async fn self_update_does_not_require_oauth_configuration() -> Result<()> {
     let harness = Harness::new("https://unreachable.invalid.example")?;
 
-    // `--check` so nothing is downloaded or installed; the point is only that
-    // argument resolution does not reject the command before it starts.
+    // `--dry-run` so nothing is installed; the point is only that argument
+    // resolution does not reject the command before it starts.
     let output = harness
-        .run_without_oauth_args(&["self-update", "--check"])
+        .run_without_oauth_args(&["self", "update", "--dry-run"])
         .await?;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !stderr.contains("is required"),
-        "self-update must not demand OAuth config it never reads; got: {stderr}"
+        "self update must not demand OAuth config it never reads; got: {stderr}"
     );
     Ok(())
 }

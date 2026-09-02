@@ -5,7 +5,7 @@
 //! state in that table is "how much is waiting"; this one is "waiting will not
 //! help". The bytes are pending either way, so the numbers are identical and
 //! only the advice differs -- and the advice the backlog row gives ("run
-//! `governance-auth copilot-push`") reproduces the same failing wake.
+//! `governance-auth copilot push`") reproduces the same failing wake.
 
 use super::{spool::spool, *};
 use crate::dashboard::style::Colour;
@@ -31,7 +31,7 @@ fn a_drain_held_on_the_last_record_does_not_read_as_an_ordinary_backlog() {
         "the note must say what actually resolves it, got: {note}"
     );
     assert!(
-        !note.contains("run `governance-auth copilot-push`"),
+        !note.contains("run `governance-auth copilot push`"),
         "advising the command that reproduces the stall is worse than saying nothing: {note}"
     );
     // Whatever `style::since` renders, not a raw epoch -- the same treatment

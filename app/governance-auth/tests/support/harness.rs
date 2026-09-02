@@ -100,7 +100,7 @@ impl Harness {
     /// Runs the binary with **no** `--issuer`/`--client-id` and no config
     /// file, i.e. exactly a machine that has never been configured.
     ///
-    /// Exists for `self-update`, which reads no OAuth config at all. Every
+    /// Exists for `self update`, which reads no OAuth config at all. Every
     /// other command legitimately requires it, so this deliberately does NOT
     /// become the default -- using it elsewhere would stop those commands'
     /// "fail early and clearly" behaviour from being exercised.

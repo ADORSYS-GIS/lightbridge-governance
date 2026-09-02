@@ -57,7 +57,8 @@ fn the_invocation_carries_every_flag_in_claps_order() {
             "https://otel.example.com",
             "--copilot-spool-path",
             "/state/copilot-otel.jsonl",
-            "copilot-push",
+            "copilot",
+            "push",
         ],
         "globals must precede the subcommand -- see tests/cli_arg_order.rs"
     );
@@ -178,4 +179,5 @@ fn the_timer_drains_exactly_the_file_copilot_is_told_to_write() {
 /// Falsification: replace the body of `systemd::classify` with
 /// `Some(!stdout.trim().is_empty())` and the "could not be asked" case fails --
 /// checked, and it is the only test in the crate that does.
+mod staleness;
 mod survey;

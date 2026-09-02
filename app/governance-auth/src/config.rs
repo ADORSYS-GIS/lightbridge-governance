@@ -41,21 +41,21 @@ const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS: u64 = 240_000;
 /// [`Self::resolve`] is where "must actually be present" gets enforced, with
 /// a message naming the flag, not a generic clap usage dump.
 ///
-/// `global = true` on all four fields: without it, clap only accepts them
+/// `global = true` on every field: without it, clap only accepts them
 /// *before* the subcommand name (`governance-auth --issuer ... token`, not
 /// `governance-auth token --issuer ...`), because this is flattened onto the
 /// top-level `Cli` rather than duplicated per subcommand. That ordering
-/// requirement is a footgun specifically for this binary's main use case: a
-/// single command-line string embedded in `apiKeyHelper`/`auth.command`,
-/// which both vendors' own docs and this repo's runbook show with the
-/// subcommand written first (`"governance-auth token"`) -- composing that
-/// pattern with explicit `--issuer`/`--client-id` (rather than relying on
-/// `GOVERNANCE_AUTH_ISSUER`/`GOVERNANCE_AUTH_CLIENT_ID` env vars, which a
-/// helper subprocess isn't guaranteed to inherit) used to fail with `error:
-/// unexpected argument '--issuer' found` and no hint that reordering the
-/// string would fix it. Verified against a real `apiKeyHelper` invocation,
-/// not just a unit test.
+/// requirement is a footgun for this binary's main use case: a single
+/// command-line string embedded in `apiKeyHelper`/`auth.command`, which both
+/// vendors' docs and this repo's runbook write subcommand-first
+/// (`"governance-auth token"`) -- composing that with explicit
+/// `--issuer`/`--client-id` used to fail with `error: unexpected argument
+/// '--issuer' found`. Verified against a real `apiKeyHelper` invocation, not a
+/// unit test. Since the tree gained scopes they must reach two levels down too
+/// (`crate::cli::tests` pins it), and being on every command is why the fifteen
+/// of them get a help heading rather than crowding each subcommand's options.
 #[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Configuration (accepted by every command)")]
 pub struct OauthConfigArgs {
     /// Base URL of the issuing OIDC provider, e.g.
     /// `https://auth.ai.camer.digital` -- no realm path: `authz-idp` is the
@@ -116,7 +116,7 @@ pub struct OauthConfigArgs {
     gateway_url: Option<String>,
 
     /// Where VS Code Copilot Chat's file exporter writes its OTel records,
-    /// which `copilot-push` drains. Defaults to `copilot-otel.jsonl` in the
+    /// which `copilot push` drains. Defaults to `copilot-otel.jsonl` in the
     /// state directory -- resolved in `crate::copilot::resolve_spool_path`,
     /// NOT as a clap `default_value`, because the default depends on `$HOME`
     /// and a `default_value` fires before either config-file layer is read
@@ -128,7 +128,7 @@ pub struct OauthConfigArgs {
     #[arg(long, env = "GOVERNANCE_AUTH_COPILOT_SPOOL_PATH", global = true)]
     copilot_spool_path: Option<String>,
 
-    /// How often Claude Code re-runs `otel-headers` for fresh OTLP headers.
+    /// How often Claude Code re-runs `otel headers` for fresh OTLP headers.
     /// Default 240s, deliberately under Keycloak's 300s access-token
     /// lifetime -- Claude Code's own default is 29 MINUTES, which would mean
     /// exporting with an expired token for most of every half hour, and
@@ -160,7 +160,7 @@ pub struct OauthConfigArgs {
     )]
     open_browser: Option<bool>,
 
-    /// Whether `token`/`otel-headers` exchange the cached upstream access
+    /// Whether `token`/`otel headers` exchange the cached upstream access
     /// token for a downstream one before printing it (RFC 8693). OFF by
     /// default -- opt-in only. See [`ExchangeTokenEndpoint`] and
     /// [`ExchangeConfig`] for what else must be configured once this is on,

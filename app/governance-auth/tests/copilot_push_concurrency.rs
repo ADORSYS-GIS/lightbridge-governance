@@ -1,7 +1,7 @@
-//! Two `copilot-push` runs at once must not export the same record twice.
+//! Two `copilot push` runs at once must not export the same record twice.
 //!
 //! This is not hypothetical: the `status` dashboard tells the developer to run
-//! `governance-auth copilot-push` by hand, and the 5-minute timer that also
+//! `governance-auth copilot push` by hand, and the 5-minute timer that also
 //! runs it has no idea. Read -> drain -> POST -> write-checkpoint is a
 //! read-modify-write over one file; without a lock across the whole of it,
 //! every concurrent run reads the same offset and ships the same bytes.

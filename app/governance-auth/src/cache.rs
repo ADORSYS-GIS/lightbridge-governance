@@ -362,7 +362,7 @@ impl FileLock {
         Self::acquire_at(lock_path(issuer, client_id)?, None)
     }
 
-    /// The same lock over an arbitrary state file. Exists so `copilot-push`
+    /// The same lock over an arbitrary state file. Exists so `copilot push`
     /// can hold ONE writer over its own read-drain-post-write critical
     /// section without a second, subtly different implementation of stale-lock
     /// recovery -- that logic is the part worth having exactly one of.
@@ -498,7 +498,7 @@ fn holder_liveness(path: &Path) -> Option<bool> {
     // the instant the file appears -- so the loser reads it in precisely the
     // window where it is legitimately empty, calls the live holder dead, and
     // deletes the lock out from under it. Both then hold it. Reproduced: three
-    // concurrent `copilot-push` runs, two of which drained the same offset and
+    // concurrent `copilot push` runs, two of which drained the same offset and
     // exported every record twice.
     //
     // So a BRAND NEW empty lock is presumed to be mid-write. This is not the
@@ -634,7 +634,7 @@ mod tests {
     /// writes its PID; a loser's `create_new` fails at exactly that instant, so
     /// it reads the file in the one window where empty is legitimate. Calling
     /// that dead deletes a live holder's lock -- measured as three concurrent
-    /// `copilot-push` runs exporting every record twice.
+    /// `copilot push` runs exporting every record twice.
     #[test]
     fn a_just_created_empty_lock_is_presumed_mid_write_not_dead() {
         let (_s, path) = lock_containing("racing", "");
@@ -674,7 +674,7 @@ mod tests {
     }
 
     /// A confirmed-live holder is never preempted, so a caller with nothing to
-    /// wait for -- `copilot-push` on a timer -- has to be able to give up
+    /// wait for -- `copilot push` on a timer -- has to be able to give up
     /// instead. Without a ceiling, one drain stuck on a socket wedges every
     /// later wake behind it for ever, which is a permanently stuck drain
     /// rather than one lost wake.

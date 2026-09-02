@@ -1,4 +1,4 @@
-//! Starting a `copilot-push` wake and killing it part way through.
+//! Starting a `copilot push` wake and killing it part way through.
 //!
 //! [`super::harness::Harness::run`] waits for the child, which is precisely
 //! what a test about a wake that never finishes cannot do. So this builds its
@@ -43,7 +43,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// within one collector round trip of where the test asked for it.
 const POLL: Duration = Duration::from_millis(5);
 
-/// One `copilot-push` process that the test intends to interrupt.
+/// One `copilot push` process that the test intends to interrupt.
 pub struct Wake {
     child: Child,
 }
@@ -65,14 +65,15 @@ impl Wake {
             .arg(harness.issuer())
             .arg("--client-id")
             .arg(harness.client_id())
-            .arg("copilot-push")
+            .arg("copilot")
+            .arg("push")
             .arg("--otel-endpoint")
             .arg(collector)
             .arg("--copilot-spool-path")
             .arg(spool)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let child = command.spawn().context("spawning a copilot-push wake")?;
+        let child = command.spawn().context("spawning a copilot push wake")?;
         Ok(Self { child })
     }
 

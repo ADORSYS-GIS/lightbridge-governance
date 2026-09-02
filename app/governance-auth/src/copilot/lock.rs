@@ -8,7 +8,7 @@
 //! up as inflated usage at the collector.
 //!
 //! Not hypothetical, and not rare: `status` tells the developer to run
-//! `governance-auth copilot-push` by hand precisely when there is a backlog,
+//! `governance-auth copilot push` by hand precisely when there is a backlog,
 //! and the five-minute timer that also runs it has no idea. Three concurrent
 //! processes on a two-record spool sent every record three times.
 //!
@@ -37,7 +37,7 @@ const FILE_NAME: &str = "copilot-push.lock";
 ///
 /// ⚠️ Unlike `login`, this caller is on a timer and there is no human to wait
 /// for, so "wait indefinitely on a live holder" is the wrong default here: one
-/// `copilot-push` stuck on a socket would hold the lock for ever and every
+/// `copilot push` stuck on a socket would hold the lock for ever and every
 /// later wake would queue behind it -- a permanently stuck drain rather than
 /// one lost wake. That was measured: a healthy collector received zero
 /// requests from the wake after a stuck one.
@@ -64,5 +64,5 @@ const HELD_BY_A_LIVE_DRAIN: Duration = Duration::from_secs(120);
 /// not block the next one; see [`FileLock`].
 pub fn acquire(state_dir: &Path) -> Result<FileLock> {
     FileLock::acquire_at(state_dir.join(FILE_NAME), Some(HELD_BY_A_LIVE_DRAIN))
-        .context("waiting for another `copilot-push` to finish")
+        .context("waiting for another `copilot push` to finish")
 }

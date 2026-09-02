@@ -2,9 +2,9 @@
 //!
 //! Before this module every diagnostic went to stderr and nowhere else.
 //! That is fine for `login`, which a human is watching. It is useless for
-//! the callers that matter most: `token`/`otel-headers`, spawned every few
+//! the callers that matter most: `token`/`otel headers`, spawned every few
 //! minutes by Claude Code and Codex with their stderr swallowed, and
-//! `copilot-push`, woken by a timer at 03:00 with nobody there at all. A
+//! `copilot push`, woken by a timer at 03:00 with nobody there at all. A
 //! drain that failed on that schedule left nothing to read afterwards.
 //!
 //! ## Where the file lives
@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Named for the binary, not for `copilot-push`: every command writes here.
+/// Named for the binary, not for `copilot push`: every command writes here.
 const FILE_NAME: &str = "governance-auth.log";
 
 /// How loud the FILE is, independent of `RUST_LOG`. It exists to be read

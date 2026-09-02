@@ -3,7 +3,7 @@
 //!
 //! ## Why this row exists at all
 //!
-//! `copilot-push` runs on the schedule [`crate::schedule`] installs, and a
+//! `copilot push` runs on the schedule [`crate::schedule`] installs, and a
 //! wake that fails on every fire looks exactly like a working one from inside
 //! VS Code -- Copilot appends to the spool either way. The `copilot drain` row
 //! next door reports whether the schedule is *running*; this one reports
@@ -31,7 +31,7 @@
 //! It clears when Copilot appends another record, and not before.
 //!
 //! Rendered as an ordinary "N bytes pending ... run `governance-auth
-//! copilot-push`" that is actively misleading: the suggested command reproduces
+//! copilot push`" that is actively misleading: the suggested command reproduces
 //! the same wake and exits 1 again. Same bytes, entirely different advice.
 //!
 //! ## Why discards outrank "pending", and why they are not permanently red
@@ -109,7 +109,7 @@ impl Spool {
                 "checkpoint unreadable".to_owned(),
                 Colour::Red,
                 format!(
-                    "{} will not parse: run `governance-auth copilot-push` to see why",
+                    "{} will not parse: run `governance-auth copilot push` to see why",
                     status.path.display()
                 ),
             );
@@ -149,7 +149,7 @@ impl Spool {
                 format!(
                     "the collector refuses the last record in the spool and there is nothing \
                      after it to prove the collector still works with, so it is held rather than \
-                     discarded{}. Re-running `copilot-push` repeats this exactly; it clears when \
+                     discarded{}. Re-running `copilot push` repeats this exactly; it clears when \
                      Copilot writes another record. {last}",
                     match self.held_age {
                         Some(age) => format!(" (since {})", since(age)),
@@ -175,7 +175,7 @@ impl Spool {
         (
             format!("{} bytes pending", status.pending),
             colour,
-            format!("{last}; run `governance-auth copilot-push`"),
+            format!("{last}; run `governance-auth copilot push`"),
         )
     }
 
@@ -192,7 +192,7 @@ impl Spool {
             format!("{} record(s) discarded", status.discarded_total),
             colour,
             format!(
-                "consumed but never delivered, {when}; {last}. Run `governance-auth copilot-push \
+                "consumed but never delivered, {when}; {last}. Run `governance-auth copilot push \
                  --dry-run` to see what this build cannot read"
             ),
         )
