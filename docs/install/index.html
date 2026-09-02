@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>governance-auth — install</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b63;
+    --rule: #e4e4df; --code-bg: #f4f4f1; --accent: #4a5d3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e8e8e4; --muted: #9a9a92;
+      --rule: #2c2c31; --code-bg: #1e1e23; --accent: #a3bd8a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 4rem 1.5rem 6rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 .3rem; }
+  .sub { color: var(--muted); margin: 0 0 3rem; }
+  h2 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--muted); margin: 2.75rem 0 .8rem; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+        padding: .9rem 1.1rem; overflow-x: auto; margin: 0 0 .9rem;
+        font: 13.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .93em; }
+  p code, li code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem; }
+  td:first-child { white-space: nowrap; }
+  .note { border-left: 2px solid var(--accent); padding: .1rem 0 .1rem 1rem; color: var(--muted);
+          margin: 1.2rem 0; }
+  a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+  footer { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+           color: var(--muted); font-size: .87rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>governance-auth</h1>
+  <p class="sub">OAuth2 credential helper for pointing Claude Code, Codex and VS Code at this org's governed AI gateway.</p>
+
+  <h2>Install</h2>
+<pre><code>curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/install.sh | sh</code></pre>
+  <p class="note">
+    Read it first if you like — <a href="install.sh.txt">install.sh.txt</a> is the same file served as
+    plain text. Piping anything into <code>sh</code> deserves that much.
+  </p>
+
+  <h2>Options</h2>
+  <table>
+    <tr><th>Flag</th><th>Environment</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>--version</code></td><td><code>GOVERNANCE_AUTH_VERSION</code></td><td><code>latest</code></td><td>Release tag to install</td></tr>
+    <tr><td><code>--bin-dir</code></td><td><code>BIN_DIR</code></td><td><code>~/.local/bin</code></td><td>Where the binary goes</td></tr>
+    <tr><td><code>--libc</code></td><td><code>GOVERNANCE_AUTH_LIBC</code></td><td><code>musl</code></td><td>Linux libc flavour</td></tr>
+  </table>
+<pre><code>curl ... | sh -s -- --version v0.5.0 --bin-dir /usr/local/bin</code></pre>
+
+  <h2>Uninstall</h2>
+<pre><code>curl --proto '=https' --tlsv1.2 -fsSL https://adorsys-gis.github.io/lightbridge-governance/uninstall.sh | sh</code></pre>
+  <p>
+    Removes the binary, stops and removes the Copilot drain schedule, revokes your session at the
+    identity provider, and clears local state. Add <code>--purge</code> to also remove
+    <code>~/.config/governance-auth</code> and the managed block from your shell rc files.
+  </p>
+  <p class="note">
+    Run <code>governance-auth configure</code> with no <code>--gateway-url</code> or
+    <code>--otel-endpoint</code> <em>before</em> uninstalling if you want the keys it wrote into
+    Claude Code, Codex and VS Code retracted automatically. The uninstaller cannot do it afterwards —
+    the binary that owns those keys is gone by then.
+  </p>
+
+  <h2>What it does, and does not do</h2>
+  <ul>
+    <li>Verifies the published <code>.sha256</code> before installing. A missing or mismatched
+        checksum is a refusal, not a warning.</li>
+    <li>Picks one of six published targets from <code>uname</code>. On Linux it installs the
+        <strong>musl</strong> build by default — the glibc builds link against 2.39 and will not
+        start on Ubuntu 22.04, Debian 12, RHEL 9 or Amazon Linux 2023.</li>
+    <li><strong>Never edits your shell rc files.</strong> It prints the <code>export PATH=…</code>
+        line for you to place yourself. <code>governance-auth configure</code> writes its own managed
+        block into those files, and two independent writers to one <code>.zshrc</code> is a mess
+        somebody has to untangle by hand.</li>
+  </ul>
+
+  <h2>Pinning</h2>
+  <p>
+    <code>--version</code> pins the <em>binary</em>. It does not pin this <em>script</em>, which is
+    always served from <code>main</code>. A reproducible image build should vendor a copy of
+    <a href="install.sh.txt">install.sh</a> rather than curl it.
+  </p>
+
+  <footer>
+    <a href="https://github.com/ADORSYS-GIS/lightbridge-governance">Source</a> ·
+    <a href="https://github.com/ADORSYS-GIS/lightbridge-governance/releases">Releases</a> ·
+    <a href="https://adorsys-gis.github.io/ai-governance/">AI governance</a>
+  </footer>
+</main>
+</body>
+</html>
