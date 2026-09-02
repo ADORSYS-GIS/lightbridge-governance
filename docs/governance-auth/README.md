@@ -48,16 +48,11 @@ governance-auth token                       # every request, invoked by the clie
 
 ## Install
 
-> **Maintainers:** ⚠️ **For a few minutes after a release is cut, the command below returns 404.**
-> GitHub points `releases/latest/download/` at the new release as soon as it is published, and the
-> six-target asset build then takes ~7 minutes to attach the twelve files. The installer refuses
-> cleanly — `no asset … in the latest release`, exit 1, nothing installed — but a developer
-> onboarding in that window sees a broken command. **Wait for a release's assets before pointing
-> anyone at it.**
->
-> Cutting the release as a draft closes that window, and was tried: it broke the build instead,
-> because a draft release has no git tag. The full account is in
-> `.github/workflows/release-governance-auth.yml`, above the trigger.
+> **Maintainers:** for the few minutes after a release is cut, `releases/latest/download/` points
+> at a release whose asset build has not finished. The installer handles it: it falls back to the
+> newest release that actually publishes the asset, says which one it used, and installs that.
+> Nobody sees a 404. Pinning with `--version` never falls back — a pin that silently installed
+> something else would defeat the point.
 >
 > **Maintainers:** the install URLs below serve from GitHub Pages, which a repo admin must enable
 > once — *Settings → Pages → Build and deployment → Source: **GitHub Actions***. The publishing
