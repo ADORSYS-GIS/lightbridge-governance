@@ -180,33 +180,64 @@ It may not exist or you may not have access to it.
 `claude --model adorsys-coder -p "…"` works. Wiring `modelOverrides` from
 `GET /v1/models/info` would fix both this and the window assumption at once.
 
-### opencode is the most complete client, and it is not configured here
+### opencode is the most complete client, and it is configured through its well-known document, not here
 
-Its `opencode-oauth2` plugin does a full OAuth2 **device-code** flow against
-the same Keycloak realm `governance-auth` uses, with its own refresh loop
-(`syncIntervalMinutes: 60`) — so for inference it needs nothing from
-`governance-auth` at all. Config lives at
-`~/.config/opencode/opencode.json`; the org's working shape is in `ai-helm`
-`charts/librechat-opencode-wellknown/values.yaml`:
+Its `@vymalo/opencode-oauth2` plugin does a full OAuth2 **device-code** flow
+against **lightbridge's own IdP, `authz-idp`** — not Keycloak — with its own
+refresh loop (`syncIntervalMinutes: 60`), so for inference it needs nothing
+from `governance-auth` at all. The org's configuration is not a local file:
+opencode fetches `https://ai.camer.digital/opencode/.well-known/opencode` at
+every launch, and that document is rendered from `ai-helm`
+`charts/librechat-opencode-wellknown/values.yaml`. Its working shape, as of
+2026-09-02:
 
 ```jsonc
 "provider": { "camer-digital": { "options": {
   "baseURL": "https://api.ai.camer.digital/v1",
-  "oauth2": { "issuer": "https://auth.verif.fyi/realms/camer-digital",
-              "clientId": "opencode-cli", "authFlow": "device_code" },
+  "oauth2": { "issuer": "https://auth.ai.camer.digital",
+              "clientId": "opencode-cli", "authFlow": "device_code",
+              "scopes": ["openid", "profile", "email", "offline_access"] },
   "meta":   { "modelsInfoUrl": "models/info" } } } }
 ```
 
-**It has no OpenTelemetry support** — not a config gap, the feature doesn't
-exist. Its plugin system is the only seam (the same seam `opencode-oauth2`
-uses), so instrumenting it means writing a plugin, not writing config.
-That's why `governance-auth` does not configure opencode today: the half it
-could help with is already solved better, and the half we want (telemetry)
-isn't configurable at all.
+The issuer matters for telemetry: `authz-idp` stamps `aud` = the requesting
+`client_id` (lightbridge-authz ADR-0011 Decision 5), so every opencode token
+carries `aud: opencode-cli`. An earlier revision of this page recorded the
+Keycloak realm as the issuer; it was wrong by the time it was written, and a
+live collector rejection (`expected audience "governance-auth-cli" got
+["opencode-cli"]`, which the oidc extension only reaches after issuer and
+signature have already validated) proved the token comes from
+`auth.ai.camer.digital`.
 
-⚠️ Its config is **JSONC**, so anything editing it faces the same
-comment-preservation hazard as VS Code's `settings.json` — and the org's own
-file is heavily commented.
+**It has OpenTelemetry support**, through the org-published
+`@vymalo/opencode-otel` plugin in that same well-known document: traces,
+metrics and logs over OTLP/HTTP, no prompt or response content. Two things
+about how it is wired are easy to get wrong:
+
+- It exports to the **second** public collector, `otel-opencode.ai.camer.digital`
+  (`aud: opencode-cli`), because the Claude Code collector accepts only
+  `governance-auth-cli` — see "Two public collectors, one audience each" in
+  [`ai-client-flows.md`](./ai-client-flows.md). The document pins the
+  **per-signal** `endpoints`, deliberately not the base `endpoint`: the plugin
+  resolves the base as `env.OTEL_EXPORTER_OTLP_ENDPOINT || opts.endpoint`, and
+  `governance-auth` writes that generic variable machine-wide, so a base
+  endpoint silently lost on every machine that had run `governance-auth`
+  (observed 2026-09-02: opencode exporting to `otel.ai.camer.digital` and
+  401ing on every push).
+- Its credential is a `tokenCommand` helper that only **reads** the access
+  token `@vymalo/opencode-oauth2` already persisted and never refreshes — a
+  second process presenting a single-use refresh token trips `authz-idp`'s
+  reuse cascade and logs the user out (lightbridge-opencode-toolbeit#104).
+
+That is why `governance-auth` still does not configure opencode: both halves
+are already solved by the well-known document, and the one thing
+`governance-auth` could do to it — export a global OTLP endpoint — is exactly
+the thing that must stop (tracked as the `shell_exports` change in
+`app/governance-auth/src/otel.rs`).
+
+⚠️ A developer's local `~/.config/opencode/opencode.json` is **JSONC**, so
+anything editing it faces the same comment-preservation hazard as VS Code's
+`settings.json`.
 
 ### opencode independently corroborates the Codex blocker
 
