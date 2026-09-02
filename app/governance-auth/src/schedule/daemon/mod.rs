@@ -127,17 +127,26 @@ pub fn apply(home: &Path, config: &OauthConfig) -> Result<()> {
     }
 }
 
-/// What `dashboard::Daemon` will report (#271) -- reuses [`super::Schedule`]
+/// What `dashboard::Daemon` reports (#271) -- reuses [`super::Schedule`]
 /// rather than a parallel type, since the three-valued shape it promises is
 /// identical for either unit.
-#[expect(
-    dead_code,
-    reason = "wired in by #271 (status); no caller yet on this branch"
-)]
 pub fn survey(home: &Path) -> super::Schedule {
     if super::macos() {
         launchd::survey(home)
     } else {
         systemd::survey(home)
+    }
+}
+
+/// The command that starts a daemon service which is installed but not
+/// running, for this platform. Mirrors [`super::start_command`] exactly,
+/// substituting this module's own unit/label -- lives here rather than in
+/// `dashboard` so that module has no reason to branch on the operating
+/// system.
+pub fn start_command() -> String {
+    if super::macos() {
+        format!("launchctl kickstart -k gui/$(id -u)/{DAEMON_LABEL}")
+    } else {
+        format!("systemctl --user enable --now {DAEMON_UNIT}.service")
     }
 }

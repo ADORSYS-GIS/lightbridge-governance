@@ -79,10 +79,6 @@ pub fn remove(home: &Path) -> Result<()> {
     stopped
 }
 
-#[expect(
-    dead_code,
-    reason = "wired in by #271 (status); no caller yet on this branch"
-)]
 pub fn survey(home: &Path) -> Schedule {
     let path = service_path(home);
     let installed = path.is_file();
