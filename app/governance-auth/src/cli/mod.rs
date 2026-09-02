@@ -42,13 +42,15 @@
 
 mod invoke;
 mod scopes;
+mod verbs;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 pub use invoke::{
     COPILOT_PUSH, OTEL_HEADERS_TAIL, TOKEN_TAIL, otel_headers_command, token_command,
 };
 use scopes::{CopilotCommand, OtelCommand, SelfCommand};
+use verbs::Command;
 
 use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, update};
 
@@ -91,72 +93,6 @@ pub struct Cli {
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Run the interactive login once and cache the session.
-    ///
-    /// Prints an authorize URL to visit -- or, with `--device-code`, a
-    /// verification URL and a code, then polls. Does NOT open a browser by
-    /// default; see `--open-browser`.
-    Login {
-        /// Use the device-authorization flow, for a headless session with
-        /// no local browser.
-        ///
-        /// Independent of `--open-browser`, which only affects the loopback
-        /// flow: there is nothing to open a browser to here, because the
-        /// verification URL is meant for a different device.
-        #[arg(long)]
-        device_code: bool,
-    },
-    /// Print a currently-valid access token to stdout.
-    ///
-    /// Nothing else goes on stdout, ever. This is the command to wire into
-    /// `apiKeyHelper` / `auth.command`. Fails closed and non-interactively
-    /// when there is no valid session.
-    Token,
-    /// Force a refresh now, even when the cached session is still fresh.
-    ///
-    /// `token` only refreshes inside the expiry skew, which is right for a
-    /// helper spawned every few minutes and useless when the reason you want
-    /// a new token is a change at the server. Prints nothing on stdout and
-    /// never logs in interactively: it renews a session or it fails.
-    Refresh,
-    /// Report the session, the telemetry wiring and the Copilot drain.
-    ///
-    /// Prints whether a cached session exists and how fresh it is, and
-    /// whether the wiring `configure` wrote is still the wiring this binary
-    /// generates today.
-    Status,
-    /// Re-apply the tool configuration and the drain schedule.
-    ///
-    /// Rewrites the Claude Code / Codex / VS Code wiring without re-running
-    /// the interactive login.
-    ///
-    /// `login` already does this. Run it for an existing session whose
-    /// endpoint or ingest token changed, after installing one of those tools
-    /// for the first time, and after upgrading this binary -- an upgrade can
-    /// change the commands written into their config.
-    Configure,
-    /// Remove the cached session, revoking the refresh token first.
-    Logout,
-    /// OTLP export helpers.
-    Otel {
-        #[command(subcommand)]
-        command: OtelCommand,
-    },
-    /// The VS Code Copilot Chat telemetry path.
-    Copilot {
-        #[command(subcommand)]
-        command: CopilotCommand,
-    },
-    /// This binary, acting on itself.
-    #[command(name = "self")]
-    Own {
-        #[command(subcommand)]
-        command: SelfCommand,
-    },
-}
-
 impl Cli {
     /// Resolves the configuration a command needs and runs it.
     ///
@@ -170,13 +106,14 @@ impl Cli {
     pub async fn run(self, http: &reqwest::Client) -> Result<()> {
         tracing::info!(command = ?self.command, version = update::VERSION, "invoked");
         match self.command {
-            Command::Login { device_code } => {
-                oauth::login(http, &self.oauth.resolve()?, device_code).await
-            }
+            Command::Login {
+                device_code,
+                optout,
+            } => oauth::login(http, &self.oauth.resolve()?, device_code, optout).await,
             Command::Token => oauth::token(http, &self.oauth.resolve()?).await,
             Command::Refresh => oauth::refresh(http, &self.oauth.resolve()?).await,
             Command::Status => dashboard::status(&self.oauth.resolve()?),
-            Command::Configure => oauth::configure(&self.oauth.resolve()?),
+            Command::Configure { optout } => oauth::configure(&self.oauth.resolve()?, optout),
             Command::Logout => oauth::logout(http, &self.oauth.resolve()?).await,
             Command::Otel {
                 command: OtelCommand::Headers,

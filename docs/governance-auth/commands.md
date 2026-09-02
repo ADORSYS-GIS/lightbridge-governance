@@ -34,6 +34,10 @@ was wrong more often than it was right.
 
 On success: `Logged in; session cached, expires in <n>s.`
 
+Accepts the same `--no-claude` / `--no-codex` / `--no-vscode` opt-outs as
+[`configure`](#leaving-one-client-alone), because it does the same writing — and on a machine
+being set up for the first time this is the only point before that writing happens.
+
 **PKCE is unconditional.** `code_challenge_method=S256` is always sent and there is
 deliberately no flag, env var or config key to turn it off — this is a public client with no
 secret, so the verifier is the only thing binding the authorization code to this process.
@@ -236,6 +240,42 @@ config directory doesn't exist is skipped, never created — most developers hav
 three, not all of them.
 
 Which files, and which keys inside them, is [`files.md`](./files.md).
+
+### Leaving one client alone
+
+```bash
+governance-auth configure --no-codex     # wire Claude Code and VS Code; don't touch ~/.codex
+```
+
+`--no-claude`, `--no-codex` and `--no-vscode` each leave that client entirely alone. The same
+three flags are accepted on [`login`](#login), which writes the same configuration — on a fresh
+machine that is the only chance to keep a client untouched before it is first written.
+
+A third report line distinguishes this from a tool that simply isn't here, because the two are
+different facts and only one is actionable:
+
+```
+Configured: /home/dev/.claude/settings.json
+Left alone (--no-codex): /home/dev/.codex
+Skipped: /home/dev/.config/Code/User not present.
+```
+
+`--no-vscode` also leaves the Copilot drain timer as it is — it neither installs one nor
+removes one. Removing it would strand a spool that Copilot is *still* writing, precisely
+because the flag deliberately did not turn its exporter off.
+
+Naming a client that isn't installed is a no-op, not an error. Naming all three is accepted
+too, and says so — the shell environment file and this binary's own settings are not a
+client's config and are still written, so there is real work left to report.
+
+**These flags do not un-manage a client.** Keys written by an earlier run are kept *and* stay
+recorded as ours, so a later run without the flag can still take them back. Why that
+distinction is the whole difficulty, and what it costs to get wrong, is in
+[`configuration.md`](./configuration.md#--no-claude---no-codex---no-vscode).
+
+`status` is unaffected and deliberately so: it reports what is on disk against what this binary
+would generate today, so an opted-out client reads as unconfigured — which is the truth about
+that machine, and not something `status` should soften because of a flag on a different run.
 
 ---
 

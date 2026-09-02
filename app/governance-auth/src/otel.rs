@@ -194,27 +194,95 @@ pub enum Outcome {
     /// The tool isn't installed here (its config directory doesn't exist).
     /// Not an error: most developers have one of the two, not both.
     Skipped(PathBuf),
+    /// The developer passed this client's `--no-…` flag. Distinct from
+    /// `Skipped` because the two are different facts about their machine, and
+    /// one line of output that conflates them is a line nobody can act on:
+    /// "not present" is a tool to install, "left alone" is a choice they made.
+    Declined {
+        path: PathBuf,
+        flag: &'static str,
+    },
 }
 
-/// Configures every supported tool found on this machine. A tool whose config
-/// directory is absent is skipped, not created -- creating `~/.codex` for
-/// someone who doesn't use Codex would be surprising, and an empty config
-/// directory changes how some tools behave on first run.
-pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
+impl Outcome {
+    /// Prints one line per outcome, and reports whether Codex's `config.toml`
+    /// was among the files written.
+    ///
+    /// Every outcome gets a line: silently editing someone's dotfiles is worse
+    /// than not editing them. The three read differently on purpose --
+    /// `Configured:` is a file that changed, `Skipped:` is a tool they could
+    /// install, `Left alone:` is a choice they made and nothing to act on.
+    ///
+    /// The return value is that narrow on purpose. Codex is the ONLY client
+    /// without a dynamic-headers hook: Claude Code refreshes through
+    /// `otelHeadersHelper`, and VS Code Copilot no longer exports for itself at
+    /// all -- it writes a file that `copilot push` ships with a bearer it
+    /// refreshes. So the missing-credential warning its caller prints is about
+    /// exactly one file, and naming the others would be crying wolf.
+    pub fn report(outcomes: &[Self]) -> bool {
+        let mut wrote_codex_config = false;
+        for outcome in outcomes {
+            match outcome {
+                Self::Written(path) => {
+                    eprintln!("Configured: {}", path.display());
+                    wrote_codex_config |=
+                        path.file_name().is_some_and(|name| name == "config.toml");
+                }
+                Self::Skipped(dir) => eprintln!("Skipped: {} not present.", dir.display()),
+                Self::Declined { path, flag } => {
+                    eprintln!("Left alone ({flag}): {}", path.display());
+                }
+            }
+        }
+        wrote_codex_config
+    }
+}
+
+/// Configures every supported tool found on this machine, except those
+/// [`crate::optout`] names. A tool whose config directory is absent is skipped,
+/// not created -- creating `~/.codex` for someone who doesn't use Codex would
+/// be surprising, and an empty config directory changes how some tools behave
+/// on first run.
+pub fn configure_all(
+    home: &Path,
+    settings: &OtelSettings,
+    optout: crate::optout::ClientOptOut,
+) -> Result<Vec<Outcome>> {
     let previous = crate::managed::load(&crate::managed::manifest_path(home));
 
     let mut outcomes = vec![
-        configure_claude_code(home, settings)?,
-        configure_codex(home, settings)?,
+        if optout.claude {
+            Outcome::Declined {
+                path: home.join(".claude"),
+                flag: "--no-claude",
+            }
+        } else {
+            configure_claude_code(home, settings)?
+        },
+        if optout.codex {
+            Outcome::Declined {
+                path: home.join(".codex"),
+                flag: "--no-codex",
+            }
+        } else {
+            configure_codex(home, settings)?
+        },
     ];
-    outcomes.extend(crate::vscode::configure(home, settings)?);
+    if optout.vscode {
+        outcomes.push(Outcome::Declined {
+            path: crate::vscode::user_dir(home, "Code"),
+            flag: "--no-vscode",
+        });
+    } else {
+        outcomes.extend(crate::vscode::configure(home, settings)?);
+    }
     outcomes.extend(configure_shell_env(home, settings)?);
 
     // Retract anything we wrote last time and did not write now, then record
     // what we own for next time. Non-fatal by design: a failure here leaves a
     // stale key, which is what happens today anyway -- it must never undo a
     // successful configure. See `managed`.
-    let now = managed_now(home, settings);
+    let now = crate::managed::plan(home, settings, optout, &previous);
     match crate::managed::retract_stale(&previous, &now) {
         Ok(removed) => {
             for entry in removed {
@@ -232,97 +300,6 @@ pub fn configure_all(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome
     }
 
     Ok(outcomes)
-}
-
-/// The keys this run owns, per target, with a digest of each current value.
-///
-/// Derived from the same conditionals the writers use rather than by reading
-/// the files back: a key merely *present* might be the developer's, and
-/// recording it as ours would let a later run delete their work.
-///
-/// Only string values are recorded. `managed::Document::get` returns strings
-/// only -- a digest of a rendered number would depend on formatting -- so
-/// numeric keys like `log_user_prompt` are never retracted. Accepted: they are
-/// few, and the alternative is a digest that changes when nothing did.
-fn managed_now(home: &Path, settings: &OtelSettings) -> BTreeMap<String, BTreeMap<String, String>> {
-    use crate::managed::{Format, digest};
-
-    let telemetry = settings.endpoint.is_some();
-    let inference = settings.gateway_url.is_some();
-
-    let mut claude: Vec<String> = Vec::new();
-    if inference {
-        claude.push("apiKeyHelper".to_owned());
-        claude.push("env.ANTHROPIC_BASE_URL".to_owned());
-    }
-    if settings.headers_helper.is_some() {
-        claude.push("otelHeadersHelper".to_owned());
-    }
-    for (key, _) in claude_code_env(settings) {
-        claude.push(format!("env.{key}"));
-    }
-
-    let mut codex: Vec<String> = Vec::new();
-    if inference {
-        codex.push("model_provider".to_owned());
-        for leaf in ["name", "base_url", "wire_api"] {
-            codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.{leaf}"));
-        }
-        codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.auth.command"));
-    }
-    if telemetry {
-        codex.push("otel.environment".to_owned());
-        for kind in ["exporter", "metrics_exporter"] {
-            codex.push(format!("otel.{kind}.otlp-http.endpoint"));
-            codex.push(format!("otel.{kind}.otlp-http.protocol"));
-            codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
-        }
-    }
-
-    let vscode: Vec<String> = if telemetry {
-        crate::vscode::settings(&settings.copilot_spool)
-            .into_iter()
-            .map(|(key, _)| key.to_owned())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // VS Code ships under several flavour directories and any subset may exist,
-    // so each is its own target rather than one path.
-    let mut targets = vec![
-        (home.join(".claude").join("settings.json"), claude),
-        (home.join(".codex").join("config.toml"), codex),
-    ];
-    for flavour in crate::vscode::FLAVOURS {
-        targets.push((
-            crate::vscode::user_dir(home, flavour).join("settings.json"),
-            vscode.clone(),
-        ));
-    }
-
-    let mut out = BTreeMap::new();
-    for (path, keys) in targets {
-        if keys.is_empty() || !path.is_file() {
-            continue;
-        }
-        let Some(format) = Format::of(&path) else {
-            continue;
-        };
-        let Ok(document) = format.read(&path) else {
-            continue;
-        };
-        let mut recorded = BTreeMap::new();
-        for key in keys {
-            if let Some(value) = document.get(&key) {
-                recorded.insert(key, digest(&value));
-            }
-        }
-        if !recorded.is_empty() {
-            out.insert(path.display().to_string(), recorded);
-        }
-    }
-    out
 }
 
 /// Marker pair delimiting the block this binary owns in a shell rc file.
@@ -615,7 +592,7 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
 /// The exact `env` entries this module owns in `settings.json`. Split out so
 /// the test can assert the full set without re-deriving it, and so the
 /// "which keys do we touch" question has one answer.
-fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
+pub(crate) fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     let mut entries = vec![
         // `apiKeyHelper` output is cached for FIVE MINUTES by default -- the
         // exact lifetime of a Keycloak access token here, so the cache can
@@ -815,7 +792,7 @@ fn set_root_scalar(table: &mut toml_edit::Table, key: &str, item: toml_edit::Ite
     }
 }
 
-const CODEX_PROVIDER_ID: &str = "governance";
+pub(crate) const CODEX_PROVIDER_ID: &str = "governance";
 
 /// `table[key]` on a `toml_edit` table panics when the key exists but holds a
 /// non-table (a developer who wrote `otel = "something"` by hand), and
@@ -868,6 +845,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optout::ClientOptOut;
 
     fn settings() -> OtelSettings {
         OtelSettings {
@@ -905,7 +883,7 @@ mod tests {
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed bashrc");
 
         let settings = settings_with_gateway();
-        configure_all(home.path(), &settings).expect("first run");
+        configure_all(home.path(), &settings, ClientOptOut::default()).expect("first run");
         let first = snapshot(home.path());
         assert!(
             first.len() >= 5,
@@ -918,7 +896,7 @@ mod tests {
             first.keys().collect::<Vec<_>>()
         );
 
-        configure_all(home.path(), &settings).expect("second run");
+        configure_all(home.path(), &settings, ClientOptOut::default()).expect("second run");
         let second = snapshot(home.path());
 
         for (path, before) in &first {
