@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.2.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.1.0...v2.2.0) (2026-09-02)
+
+
+### Features
+
+* **charts:** second public OTLP collector for OpenCode laptops ([#283](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/283)) ([381275c](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/381275cd47b2c99c051957b65c0011b10f35f8a0))
+
+
+### Bug Fixes
+
+* **ci:** chart-checks builds helm dependencies before rendering ([#170](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/170)) ([3fee4bc](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/3fee4bc01a7c2ed2a3aa95e393f3c7052a5377c1))
+* **governance-auth:** stop exporting the OTLP endpoint machine-wide ([#286](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/286)) ([416e4c3](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/416e4c3a255bff05c10cce65e849bb9deff17dac))
+
+
+### Documentation
+
+* **integrations:** correct opencode's issuer and telemetry status in the support matrix ([#285](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/285)) ([7ee6e74](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7ee6e74721860507691adf5b86e9f3118138ed25))
+
 ## [2.1.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.0.0...v2.1.0) (2026-09-02)
 
 
