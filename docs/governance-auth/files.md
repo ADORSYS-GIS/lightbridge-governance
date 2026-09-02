@@ -127,11 +127,59 @@ stops — deleting it is a decision for whoever is looking.
 
 **Written by VS Code, never by this binary.** It is only the default location; the path comes
 from `--copilot-spool-path` / `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` / `copilot_spool_path` /
-this default, and must match `github.copilot.chat.otel.outfile` in VS Code's settings.
+this default. `configure` writes the *resolved* value into
+`github.copilot.chat.otel.outfile` and into the drain's own schedule, so the two always match.
+
+⚠️ **Nothing bounds this file's growth.** Measured at 73 KB → 315 KB in six minutes of
+ordinary use. `copilot-push` never truncates it (see below) and Copilot's own rotation is the
+only thing that reclaims the space. Tracked as
+[#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
+[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241); it was an opt-in
+risk while the file exporter was opt-in, and it is a default one now.
 
 `copilot-push` opens it **read-only** and never truncates it — VS Code holds it open for
 append, and truncating underneath a live writer makes the next append land at the old offset
 with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
+
+### Copilot drain schedule
+
+```
+~/.config/systemd/user/governance-auth-copilot-push.service        # Linux
+~/.config/systemd/user/governance-auth-copilot-push.timer          # Linux
+~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist   # macOS
+~/Library/Logs/governance-auth-copilot-push.log                    # macOS, the job's stderr
+```
+
+**Written and activated by `configure`.** Copilot's file exporter appends to the spool and
+stops; nothing in VS Code ships it. Without this the exporter `configure` just turned on would
+fill a disk and export nothing, which from inside the editor looks exactly like a working
+install.
+
+Rewritten on every `configure`, so edits are lost. `configure` with **no** `--otel-endpoint`
+removes them and stops the timer — the same retraction rule the config keys follow.
+
+The units carry every flag explicitly (`--issuer`, `--client-id`, `--otel-endpoint`,
+`--copilot-spool-path`) rather than relying on the config file the same `configure` writes.
+Both work today; only the explicit form keeps working after someone edits that file, and a
+wake failing every five minutes because a key moved is precisely the silent failure this
+exists to remove.
+
+Removing them by hand:
+
+```bash
+systemctl --user disable --now governance-auth-copilot-push.timer
+```
+
+```bash
+launchctl bootout gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
+```
+
+⚠️ **A machine with no user systemd session** — a container, WSL without systemd, a CI runner
+— gets a warning, not a failed `configure`. The config files are already written and
+`copilot-push` still runs by hand.
+
+`governance-auth status` carries a **copilot drain** row for exactly this: a schedule that was
+never activated, or that stopped, is otherwise invisible.
 
 ### OTLP credential for the shell
 
@@ -140,9 +188,10 @@ with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
 ~/.config/governance-auth/otel.fish    # fish
 ```
 
-Both at mode `0600`. These exist for one reason: VS Code Copilot has **no settings key for
-OTLP headers** (see below), so the only way to authenticate it is an exported environment
-variable.
+Both at mode `0600`. These carry `OTEL_EXPORTER_OTLP_HEADERS` for a Claude Code launched from
+a desktop icon, which inherits no shell. They used to be the *only* way to authenticate VS
+Code Copilot; since the file-exporter cutover Copilot needs no header at all, because
+`copilot-push` supplies its own.
 
 The token deliberately does **not** go into `.bashrc`. Those files are routinely mode `0644`
 and routinely committed to a dotfiles repo — writing a bearer token there is how a credential
@@ -176,11 +225,11 @@ forever) or "rewrite the file" (destroys the developer's own config). The path i
 `$HOME/…` so the line stays correct in a dotfiles repo shared between machines with different
 usernames.
 
-⚠️ `OTEL_EXPORTER_OTLP_HEADERS` is a **global** OpenTelemetry variable, not a Copilot-scoped
-one. Once exported, every OTLP exporter started from that shell attaches this `Authorization`
-header to whatever collector it targets. VS Code offers no scoped alternative, so this is
-inherent to authenticating Copilot at all rather than a choice made here — but it should be
-said out loud to anyone being onboarded.
+⚠️ `OTEL_EXPORTER_OTLP_HEADERS` is a **global** OpenTelemetry variable. Once exported, every
+OTLP exporter started from that shell attaches this `Authorization` header to whatever
+collector it targets. That was unavoidable while it was Copilot's only credential channel; it
+no longer is, so this is now a blast radius carried for Claude Code's desktop-launch case
+alone and worth revisiting.
 
 ---
 
@@ -300,19 +349,32 @@ macOS.
 
 ```json
 "github.copilot.chat.otel.enabled": true,
-"github.copilot.chat.otel.exporterType": "otlp-http",
-"github.copilot.chat.otel.otlpEndpoint": "https://otel.example",
+"github.copilot.chat.otel.exporterType": "file",
+"github.copilot.chat.otel.outfile": "/home/you/.local/state/governance-auth/copilot-otel.jsonl",
 "github.copilot.chat.otel.captureContent": false
 ```
 
-⚠️ **There is no VS Code setting for OTLP headers.** The documented surface exposes endpoint,
-protocol and content-capture as settings, but authentication *only* through the
-`OTEL_EXPORTER_OTLP_HEADERS` environment variable, which must be present in the environment
-VS Code itself was launched from. No `settings.json` key can supply it and neither can this
-binary. Against an authenticating collector that means Copilot telemetry is rejected until
-that variable is exported — which is what the `otel.env` + rc-file machinery above is for,
-and why `login` says so out loud rather than writing a config that looks complete and
-silently drops every span.
+⚠️ **The exporter is `file`, not `otlp-http`, and that is the point.** Copilot's direct HTTP
+exporter has no header this binary is willing to write. `github.copilot.chat.otel.headers`
+exists, but it is a *static* map and `settings.json` is covered by Settings Sync — writing a
+bearer there syncs it off-machine. The `otlp-http` this used to write carried no header at
+all, so an authenticating collector returned **401 on every span** while the config looked
+complete.
+
+The file exporter has neither problem. Copilot appends to `outfile`;
+[`copilot-push`](./commands.md#copilot-push) drains it on the schedule `configure` installs,
+authenticating with a bearer it refreshes itself. That makes Copilot the **second**
+self-renewing client after Claude Code, and leaves Codex as the only one still needing a
+long-lived `--otel-token`.
+
+`outfile` is written as an absolute path, resolved once, and the same resolved path is passed
+to the drain as `--copilot-spool-path`. They cannot disagree — which they could, and did, when
+both were copy-pasted out of a runbook.
+
+⚠️ **Upgrading from a build that wrote `otlp-http`** leaves `github.copilot.chat.otel.otlpEndpoint`
+behind. One `configure` removes it: the key is in the managed-key manifest, so
+the managed-key manifest retracts it — but only if its value still hashes to what we
+wrote, so a developer who edited it keeps their edit.
 
 **A JSONC file is refused, not rewritten.** VS Code's `settings.json` legally contains
 comments and trailing commas, and developers really do use them. `serde_json` can't parse

@@ -29,6 +29,9 @@ const SHELL_ENV_SH: &str = include_str!("shell_env.sh.jinja");
 const SHELL_ENV_FISH: &str = include_str!("shell_env.fish.jinja");
 const CODEX_BANNER: &str = include_str!("codex_provider_banner.toml.jinja");
 const CONFIG_HEADER: &str = include_str!("config_header.toml.jinja");
+const SYSTEMD_SERVICE: &str = include_str!("systemd_service.jinja");
+const SYSTEMD_TIMER: &str = include_str!("systemd_timer.jinja");
+const LAUNCHD_PLIST: &str = include_str!("launchd_plist.jinja");
 
 /// One environment, built per render.
 ///
@@ -44,7 +47,44 @@ fn environment() -> Environment<'static> {
     env.set_keep_trailing_newline(true);
     env.add_filter("sh_quote", sh_quote);
     env.add_filter("fish_quote", fish_quote);
+    env.add_filter("systemd_quote", systemd_quote);
+    env.add_filter("xml", xml_escape);
     env
+}
+
+/// One `ExecStart=` word. systemd's own parser, not a shell's: inside double
+/// quotes a backslash escapes the next byte, so both must be escaped before
+/// the quotes go on.
+///
+/// `%` is the trap that is not obvious, and it was measured rather than read.
+/// systemd expands `%h`, `%i` and a dozen more specifiers in `ExecStart=`, and
+/// quoting does NOT suppress it: a unit carrying
+/// `"--copilot-spool-path" "/state/%h-cache/spool.jsonl"` was parsed by a live
+/// systemd into `/state//root-cache/spool.jsonl` -- silently, with no warning,
+/// and `systemd-analyze verify` passes it. The drain would then read a file
+/// that does not exist and report nothing wrong. `%%` is the only escape, and
+/// it round-trips to a literal `%`.
+fn systemd_quote(value: String) -> String {
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%")
+    )
+}
+
+/// XML text content for the plist. `&` first, or it would double-escape the
+/// ampersands the later replacements introduce. `<` and `>` are escaped
+/// because a `<` in character data is a parse error; the quotes are escaped
+/// too so the same filter is safe if a value ever moves into an attribute.
+fn xml_escape(value: String) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// POSIX single-quoting. Inside `'...'` every byte is literal except `'`
@@ -96,6 +136,39 @@ pub fn codex_provider_banner() -> Result<String, minijinja::Error> {
 /// binary is creating it.
 pub fn config_header() -> Result<String, minijinja::Error> {
     render("config_header.toml", CONFIG_HEADER, context! {})
+}
+
+/// The `Type=oneshot` unit the timer runs. `argv` is quoted per word by the
+/// template, never pre-joined -- see [`systemd_quote`].
+pub fn systemd_service(argv: &[String], timeout_seconds: u64) -> Result<String, minijinja::Error> {
+    render(
+        "systemd_service",
+        SYSTEMD_SERVICE,
+        context! { argv, timeout_seconds },
+    )
+}
+
+/// The monotonic timer that wakes the unit above.
+pub fn systemd_timer(interval_seconds: u64) -> Result<String, minijinja::Error> {
+    render(
+        "systemd_timer",
+        SYSTEMD_TIMER,
+        context! { interval_seconds },
+    )
+}
+
+/// The launchd agent, macOS's equivalent of both files above.
+pub fn launchd_plist(
+    label: &str,
+    argv: &[String],
+    interval_seconds: u64,
+    log_path: &str,
+) -> Result<String, minijinja::Error> {
+    render(
+        "launchd_plist",
+        LAUNCHD_PLIST,
+        context! { label, argv, interval_seconds, log_path },
+    )
 }
 
 #[cfg(test)]

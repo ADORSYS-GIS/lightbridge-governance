@@ -120,7 +120,8 @@ subprocess that doesn't inherit your environment; see
 
 Add `--gateway-url` and `--otel-endpoint` to the `login` above and it writes the wiring for
 Claude Code, Codex and VS Code Copilot itself -- inference and telemetry both, only the keys
-it owns, merged into your existing files rather than replacing them:
+it owns, merged into your existing files rather than replacing them -- and it installs the
+timer that drains Copilot's OTel spool to the collector:
 
 ```bash
 governance-auth login \

@@ -1,0 +1,15 @@
+# Managed by governance-auth -- rewritten on every `governance-auth configure`.
+[Unit]
+Description=Drain the GitHub Copilot OTel spool every {{ interval_seconds }} seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ interval_seconds }}s
+# NOTE: `Persistent=true` does NOT belong here and is not merely redundant --
+# systemd.timer(5) defines it only for calendar (`OnCalendar=`) timers, so on a
+# monotonic timer like this one it is silently ignored. Switch the two
+# monotonic lines above for `OnCalendar=*:0/5` if you want suspend/resume
+# catch-up, and only then is `Persistent=true` real.
+
+[Install]
+WantedBy=timers.target

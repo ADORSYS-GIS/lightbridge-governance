@@ -97,6 +97,14 @@ through an environment variable". `github.copilot.chat.otel.headers` **exists**
 settings.json is covered by Settings Sync — a long-lived bearer there would sync
 off-machine — but the stated fact needs correcting.
 
+**Follow-up:** the `GitHub Copilot (IDE)` row was resolved by the *other* item
+in that same list. `governance-auth configure` now writes
+`exporterType: "file"` + `outfile` and installs the timer that drains the spool
+(`governance-auth copilot-push`), so Copilot holds no OTLP credential at all and
+neither the static-header nor the Settings-Sync problem applies. The row's
+remaining gap is correction 3 below — the spool carries usage and orchestration
+but no accept/reject signal — not authentication.
+
 **2. Copilot's OTel does not meter turns served by this provider.** With the
 file exporter enabled and a chat turn sent through `governed-sonnet`, every
 `gen_ai.client.token.usage` datapoint was tagged

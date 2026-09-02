@@ -164,22 +164,28 @@ below works.
 ### Why this command exists
 
 Claude Code and Codex export telemetry themselves. Copilot Chat can too — but through an
-HTTP exporter it only re-reads at window start, with no credential-helper hook, so a
-300-second bearer stops working minutes into a session and fails silently. Its *file*
-exporter has no such problem: it appends records to disk and something else ships them.
-Nothing in VS Code is that something else. This is.
+HTTP exporter it only re-reads at window start, with no credential-helper hook, and no header
+this binary is willing to write (`github.copilot.chat.otel.headers` is static, and
+`settings.json` is covered by Settings Sync). Against an authenticating collector that
+exporter returns **401 on every span**, silently. Its *file* exporter has no such problem: it
+appends records to disk and something else ships them, with a bearer that binary refreshes
+itself. Nothing in VS Code is that something else. This is.
 
-Turn it on in VS Code's `settings.json`:
+**Both halves are `configure`'s job now**, and neither is opt-in:
 
 ```jsonc
+// written by `governance-auth configure` into every VS Code flavour present
 "github.copilot.chat.otel.enabled": true,
 "github.copilot.chat.otel.exporterType": "file",
-"github.copilot.chat.otel.outfile": "~/.local/state/governance-auth/copilot-otel.jsonl"
+"github.copilot.chat.otel.outfile": "<resolved spool path>"
 ```
 
-`configure` does **not** write `exporterType: "file"` — it writes `otlp-http`, which is the
-right default for anyone who has exported `OTEL_EXPORTER_OTLP_HEADERS` by hand. This command
-is opt-in.
+…plus the timer that drains it — see [Running it on a timer](#running-it-on-a-timer). The
+`outfile` and the timer's `--copilot-spool-path` come from **one** resolution of ADR-0012's
+five layers, so they cannot disagree; previously they were two copy-pastes out of this
+document.
+
+Restart VS Code after `configure`: Copilot reads these at window start.
 
 ### ⚠️ The file is not OTLP
 
@@ -388,9 +394,46 @@ config → `<state_dir>/copilot-otel.jsonl`.
 
 ### Running it on a timer
 
-**This binary does not install these, deliberately** — writing to a developer's systemd or
-launchd tree is a bigger claim on their machine than writing a dotfile, and it is out of
-scope for this command. Copy them yourself.
+**`configure` installs and activates these for you.** That reverses an earlier decision — the
+claim on a developer's systemd or launchd tree is real — and it was reversed because the
+alternative measured worse: `configure` already writes four config files across three tools,
+and the one step it left to the human was the one without which none of the rest does anything
+for Copilot.
+
+What it runs:
+
+| Platform | Files | Activation |
+|---|---|---|
+| Linux | `~/.config/systemd/user/governance-auth-copilot-push.{service,timer}` | `systemctl --user daemon-reload` then `enable --now …timer` |
+| macOS | `~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist` | `launchctl bootout` (ignored if not loaded) then `launchctl bootstrap gui/$(id -u)` |
+
+⚠️ **The `bootout` before `bootstrap` is not defensive tidiness.** Measured: bootstrapping an
+already-loaded label fails with `Bootstrap failed: 5: Input/output error` and leaves the *old*
+argv running — so a changed endpoint would be written to disk and never used.
+
+⚠️ **`ExecStart=` words are quoted *and* their `%` doubled.** Measured against a live systemd:
+`"--copilot-spool-path" "/state/%h-cache/spool.jsonl"` is parsed into
+`/state//root-cache/spool.jsonl` — `%h` is the home-directory specifier, quoting does not
+suppress it, and `systemd-analyze verify` passes the unit without comment. The drain would then
+read a file that does not exist and report nothing wrong. `%%` is the only escape.
+
+A failure to activate — no user systemd session in a container, WSL without systemd, a CI
+runner — is a **warning, not a failed `configure`**. Every config file is already written and
+this command still runs by hand.
+
+Uninstalling: run `configure` with no `--otel-endpoint` (it removes the units and stops the
+timer, the same retraction rule the config keys follow), or by hand:
+
+```bash
+systemctl --user disable --now governance-auth-copilot-push.timer
+```
+
+```bash
+launchctl bootout gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
+```
+
+The rest of this section is the generated content, kept here because reading it is how you
+audit what was installed on your machine.
 
 `~/.config/systemd/user/governance-auth-copilot-push.service`:
 
@@ -505,8 +548,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/digital.camer.ai.governa
 launchctl print gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
 ```
 
-⚠️ A timer you installed is a timer nothing monitors. `status` carries a **copilot spool**
-row for exactly that reason — see below.
+⚠️ A schedule nothing monitors is a schedule that stops silently. `status` carries two rows
+for that: **copilot drain** (is the timer installed and running?) and **copilot spool** (is it
+keeping what it reads?). Independent answers, both needed — see below.
 
 ---
 
@@ -529,12 +573,33 @@ rules out half the failure modes before you go looking at the tools.
 At a terminal it also prints a table. Those three lines are the contract; the table is an
 addition for a human and never a replacement, because `status` may be piped.
 
+### The `copilot drain` row
+
+Is anything going to come and collect the spool? `configure` installs the schedule, so this
+row reports something the binary owns rather than something it hoped a human did.
+
+| Shown | Colour | Means |
+|---|---|---|
+| `every 300s` | green | the timer/agent is installed **and** the scheduler confirms it is running |
+| `installed, not running` | **red** | the scheduler confirms it is stopped; the note names the command that starts it |
+| `installed` | yellow | the scheduler could not be asked — **not** the same as stopped |
+| `not scheduled` | **red** | Copilot's file exporter is on and nothing drains it: run `configure` |
+| `not scheduled` | none | no collector configured, so there is nothing to schedule |
+| `unknown` | yellow | the home directory could not be resolved |
+
+⚠️ `active` is three-valued on purpose, and the reason is measured. `systemctl --user
+is-active` exits non-zero for **both** a stopped timer and a machine with no user manager, so
+the exit code cannot tell them apart — it would send every container user to debug a timer that
+is fine. The **stdout** can: a stopped timer prints `inactive` (exit 3), while no reachable user
+manager prints nothing at all (exit 1, with `Failed to connect to user scope bus …` on stderr).
+That is what the row reads.
+
 ### The `copilot spool` row
 
 | Shown | Colour | Means |
 |---|---|---|
 | `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
-| `not enabled` | yellow | no spool file — Copilot's file exporter is off |
+| `not enabled` | yellow | no spool file yet — Copilot has not exported since `configure` |
 | `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
 | `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
 | `held, waiting for a later record` | yellow | the spool's **last** record is refused; see above |
@@ -550,11 +615,13 @@ pending: nothing else in the row distinguishes the two, and the backlog row's ad
 
 Two red rows, for the two ways this can fail silently:
 
-- **`<n> bytes pending`, never pushed.** A user timer that was never enabled, or a launchd
-  agent that fails on every wake, is indistinguishable from a working one everywhere else a
-  developer looks — bytes climbing while `last push` stays at `never pushed` is the only
-  visible difference. "Pending" after a successful push is *not* red on purpose: it is the
-  ordinary state between wakes, and a row that cries wolf is one people stop reading.
+- **`<n> bytes pending`, never pushed.** A schedule that fails on every wake is
+  indistinguishable from a working one everywhere else a developer looks — bytes climbing
+  while `last push` stays at `never pushed` is the only visible difference. The `copilot
+  drain` row above catches the case where the schedule is *absent or stopped*; this one
+  catches the case where it fires and the wake fails. "Pending" after a successful push is
+  *not* red on purpose: it is the ordinary state between wakes, and a row that cries wolf is
+  one people stop reading.
 - **`<n> record(s) discarded`.** A Copilot release renames the private fields this parser
   dispatches on; every record classifies as unrecognised, both payloads come out empty, no
   POST is made, and the checkpoint advances over the lot. Nothing is pending afterwards, so

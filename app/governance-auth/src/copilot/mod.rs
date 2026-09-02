@@ -1,13 +1,17 @@
 //! `copilot-push`: drains VS Code Copilot Chat's OTel spool file and exports
 //! it to the governed collector over OTLP/HTTP.
 //!
-//! Copilot Chat can be told to write telemetry to a file
-//! (`github.copilot.chat.otel.exporterType = "file"`, `outfile = <path>`) --
-//! which `configure` does not set today, so this is opt-in. Nothing in VS Code
-//! then drains that file. This does, on whatever schedule the developer's
-//! systemd timer or launchd agent runs it (sample units in
-//! `docs/governance-auth/commands.md`; installing them is deliberately **not**
-//! this binary's job).
+//! Copilot Chat is told to write telemetry to a file
+//! (`github.copilot.chat.otel.exporterType = "file"`, `outfile = <path>`) by
+//! `configure` -- see [`crate::vscode`] for why that exporter and not the
+//! direct HTTP one. Nothing in VS Code then drains that file. This does, on
+//! the schedule [`crate::schedule`] installs: a systemd user timer on Linux, a
+//! launchd agent on macOS, every five minutes.
+//!
+//! Both halves are `configure`'s job now. They used to be two paragraphs of a
+//! runbook, which meant the endpoint, the spool path and the timer were three
+//! copy-pastes that could disagree -- and a machine where they did looked, from
+//! inside VS Code, exactly like one where they did not.
 //!
 //! ## The one property that matters: fail closed
 //!

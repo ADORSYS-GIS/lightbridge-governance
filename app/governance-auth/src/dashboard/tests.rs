@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::{style::short, *};
 
+mod drain;
 mod duration;
 mod hints;
 mod spool;
@@ -12,9 +13,10 @@ mod survey;
 mod targets;
 mod telemetry;
 
-/// [`render`] with the Copilot spool row fixed at "nothing surveyed", so the
-/// tests that predate that row keep asserting on exactly what they did before
-/// and never touch `$HOME`. The row's own states are covered in [`spool`].
+/// [`render`] with the two Copilot rows fixed at "nothing surveyed", so the
+/// tests that predate them keep asserting on exactly what they did before and
+/// never touch `$HOME` -- which for the drain row also means never running
+/// `systemctl`. Their own states are covered in [`spool`] and [`drain`].
 fn table(
     issuer: &str,
     client_id: &str,
@@ -33,8 +35,18 @@ fn table(
             last_discard_age: None,
             held_age: None,
         },
+        &unsurveyed_drain(),
         targets,
     )
+}
+
+/// `home` unresolvable, so [`Drain::row`] takes its "unknown" branch without
+/// asking the platform's scheduler anything.
+pub(super) fn unsurveyed_drain() -> Drain {
+    Drain {
+        schedule: None,
+        collector: false,
+    }
 }
 
 fn target(path: &str, managed: usize, edited: usize) -> Target {

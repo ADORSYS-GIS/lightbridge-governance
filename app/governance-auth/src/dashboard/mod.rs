@@ -14,10 +14,14 @@
 //!
 //! ## Where the data comes from
 //!
-//! Nothing new is collected. The session is already cached, and the managed-key
-//! manifest (`crate::managed`) already records what `configure` wrote. "Edited
-//! by you" falls out of the same digest comparison that decides whether a key
-//! may be retracted -- see [`crate::managed`]'s module doc.
+//! Local files, plus one short query to the platform's scheduler. The session
+//! is already cached, and the managed-key manifest (`crate::managed`) already
+//! records what `configure` wrote -- "edited by you" falls out of the same
+//! digest comparison that decides whether a key may be retracted. The one
+//! exception is the `copilot drain` row, which asks systemd or launchd whether
+//! the timer is running, because no file on disk answers that. Nothing here
+//! touches the network: `status` earns its keep by answering fast when
+//! something is already wrong.
 
 /// Whether a human is looking. Extracted so tests can render both branches
 /// without a terminal.
@@ -55,6 +59,7 @@ pub fn render(
     session: &Session,
     telemetry: &Telemetry,
     spool: &Spool,
+    drain: &Drain,
     targets: &[Target],
 ) -> String {
     let (state, colour) = match (session.cached, session.fresh) {
@@ -95,6 +100,11 @@ pub fn render(
     // stop. See `spool`'s module doc.
     let (value, colour, note) = spool.row();
     rows.push(("copilot spool".to_owned(), value, colour, note));
+
+    // And under that, the schedule that empties it. `configure` installs it
+    // now, so a stopped timer is ours to report -- see `drain`.
+    let (value, colour, note) = drain.row();
+    rows.push(("copilot drain".to_owned(), value, colour, note));
 
     if targets.is_empty() {
         rows.push((
@@ -174,11 +184,13 @@ pub fn render(
 #[cfg(test)]
 mod tests;
 
+mod drain;
 mod spool;
 mod status;
 mod style;
 mod targets;
 mod telemetry;
+pub use drain::Drain;
 pub use spool::Spool;
 pub use status::status;
 use style::{Colour, ago, pad};

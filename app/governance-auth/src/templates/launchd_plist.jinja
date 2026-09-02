@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Managed by governance-auth -- rewritten on every `governance-auth
+     configure`, so edits here are lost. `configure` with no --otel-endpoint
+     removes it and unloads the job. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{ label|xml }}</string>
+  <key>ProgramArguments</key>
+  <array>
+{%- for arg in argv %}
+    <string>{{ arg|xml }}</string>
+{%- endfor %}
+  </array>
+  <key>StartInterval</key>
+  <integer>{{ interval_seconds }}</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- ⚠️ launchd has NO equivalent of systemd's TimeoutStartSec=, and the
+       plausible-looking keys are not it: ExitTimeOut bounds how long launchd
+       waits after SIGTERM before SIGKILL, not how long the job may run. A
+       StartInterval job that is still running when the interval fires is
+       simply skipped, so a wedged wake does not pile up -- it silently stops
+       the drain instead, which is worse. On macOS the guarantee therefore
+       comes entirely from the command itself: the 15s HTTP read timeout and
+       the copilot-push lock ceiling, both in-process. -->
+  <key>AbandonProcessGroup</key>
+  <false/>
+  <!-- Not /tmp: that is world-writable, so the name is predictable and another
+       local user can pre-create or replace the file. ~/Library/Logs is the
+       per-user location Console.app already reads. Nothing rotates it, so
+       either trim it occasionally or add a newsyslog.d entry. -->
+  <key>StandardErrorPath</key>
+  <string>{{ log_path|xml }}</string>
+</dict>
+</plist>

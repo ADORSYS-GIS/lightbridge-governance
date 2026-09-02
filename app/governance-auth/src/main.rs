@@ -26,9 +26,11 @@ mod managed;
 mod oauth;
 mod otel;
 mod redacted;
+mod schedule;
 mod security;
 mod templates;
 mod update;
+mod vscode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

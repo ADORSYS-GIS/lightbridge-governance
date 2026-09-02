@@ -32,8 +32,10 @@ pub struct Telemetry {
     /// are different answers to the question being asked.
     pub applied: bool,
     /// Whether a static OTLP bearer was written. Claude Code refreshes its own
-    /// via `otelHeadersHelper`; Codex and VS Code cannot, so for those two this
-    /// is the difference between exporting and being rejected.
+    /// via `otelHeadersHelper` and VS Code Copilot holds no credential at all
+    /// since the file-exporter cutover (`crate::vscode`), so Codex is the only
+    /// client for which this is the difference between exporting and being
+    /// rejected.
     pub has_static_token: bool,
 }
 
@@ -98,13 +100,14 @@ impl Telemetry {
                 format!("configured but not applied yet: run {command}"),
             ),
             (Some(endpoint), true, true) => (endpoint.clone(), Colour::Green, String::new()),
-            // Yellow, not red, and worded as a consequence rather than a fault:
-            // this is the same condition `apply_telemetry` already warns about,
-            // and Claude Code is genuinely unaffected.
+            // Yellow, not red, and worded as a consequence rather than a
+            // fault: this is the same condition `apply_telemetry` already warns
+            // about, and it now names ONE client -- Claude Code refreshes its
+            // own and Copilot needs none. Naming more would be crying wolf.
             (Some(endpoint), true, false) => (
                 endpoint.clone(),
                 Colour::Yellow,
-                "no OTLP token: Codex and VS Code cannot export".to_owned(),
+                "no OTLP token: Codex cannot export".to_owned(),
             ),
         }
     }
