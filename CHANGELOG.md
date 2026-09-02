@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.0...v2.2.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **governance-auth:** a printed token must outlive the caller's cache window ([#287](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/287)) ([703f3dd](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/703f3dd468a58bf957f7ff6e58b5f2951a80503e))
+
 ## [2.2.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.1.0...v2.2.0) (2026-09-02)
 
 
