@@ -110,9 +110,12 @@ fn the_row_appears_in_the_rendered_table() {
         "https://auth.example",
         "cli",
         &session(true, true),
-        &otel(None, false),
-        &spool::spool(Some(0), 0, None, None),
-        &drain(true, Some(true), true),
+        &Surveys {
+            telemetry: &otel(None, false),
+            daemon: &unsurveyed_daemon(),
+            spool: &spool::spool(Some(0), 0, None, None),
+            drain: &drain(true, Some(true), true),
+        },
         &[],
     );
     assert!(out.contains("copilot drain"), "{out}");

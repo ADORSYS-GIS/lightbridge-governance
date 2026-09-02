@@ -2,8 +2,12 @@
 
 use std::path::Path;
 
-use super::{style::short, *};
+use super::{
+    style::{short, strip_ansi},
+    *,
+};
 
+mod daemon;
 mod drain;
 mod duration;
 mod hints;
@@ -28,14 +32,17 @@ fn table(
         issuer,
         client_id,
         session,
-        telemetry,
-        &Spool {
-            inner: None,
-            last_push_age: None,
-            last_discard_age: None,
-            held_age: None,
+        &Surveys {
+            telemetry,
+            daemon: &unsurveyed_daemon(),
+            spool: &Spool {
+                inner: None,
+                last_push_age: None,
+                last_discard_age: None,
+                held_age: None,
+            },
+            drain: &unsurveyed_drain(),
         },
-        &unsurveyed_drain(),
         targets,
     )
 }
@@ -47,6 +54,15 @@ pub(super) fn unsurveyed_drain() -> Drain {
         schedule: None,
         collector: false,
         stale: None,
+    }
+}
+
+/// [`Daemon::row`]'s "unknown" branch, for the same reason as
+/// [`unsurveyed_drain`] above.
+pub(super) fn unsurveyed_daemon() -> Daemon {
+    Daemon {
+        schedule: None,
+        profile: crate::profile::Profile::Daemon,
     }
 }
 
@@ -174,23 +190,4 @@ fn padded_width_ignores_colour() {
         offsets[0], offsets[1],
         "note column misaligned once colour is applied:\n{out}"
     );
-}
-
-/// Minimal ANSI stripper: enough for the alignment assertion above.
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            // Skip to the terminating `m` of the escape sequence.
-            for c in chars.by_ref() {
-                if c == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }

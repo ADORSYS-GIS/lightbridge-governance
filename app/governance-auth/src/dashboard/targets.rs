@@ -3,7 +3,10 @@
 
 use std::path::Path;
 
-use super::style::short;
+use super::{
+    Session,
+    style::{Colour, short},
+};
 use crate::managed::{self, Format};
 
 /// One configured tool: how many keys we manage in it, and how many of those
@@ -48,4 +51,55 @@ pub fn targets(home: &Path) -> Vec<Target> {
         });
     }
     out
+}
+
+/// Appends one row per configured target, or a single "nothing yet" row
+/// naming the next command to run. Moved out of `render` itself to keep
+/// `mod.rs` under the 200-line ceiling -- this section owns the "no targets
+/// yet" wording because it is the one place both the emptiness and the
+/// per-target shape are already in scope together.
+pub fn rows(
+    rows: &mut Vec<(String, String, Colour, String)>,
+    targets: &[Target],
+    session: &Session,
+) {
+    if targets.is_empty() {
+        rows.push((
+            "configured".to_owned(),
+            "nothing yet".to_owned(),
+            Colour::Yellow,
+            // ⚠️ Must name a command that RUNS. This said
+            // "run `governance-auth configure`", and bare `configure` exits
+            // with "nothing to configure: supply --otel-endpoint and/or
+            // --gateway-url" -- so the dashboard sent a first-time user
+            // straight into an error. Reported from a real install.
+            //
+            // The flags were fixed then; the COMMAND still wasn't. `configure`
+            // also refuses without a cached session ("no cached session for
+            // this issuer/client; run `governance-auth login` first"), which is
+            // precisely the state this row appears in on a first run. Same
+            // session-aware choice as the telemetry row.
+            format!(
+                "{} --gateway-url <url> --otel-endpoint <url>",
+                if session.cached { "configure" } else { "login" }
+            ),
+        ));
+        return;
+    }
+    for target in targets {
+        let (note, colour) = if target.edited == 0 {
+            (String::new(), Colour::Green)
+        } else {
+            (
+                format!("{} changed by you, left alone", target.edited),
+                Colour::Yellow,
+            )
+        };
+        rows.push((
+            target.path.clone(),
+            format!("{} keys managed", target.managed),
+            colour,
+            note,
+        ));
+    }
 }

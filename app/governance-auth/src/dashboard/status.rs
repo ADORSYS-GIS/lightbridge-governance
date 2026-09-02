@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 
-use super::{Drain, Session, Spool, Telemetry, attended, plain, render, targets};
+use super::{Daemon, Drain, Session, Spool, Surveys, Telemetry, attended, plain, render, targets};
 use crate::{cache, config::OauthConfig};
 
 pub fn status(config: &OauthConfig) -> Result<()> {
@@ -46,6 +46,10 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     // what was actually written -- see `super::telemetry`'s module doc for why
     // the token cannot be read back off the config.
     let telemetry = Telemetry::survey(home.as_deref(), config);
+    // Reads the unit/plist and asks the platform's scheduler whether it is
+    // loaded -- one short local command, no network, same as `drain` below.
+    // See `super::daemon`.
+    let daemon = Daemon::survey(home.as_deref(), config);
     // Reads two local files and never the network, same as the rest of this
     // command -- see `super::spool`.
     let spool = Spool::survey(config);
@@ -58,9 +62,12 @@ pub fn status(config: &OauthConfig) -> Result<()> {
             &config.issuer,
             &config.client_id,
             &state,
-            &telemetry,
-            &spool,
-            &drain,
+            &Surveys {
+                telemetry: &telemetry,
+                daemon: &daemon,
+                spool: &spool,
+                drain: &drain,
+            },
             &target_rows,
         )
     );
