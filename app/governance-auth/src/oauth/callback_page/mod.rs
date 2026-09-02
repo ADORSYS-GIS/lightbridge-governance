@@ -1,17 +1,35 @@
 //! The page the browser lands on after the loopback redirect.
 //!
-//! The markup lives in [`templates/callback.html.jinja`], not in this file:
-//! HTML, CSS and JS embedded as a Rust string literal get no syntax
-//! highlighting, no formatter and a diff that reads as one changed line. The
-//! template is `include_str!`d, so the binary still ships as a single file with
-//! no template directory to find at run time -- and none to be swapped for
-//! another, which matters for a page rendered right after an OAuth callback.
+//! The markup is **built in another repository** and vendored here as one
+//! self-contained file: `ADORSYS-GIS/converse-frontends`, `apps/governance-auth`
+//! (React + Vite). This is the only surface of `governance-auth` a developer
+//! ever looks at, and it used to be hand-written HTML in a Jinja template that
+//! resembled nothing else in the product. Now it composes the same design
+//! primitives as the console and the auth plane, and it keeps doing so without
+//! anyone re-typing markup into a Rust string literal.
 //!
-//! Autoescaping is on: the template is registered under a `.html` name, which
-//! is what turns it on in minijinja. Nothing here is user-controlled today --
-//! every value is a compile-time constant selected by a bool -- but the icon is
-//! passed as a list of SVG path `d` attributes rather than raw markup so that
-//! stays true if it ever stops being.
+//! ## Why a vendored file and not a fetch
+//!
+//! `include_str!` runs at COMPILE time. The alternative -- pulling the artifact
+//! in a `build.rs` -- would put the network on the path of every `cargo build`,
+//! break offline and air-gapped builds, and make the binary's contents depend
+//! on when it was compiled rather than on what is committed. So the artifact is
+//! committed, and the *pull* is an explicit, tooling-driven refresh:
+//! `scripts/vendor-callback-page.sh`. See [`SOURCE`].
+//!
+//! ## How the outcome reaches the page
+//!
+//! The built HTML carries [`STATUS_PLACEHOLDER`] in a `data-callback-status`
+//! attribute on `<html>`. This module substitutes exactly one of two
+//! compile-time constants for it. There is no templating and no user-controlled
+//! value anywhere in the substitution, which is why an HTML-escaping template
+//! engine is no longer needed for this page.
+//!
+//! ⚠️ The page **fails closed**: it renders the *failure* state for anything
+//! that is not the literal `success` -- including an unsubstituted placeholder,
+//! which is what a botched vendoring would leave behind. The terminal is the
+//! source of truth for the real outcome either way, so pointing the developer
+//! there is never wrong; claiming a sign-in worked when it did not would be.
 //!
 //! **`window.close()` is best-effort.** Browsers honour it only for windows
 //! opened by script. This tab was reached by a redirect the user followed, so
@@ -19,13 +37,29 @@
 //! were opened by them."* The page tries, and when that fails (the common
 //! case) says plainly that the tab can be closed. It never claims to have.
 
-use minijinja::{Environment, context};
+mod csp;
 
-/// Registered under a `.html` name on purpose -- minijinja keys autoescaping
-/// off the extension, so naming it `callback` or `callback.jinja` would render
-/// the same bytes with escaping silently OFF.
-const TEMPLATE_NAME: &str = "callback.html";
-const TEMPLATE: &str = include_str!("templates/callback.html.jinja");
+/// The vendored artifact. Rebuilt and refreshed by
+/// `scripts/vendor-callback-page.sh`, never edited by hand -- `the_vendored_page_matches_its_recorded_digest`
+/// fails if it is, which is the point.
+const PAGE: &str = include_str!("callback.html");
+
+/// Provenance for [`PAGE`]: which commit of which repository built it, and the
+/// digest of what was vendored. Committed beside the artifact so "is this
+/// current?" is answerable from this repository alone, without a network call.
+#[cfg(test)]
+const SOURCE: &str = include_str!("callback.source.json");
+
+/// The token the build leaves in `data-callback-status` for this module to
+/// replace. Kept in sync with `apps/governance-auth/index.html` by
+/// `the_placeholder_is_present_exactly_once`.
+const STATUS_PLACEHOLDER: &str = "__GOVERNANCE_AUTH_CALLBACK_STATUS__";
+
+/// The only two values the page understands. `callback-status.ts` treats
+/// anything that is not `success` as a failure, so these are a contract with
+/// it rather than free strings.
+const STATUS_SUCCESS: &str = "success";
+const STATUS_ERROR: &str = "error";
 
 /// Renders the full HTTP response, headers included.
 ///
@@ -38,6 +72,7 @@ pub fn http_response(success: bool) -> String {
         "HTTP/1.1 200 OK\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
          Content-Length: {}\r\n\
+         Content-Security-Policy: {}\r\n\
          Cache-Control: no-store\r\n\
          Referrer-Policy: no-referrer\r\n\
          X-Content-Type-Options: nosniff\r\n\
@@ -45,54 +80,24 @@ pub fn http_response(success: bool) -> String {
          \r\n\
          {}",
         body.len(),
+        csp::header_value(&body),
         body
     )
 }
 
-/// Renders the page body.
+/// Substitutes the outcome into the vendored page.
 ///
-/// A template that fails to render must not take the login with it: the
-/// session is already cached and valid by this point, so a broken page falls
-/// back to plain text rather than turning a successful sign-in into an error.
-/// `render_is_infallible_from_the_callers_view` covers it.
+/// Infallible by construction, which is a change from the template era: there
+/// is no render step left to fail, so the fallback that used to exist for a
+/// broken template has nothing to catch. A page that cannot be produced would
+/// now be a compile error, not a runtime one.
 fn document(success: bool) -> String {
-    let (accent, icon_paths, heading, detail) = if success {
-        (
-            "#059669",
-            // Inline SVG rather than an emoji: emoji render differently per
-            // platform and some browsers drop them entirely.
-            vec!["M20 6 9 17l-5-5"],
-            "You're signed in",
-            "Your terminal has the session. This tab is finished with.",
-        )
+    let status = if success {
+        STATUS_SUCCESS
     } else {
-        (
-            "#dc2626",
-            vec!["M18 6 6 18", "m6 6 12 12"],
-            "Sign-in failed",
-            "Nothing was saved. Your terminal has the reason — check there.",
-        )
+        STATUS_ERROR
     };
-
-    render(accent, &icon_paths, heading, detail).unwrap_or_else(|_| {
-        format!("{heading}. You can close this tab and return to your terminal.")
-    })
-}
-
-fn render(
-    accent: &str,
-    icon_paths: &[&str],
-    heading: &str,
-    detail: &str,
-) -> Result<String, minijinja::Error> {
-    let mut env = Environment::new();
-    env.add_template(TEMPLATE_NAME, TEMPLATE)?;
-    env.get_template(TEMPLATE_NAME)?.render(context! {
-        accent,
-        icon_paths,
-        heading,
-        detail,
-    })
+    PAGE.replace(STATUS_PLACEHOLDER, status)
 }
 
 #[cfg(test)]

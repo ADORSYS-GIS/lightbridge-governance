@@ -1,136 +1,121 @@
-//! Tests for [`super`]. In their own file so the module and its template stay
-//! easy to read; they are ordinary child-module unit tests.
+//! What the callback page must be true of, now that it is built elsewhere.
+//!
+//! The tests that matter are the ones guarding the seam. The markup comes from
+//! another repository's build, so this file's job is to catch the ways a
+//! re-vendor can go wrong: a stale digest, a placeholder that stopped being
+//! substituted, or an artifact that quietly started reaching the network.
 
 use super::*;
 
-/// The template's loudest comment, enforced. A CDN link would break the page
-/// offline and leak a referrer from a URL that just carried an authorization
-/// code, so this asserts on the rendered output rather than trusting the
-/// template to stay clean.
-#[test]
-fn makes_no_external_requests() {
-    for success in [true, false] {
-        let page = document(success);
-        for probe in ["http://", "https://", "//cdn", "<link", "@import", "src="] {
-            assert!(
-                !page.contains(probe),
-                "page reaches outside for {probe:?} (success={success})"
-            );
+/// Attributes a browser will fetch. `data`/`poster` are here because they are
+/// fetchable too and cost nothing to check.
+const FETCHING_ATTRS: [&str; 5] = ["src=", "href=", "srcset=", "poster=", "data="];
+
+/// The only absolute URLs the artifact is allowed to contain, none of which is
+/// ever fetched.
+///
+/// ⚠️ This allowlist replaced three bare substring probes (`http://`,
+/// `https://`, `src=`) that were correct against a hand-written template and
+/// became FALSE POSITIVES against a real React bundle:
+///
+/// - `http://www.w3.org/...` — XML namespace constants React uses to create
+///   SVG and MathML elements. Identifiers, never requested.
+/// - `https://react.dev/errors/` — the text of a minified-error message React
+///   throws. A string in a `throw`, not a resource.
+/// - `src=` — appears inside `@font-face { src: url(data:...) format("woff2") }`
+///   and in React's own DOM-property tables.
+///
+/// Keeping the bare probes would have meant either a permanently red test or
+/// deleting the check. Asserting on *tags* keeps the property and drops the
+/// noise.
+const ALLOWED_URLS: [&str; 5] = [
+    "http://www.w3.org/2000/svg",
+    "http://www.w3.org/1998/Math/MathML",
+    "http://www.w3.org/1999/xlink",
+    "http://www.w3.org/XML/1998/namespace",
+    "https://react.dev/errors/",
+];
+
+/// `page` with the BODY of every `<script>` and `<style>` removed, opening
+/// tags kept.
+///
+/// ⚠️ Required, not tidiness. React's minified bundle uses `<` as a comparison
+/// operator constantly (`e<t`, `25<=u`, `8>`), so scanning raw bytes for
+/// `<`…`>` swallows an entire function body as one enormous "tag" and then
+/// finds `href=` inside a string literal in it. That is a false positive, and
+/// it is the same class of mistake the three retired probes made.
+///
+/// The browser does not parse tags in these elements either -- their content
+/// is raw text until the closing tag -- so removing the bodies is what makes
+/// this scan agree with the parser it stands in for. Opening tags are kept, so
+/// a `<script src=…>` would still be caught.
+fn markup_only(page: &str) -> String {
+    let mut out = String::with_capacity(page.len());
+    let mut rest = page;
+    'outer: loop {
+        let mut next = None;
+        for tag in ["script", "style"] {
+            if let Some(at) = rest.find(&format!("<{tag}"))
+                && next.is_none_or(|(best, _)| at < best)
+            {
+                next = Some((at, tag));
+            }
         }
+        let Some((at, tag)) = next else {
+            break;
+        };
+        let Some(head) = rest.get(..at) else {
+            break 'outer;
+        };
+        out.push_str(head);
+        let Some(tail) = rest.get(at..) else {
+            break;
+        };
+        // Keep the opening tag itself, drop everything to the closing tag.
+        let Some(open_end) = tail.find('>') else {
+            break;
+        };
+        if let Some(open) = tail.get(..=open_end) {
+            out.push_str(open);
+        }
+        let close = format!("</{tag}>");
+        let Some(body) = tail.get(open_end + 1..) else {
+            break;
+        };
+        let Some(close_at) = body.find(&close) else {
+            break;
+        };
+        let Some(next_rest) = body.get(close_at..) else {
+            break;
+        };
+        rest = next_rest;
     }
+    out.push_str(rest);
+    out
 }
 
-#[test]
-fn says_what_actually_happened() {
-    // Apostrophe-free substrings: the heading "You're signed in" is escaped to
-    // "You&#x27;re signed in" (see `apostrophes_are_escaped_not_mangled`), so a
-    // literal match on the source text would be checking the wrong thing.
-    assert!(document(true).contains("signed in"));
-    assert!(!document(true).contains("Sign-in failed"));
-    assert!(document(false).contains("Sign-in failed"));
-    assert!(!document(false).contains("signed in"));
-}
-
-/// Moving from `format!` to a template turned autoescaping ON, which rewrites
-/// the apostrophe in "You're" to `&#39;`. That is correct -- a browser renders
-/// it identically -- but it surprised this test suite, so pin it rather than
-/// let the next person rediscover it as a bug. Note `&#x27;`, not `&#39;`:
-/// the exact entity was measured from the output, not assumed.
-#[test]
-fn apostrophes_are_escaped_not_mangled() {
-    let page = document(true);
-    assert!(page.contains("You&#x27;re signed in"), "got:\n{page}");
-    assert!(!page.contains("You're signed in"), "escaping regressed");
-}
-
-/// Never assert a close that browsers will refuse: the fallback copy must
-/// exist so a tab that stays open still tells the user what to do.
-#[test]
-fn keeps_a_fallback_for_when_close_is_refused() {
-    for success in [true, false] {
-        let page = document(success);
-        assert!(page.contains("window.close()"), "should attempt to close");
-        assert!(page.contains("You can close this tab"), "must degrade");
+/// Every `<tag …>` in `page`, as the text between `<` and the matching `>`.
+fn tags(page: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = page;
+    while let Some(start) = rest.find('<') {
+        let Some(tail) = rest.get(start + 1..) else {
+            break;
+        };
+        let Some(end) = tail.find('>') else {
+            break;
+        };
+        if let Some(tag) = tail.get(..end) {
+            out.push(tag);
+        }
+        let Some(next) = tail.get(end + 1..) else {
+            break;
+        };
+        rest = next;
     }
+    out
 }
 
-/// `Content-Length` is bytes. `.len()` on a `String` is correct;
-/// `.chars().count()` would truncate the body in the browser. Pin it.
-#[test]
-fn content_length_is_bytes_not_chars() {
-    let response = http_response(true);
-    let (head, body) = response.split_once("\r\n\r\n").expect("headers then body");
-    let declared: usize = head
-        .lines()
-        .find_map(|l| l.strip_prefix("Content-Length: "))
-        .expect("Content-Length present")
-        .trim()
-        .parse()
-        .expect("numeric");
-    assert_eq!(
-        declared,
-        body.len(),
-        "declared length must equal body bytes"
-    );
-}
-
-#[test]
-fn response_carries_no_referrer_and_no_store() {
-    let response = http_response(false);
-    assert!(response.contains("Referrer-Policy: no-referrer"));
-    assert!(response.contains("Cache-Control: no-store"));
-    assert!(response.contains("Content-Type: text/html; charset=utf-8"));
-}
-
-/// The template must actually be interpolated. Without this a typo'd variable
-/// name renders an empty string and every other assertion above still passes,
-/// because they check for text that is hard-coded in the template.
-#[test]
-fn the_template_is_rendered_not_emitted_raw() {
-    let page = document(true);
-    assert!(
-        !page.contains("{{") && !page.contains("{%"),
-        "unrendered template syntax survived into the output:\n{page}"
-    );
-    // Values that can ONLY be present via interpolation.
-    assert!(page.contains("#059669"), "accent not interpolated:\n{page}");
-    assert!(
-        page.contains(r#"<path d="M20 6 9 17l-5-5"/>"#),
-        "icon path not interpolated:\n{page}"
-    );
-    // The failure icon has two paths; the loop must emit both.
-    let failed = document(false);
-    assert_eq!(failed.matches("<path d=").count(), 2, "loop dropped a path");
-}
-
-/// Autoescaping is keyed off the `.html` name. If someone renames the template
-/// registration, escaping silently turns off -- which matters the moment any
-/// value stops being a compile-time constant.
-#[test]
-fn autoescaping_is_on() {
-    let mut env = Environment::new();
-    env.add_template(TEMPLATE_NAME, "{{ v }}")
-        .expect("template");
-    let out = env
-        .get_template(TEMPLATE_NAME)
-        .expect("get")
-        .render(context! { v => "<script>x</script>" })
-        .expect("render");
-    // minijinja also escapes `/` as `&#x2f;`; asserting the exact output
-    // rather than a substring is what makes this test able to fail loudly if
-    // escaping is ever turned off.
-    assert_eq!(
-        out, "&lt;script&gt;x&lt;&#x2f;script&gt;",
-        "autoescaping is off -- is TEMPLATE_NAME still a .html name?"
-    );
-}
-
-/// A broken template must not fail the login: the session is cached and valid
-/// before this page is written.
-#[test]
-fn render_is_infallible_from_the_callers_view() {
-    // `render` itself can fail; `document` must absorb it.
-    assert!(render("#000", &[], "H", "D").is_ok(), "baseline renders");
-    let page = document(true);
-    assert!(!page.is_empty(), "document must always produce something");
-}
+mod external;
+mod policy;
+mod vendoring;

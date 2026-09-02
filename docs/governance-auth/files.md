@@ -12,6 +12,52 @@ mode `0600`, because a crash mid-write must not leave either tool with an unpars
 
 ---
 
+
+## The callback page comes from another repository
+
+The page the browser lands on after the loopback redirect is **built in
+[`ADORSYS-GIS/converse-frontends`](https://github.com/ADORSYS-GIS/converse-frontends)**
+(`apps/governance-auth`, React + Vite) and vendored here as one self-contained file:
+
+| File | What it is |
+|---|---|
+| `src/oauth/callback_page/callback.html` | the built artifact, ~566 KiB, everything inlined |
+| `src/oauth/callback_page/callback.source.json` | which commit built it, and its sha256 |
+
+It is the only surface of `governance-auth` a developer ever *sees*, so it composes the same
+design primitives as the console and the auth plane rather than approximating them in
+hand-written markup.
+
+### Refreshing it
+
+```bash
+scripts/vendor-callback-page.sh <converse-frontends-commit-sha>
+```
+
+That pulls `ghcr.io/adorsys-gis/governance-auth-callback:sha-<sha>` with `oras`, re-checks the
+self-containment properties on arrival, and rewrites both files. `callback.source.json` then
+records exactly which upstream commit this binary serves — which is the whole point of pinning a
+SHA rather than `latest`.
+
+⚠️ **The pull is deliberately not part of `cargo build`.** `include_str!` runs at compile time,
+so fetching during the build would put the network on the path of every build, break offline and
+air-gapped builds, and make the binary's contents depend on *when* it was compiled rather than on
+what is committed. Refreshing is an explicit act that produces a reviewable diff.
+
+`the_vendored_page_matches_its_recorded_digest` fails if `callback.html` is edited by hand, which
+is the one failure the upstream build gate cannot see.
+
+### Why it can carry `default-src 'none'`
+
+The response sets a Content-Security-Policy whose hashes are **derived from the page itself** at
+request time, so re-vendoring cannot leave it stale. Because the artifact provably fetches nothing,
+the policy is not a compromise — it is the narrowest thing that still renders, and it turns
+"self-contained" from a property a test asserts upstream into one the browser enforces here.
+
+`frame-ancestors 'none'` and `form-action 'none'` matter more than usual on this page: it is the
+redirect target of an authorization code flow, so the URL carries a `code`. Framing it or letting
+it submit a form anywhere are precisely how that value leaves the machine.
+
 ## Files this binary owns
 
 ### Session state

@@ -1,0 +1,8 @@
+{
+  "repository": "ADORSYS-GIS/converse-frontends",
+  "path": "apps/governance-auth",
+  "commit": "017d56f2402777ecc653f812afdf7b17f9c578c6",
+  "sha256": "d4c5aa49c3ef6c72e7b3d3f8397b934b4ed4ba44bcdb088800797be571973489",
+  "artifact": "ghcr.io/adorsys-gis/governance-auth-callback",
+  "tag": "sha-017d56f2402777ecc653f812afdf7b17f9c578c6"
+}
