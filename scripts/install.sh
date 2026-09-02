@@ -47,8 +47,24 @@ main() {
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
     say "Downloading ${asset} (${version})..."
-    fetch "${base}/${asset}" "${tmp}/${asset}" \
-        || die "no asset '${asset}' in the ${version} release. See ${RELEASES}"
+    # ⚠️ stderr suppressed on THIS attempt only. `fetch` runs curl with `-S`
+    # (--show-error) so a genuine failure explains itself -- but here a 404 is
+    # an expected, handled condition, and letting curl print `(22) The
+    # requested URL returned error: 404` immediately before "looking for the
+    # newest release that does" reads like something went wrong. Every other
+    # call to `fetch` keeps its errors.
+    if ! fetch "${base}/${asset}" "${tmp}/${asset}" 2>/dev/null; then
+        # ⚠️ Only `latest` falls back. An explicit `--version` is a pin, and a
+        # pin that silently installs a different release is worse than a
+        # failure -- that is the whole point of pinning.
+        [ "$version" = latest ] \
+            || die "no asset '${asset}' in the ${version} release. See ${RELEASES}"
+
+        base=$(newest_base_with "$asset") \
+            || die "no release publishes '${asset}'. See ${RELEASES}"
+        fetch "${base}/${asset}" "${tmp}/${asset}" \
+            || die "no asset '${asset}' in ${base}. See ${RELEASES}"
+    fi
 
     # ⚠️ A MISSING checksum is a refusal, not a skip. `self update` already
     # refuses to install an unchecked binary, and first install is the one
@@ -131,6 +147,50 @@ target() {
 # and trimmed.
 fetch() {
     curl --proto '=https' --tlsv1.2 -fsSL "$1" -o "$2"
+}
+
+# The newest release that actually publishes `$1`, as a download base URL.
+#
+# ⚠️ Why this exists. GitHub points `releases/latest/download/` at a release the
+# instant it is published, but the six-target asset build then takes several
+# minutes to attach the binaries. For that whole window `latest` resolves to a
+# release with NO assets and this installer -- the documented first step of
+# onboarding -- fails for everyone. Measured on v0.6.0, and again on v1.0.0.
+#
+# Fixing it in the release process was tried and reverted (issue #265): cutting
+# the release as a draft closes the window but breaks the build, because a draft
+# release has no git tag for the build to check out. Resolving it here needs no
+# release-process change at all.
+#
+# ⚠️ This is the ONLY call to api.github.com in the installer, and it is
+# deliberately on the failure path alone. The API allows 60 unauthenticated
+# requests an hour per address; the redirect endpoint above is not rate limited
+# at all. Probing the API first would trade a rare failure for a shared-NAT
+# office hitting a limit on an ordinary install.
+#
+# No `jq`: the asset's own `browser_download_url` carries the tag, and the API
+# returns releases newest-first with drafts excluded, so the first match IS the
+# newest release publishing this asset. Anchoring the match on the closing quote
+# is what keeps `<asset>` from also matching `<asset>.sha256`.
+newest_base_with() {
+    say "The latest release has no ${1} yet -- its build is probably still running."
+    say "Looking for the newest release that does..."
+    url=$(
+        fetch_stdout "https://api.github.com/repos/${REPO}/releases?per_page=30" \
+            | grep -o "\"browser_download_url\": *\"[^\"]*/${1}\"" \
+            | head -1 \
+            | sed 's/.*"\(https[^"]*\)"$/\1/'
+    )
+    [ -n "$url" ] || return 1
+    # Strip the trailing `/<asset>` to get the release's download base, so the
+    # binary and its checksum are fetched from the SAME release.
+    base=${url%/*}
+    say "Installing from ${base##*/download/} instead of the latest release."
+    printf '%s' "$base"
+}
+
+fetch_stdout() {
+    curl --proto '=https' --tlsv1.2 -fsSL "$1"
 }
 
 # `sha256sum -c` reads `<hex>  <filename>` and resolves the filename relative

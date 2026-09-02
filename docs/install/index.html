@@ -89,6 +89,15 @@
         somebody has to untangle by hand.</li>
   </ul>
 
+  <h2>Freshly cut releases</h2>
+  <p>
+    For a few minutes after a release is published, GitHub already points
+    <code>latest</code> at it while its binaries are still building. The installer notices, falls
+    back to the newest release that actually has your platform's asset, and tells you which one it
+    used. <code>--version</code> never falls back — a pin that quietly installed something else
+    would defeat the purpose.
+  </p>
+
   <h2>Pinning</h2>
   <p>
     <code>--version</code> pins the <em>binary</em>. It does not pin this <em>script</em>, which is
