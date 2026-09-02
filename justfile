@@ -26,6 +26,15 @@ test:
 # Everything CI runs, in CI's order
 all-checks: fmt clippy check test
 
+# Render the aiCliOtel collector and assert its OIDC auth gate survives.
+# Deliberately NOT part of `all-checks`: it needs helm and mikefarah yq, which
+# a Rust-only contributor may not have. CI runs it in the `helm-charts` job.
+# `helm dependency build` runs first because the chart pulls the external
+# `app-template` dependency (bjw-s), without which `helm template` errors out.
+chart-checks:
+	helm dependency build charts/lightbridge-governance
+	charts/lightbridge-governance/tests/assert-oidc-auth.sh charts/lightbridge-governance
+
 # Supply-chain audit (same checks as the SAST job)
 deny:
 	cargo deny check advisories bans licenses sources
