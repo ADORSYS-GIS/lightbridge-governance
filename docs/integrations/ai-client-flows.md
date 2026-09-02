@@ -238,8 +238,8 @@ sequenceDiagram
         Note over ga,CX: ⚠️ otel.exporter is a TAGGED ENUM.<br/>`exporter = "otlp-http"` is valid TOML, matches the<br/>published reference, and makes Codex REFUSE TO START.
     else VS Code Copilot
         ga-->>Dev: cannot write it — no settings key exists
-        Note over ga,Dev: ⚠️ OTEL_EXPORTER_OTLP_HEADERS is the only<br/>mechanism, and it is GLOBAL to the shell: every OTLP<br/>exporter started there sends the header everywhere.
-        Dev->>Dev: export it from shell rc (0600 credential file)
+        Note over ga,Dev: ⚠️ OTEL_EXPORTER_OTLP_HEADERS was the only<br/>mechanism, and it is GLOBAL to the shell: every OTLP<br/>exporter started there sends the header everywhere.<br/>REMOVED — Copilot now uses the file exporter and<br/>governance-auth exports no OTEL_* variable at all.
+        Dev->>Dev: nothing to export — `copilot push` carries its own bearer
     end
 
     CX->>OTEL: POST /v1/traces  Authorization: Bearer …

@@ -167,11 +167,18 @@ descriptor offsets and on Linux by `/proc/PID/fdinfo`
 
 ### The shell — `~/.config/governance-auth/otel.env` (and `.fish`)
 
-Both at `0600`, because they can hold a credential. Contents:
-`GOVERNANCE_AUTH_ISSUER`, `GOVERNANCE_AUTH_CLIENT_ID`, `ANTHROPIC_BASE_URL`,
-and — only when a collector is configured — `OTEL_EXPORTER_OTLP_ENDPOINT`,
-`_PROTOCOL`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`,
-`OTEL_RESOURCE_ATTRIBUTES` and `OTEL_EXPORTER_OTLP_HEADERS`.
+Both at `0600`. Contents: `GOVERNANCE_AUTH_ISSUER`, `GOVERNANCE_AUTH_CLIENT_ID`,
+and — only with a gateway — `ANTHROPIC_BASE_URL`. That is the whole list.
+
+⚠️ **No `OTEL_*` variable is exported, deliberately.** There is one collector per
+audience (`otel.ai.camer.digital` accepts `governance-auth-cli`,
+`otel-opencode.ai.camer.digital` accepts `opencode-cli`), so the endpoint is
+per-client — while `OTEL_EXPORTER_OTLP_ENDPOINT` and its siblings are *generic*
+OpenTelemetry variables that every exporter on the machine picks up, ahead of its
+own default. Exporting one machine-wide makes every other client's correct
+default unreachable, which is exactly what broke OpenCode's export on
+2026-09-02. Each client is configured in its own file instead — the two tables
+above, plus VS Code's `settings.json`.
 
 Source it from your shell rc so the rc file itself stays safe to commit.
 

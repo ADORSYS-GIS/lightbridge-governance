@@ -315,18 +315,19 @@ const POSIX_RC_FILES: [&str; 4] = [".bashrc", ".zshrc", ".profile", ".bash_profi
 
 /// Every variable placed in the developer's shell, in a stable order.
 ///
-/// ⚠️ This is the ONLY channel some clients have. VS Code Copilot has no
-/// settings key for OTLP headers, and Codex reads OTEL configuration from the
-/// environment rather than from its own config file -- so a value that exists
-/// only in Claude Code's `settings.json` reaches exactly one of the three
-/// tools. Claude Code gets these through `settings.json` too (see
-/// [`claude_code_env`]); the duplication is deliberate, because a developer who
-/// launches Claude Code from a desktop icon has no shell to inherit from.
+/// ⚠️ **Nothing OTLP goes here, deliberately — see [`configure_shell_env`].**
+/// Every client this binary configures has its own file for telemetry, and the
+/// generic `OTEL_*` variables are machine-global: one shared value where each
+/// client needs a different one.
 ///
+/// What is left is genuinely global to this machine.
 /// `GOVERNANCE_AUTH_ISSUER`/`_CLIENT_ID` are here so the binary itself works
 /// from any terminal with no flags, which is the other half of what `login`
 /// persisting its settings buys (see `config_persist`): the file covers this
 /// binary, the environment covers everything that shells out to it.
+/// `ANTHROPIC_BASE_URL` names the gateway, of which there is exactly one per
+/// org — it is inference wiring, not telemetry, and Claude Code reads it from
+/// `settings.json` anyway (see [`claude_code_env`]).
 fn shell_exports(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     let mut exports = vec![
         ("GOVERNANCE_AUTH_ISSUER", settings.issuer.clone()),
@@ -335,45 +336,45 @@ fn shell_exports(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     if let Some(base_url) = settings.anthropic_base_url() {
         exports.push(("ANTHROPIC_BASE_URL", base_url));
     }
-    if let Some(endpoint) = &settings.endpoint {
-        exports.push(("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()));
-        exports.push(("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()));
-        exports.push(("OTEL_METRICS_EXPORTER", "otlp".to_owned()));
-        exports.push(("OTEL_LOGS_EXPORTER", "otlp".to_owned()));
-        exports.push((
-            "OTEL_RESOURCE_ATTRIBUTES",
-            settings.resource_attributes_value(),
-        ));
-    }
-    // Last, and only with a collector to send it to: an exported Authorization
-    // header with no endpoint authenticates to nothing.
-    if settings.endpoint.is_some()
-        && let Some(headers) = settings.headers_value()
-    {
-        exports.push(("OTEL_EXPORTER_OTLP_HEADERS", headers));
-    }
     exports
 }
 
-/// Exports the OTLP credential into the developer's shell, which is the only
-/// way VS Code Copilot could be authenticated before its exporter cut over
-/// to a file (see [`crate::vscode`]); it is kept for Claude Code launched
-/// from a desktop icon, which has no shell to inherit from either.
+/// Places this binary's own settings, and the gateway URL, in the developer's
+/// shell so any terminal (and any subprocess that does not inherit them) can
+/// resolve them without flags.
 ///
-/// The token does **not** go into `.bashrc`. Those files are routinely mode
-/// 0644 and routinely committed to a dotfiles repo, so writing a bearer token
-/// there is how a credential ends up in someone's public GitHub. Instead the
-/// secret lives in `~/.config/governance-auth/otel.env` at 0600 and the rc
-/// block is a one-line `source` of it -- so a committed `.bashrc` leaks
-/// nothing.
+/// ## Why no OTLP configuration is written here
 ///
-/// ⚠️ `OTEL_EXPORTER_OTLP_HEADERS` is a **global** OpenTelemetry variable, not
-/// a Copilot-scoped one. Once exported, every OTLP exporter started from that
-/// shell attaches this Authorization header to whatever collector it targets.
-/// VS Code offers no scoped alternative (its `COPILOT_OTEL_*` variables cover
-/// endpoint/protocol/capture, but not headers), so this is inherent to
-/// authenticating Copilot at all, not a choice made here. Callers should say
-/// so out loud.
+/// **One collector per audience, so the endpoint is per-CLIENT.** Each
+/// collector's OIDC gate accepts exactly one `aud`: `otel.ai.camer.digital`
+/// takes `governance-auth-cli`, `otel-opencode.ai.camer.digital` takes
+/// `opencode-cli`. `OTEL_EXPORTER_OTLP_ENDPOINT` (and `_PROTOCOL`,
+/// `_HEADERS`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`,
+/// `OTEL_RESOURCE_ATTRIBUTES`) are **generic OpenTelemetry variables**: once
+/// sourced from an rc file they apply to every OTLP exporter started on that
+/// machine, and SDKs read the environment *ahead of* their own configured
+/// default. So exporting one client's endpoint machine-wide makes every other
+/// client's correct default unreachable — measured 2026-09-02, when OpenCode
+/// (`@vymalo/opencode-otel`, `env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+/// opts.endpoint`) silently exported to the Claude Code collector and 401'd on
+/// every span. There is no machine-wide correct value, so there is no
+/// machine-wide variable.
+///
+/// Every client is reached through its own file instead, and none of them
+/// needs the environment: Claude Code via `~/.claude/settings.json`
+/// ([`claude_code_env`], which also covers a desktop-icon launch with no shell
+/// to inherit from), Codex via `[otel]` in `~/.codex/config.toml`
+/// ([`configure_codex`] writes `endpoint`, `protocol` and `headers` — its
+/// `OtelExporterKind::OtlpHttp` takes `endpoint` as a required field, so the
+/// file is authoritative), and VS Code Copilot via its `file` exporter
+/// ([`crate::vscode`]) drained out of band.
+///
+/// ## Why the file is still 0600 and still indirected
+///
+/// It no longer carries a credential — that removal is the point — but `.bashrc`
+/// is routinely mode 0644 and routinely committed to a dotfiles repo, and the
+/// rc block being a one-line `source` of `~/.config/governance-auth/otel.env`
+/// is what keeps it that way for whatever lands here next.
 pub fn configure_shell_env(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     let exports = shell_exports(settings);
     if exports.is_empty() {
@@ -843,11 +844,13 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
+mod client_scope_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::optout::ClientOptOut;
 
-    fn settings() -> OtelSettings {
+    pub(super) fn settings() -> OtelSettings {
         OtelSettings {
             issuer: "https://auth.example".to_owned(),
             client_id: "cli".to_owned(),
@@ -1258,10 +1261,12 @@ mod tests {
     }
 
     #[test]
-    fn the_credential_goes_in_a_0600_file_not_into_bashrc() {
+    fn the_shell_file_stays_0600_and_the_rc_only_sources_it() {
         // The whole point of the sourced-file indirection: a developer's
         // .bashrc is routinely 0644 and routinely committed to a dotfiles
-        // repo. A bearer token written there is a credential in git.
+        // repo. A bearer token written there is a credential in git. Nothing
+        // secret is placed here any more (see `configure_shell_env`), and the
+        // posture is kept for whatever lands here next.
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "export EDITOR=vim\n").expect("seed bashrc");
 
@@ -1280,7 +1285,10 @@ mod tests {
 
         let env_file = home.path().join(".config/governance-auth/otel.env");
         let contents = fs::read_to_string(&env_file).expect("read env file");
-        assert!(contents.contains("ingest-token"), "secret lives here");
+        assert!(
+            contents.contains("GOVERNANCE_AUTH_ISSUER"),
+            "this binary's own settings live here"
+        );
 
         #[cfg(unix)]
         {
@@ -1347,7 +1355,7 @@ mod tests {
 
         let fish_env = fs::read_to_string(home.path().join(".config/governance-auth/otel.fish"))
             .expect("read fish env file");
-        assert!(fish_env.contains("set -gx OTEL_EXPORTER_OTLP_HEADERS"));
+        assert!(fish_env.contains("set -gx GOVERNANCE_AUTH_ISSUER"));
         assert!(
             !fish_env.contains("export "),
             "fish must not get POSIX export"
@@ -1358,28 +1366,28 @@ mod tests {
     }
 
     #[test]
-    fn no_token_exports_everything_except_the_header() {
+    fn a_token_never_reaches_the_shell_whether_or_not_one_exists() {
         let home = tempdir();
         fs::write(home.path().join(".bashrc"), "# mine\n").expect("seed");
-        let mut without = settings();
-        without.token = None;
 
-        let outcomes = configure_shell_env(home.path(), &without).expect("configure");
-        assert!(
-            !outcomes.is_empty(),
-            "issuer/client-id still belong in the shell so the binary needs no flags"
-        );
+        for token in [Some(Redacted::new("ingest-token".to_owned())), None] {
+            let mut variant = settings();
+            variant.token = token;
 
-        let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
-            .expect("env file");
-        assert!(env.contains("GOVERNANCE_AUTH_ISSUER"), "{env}");
-        assert!(env.contains("OTEL_EXPORTER_OTLP_ENDPOINT"), "{env}");
-        // The point that survived the behaviour change: no credential exists,
-        // so no Authorization header may be exported.
-        assert!(
-            !env.contains("OTEL_EXPORTER_OTLP_HEADERS"),
-            "exported a header with no token: {env}"
-        );
+            let outcomes = configure_shell_env(home.path(), &variant).expect("configure");
+            assert!(
+                !outcomes.is_empty(),
+                "issuer/client-id still belong in the shell so the binary needs no flags"
+            );
+
+            let env = fs::read_to_string(home.path().join(".config/governance-auth/otel.env"))
+                .expect("env file");
+            assert!(env.contains("GOVERNANCE_AUTH_ISSUER"), "{env}");
+            assert!(
+                !env.contains("OTEL_EXPORTER_OTLP_HEADERS"),
+                "exported an Authorization header into a machine-global file: {env}"
+            );
+        }
     }
 
     #[test]
@@ -1395,10 +1403,10 @@ mod tests {
 
     /// Minimal scratch dir, removed on drop -- same reason `tests/support`
     /// hand-rolls one rather than pulling in `tempfile` for a couple of uses.
-    struct TempDir(PathBuf);
+    pub(super) struct TempDir(PathBuf);
 
     impl TempDir {
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -1409,7 +1417,7 @@ mod tests {
         }
     }
 
-    fn tempdir() -> TempDir {
+    pub(super) fn tempdir() -> TempDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -306,22 +306,39 @@ cannot rotate at once — the same lock the session uses guards it.
 token in this file is a credential at rest. `tests/logging_redaction.rs` runs the real binary
 at `trace` with a sentinel token and fails if it appears in the file.
 
-### OTLP credential for the shell
+### Shell environment
 
 ```
 ~/.config/governance-auth/otel.env     # POSIX shells
 ~/.config/governance-auth/otel.fish    # fish
 ```
 
-Both at mode `0600`. These carry `OTEL_EXPORTER_OTLP_HEADERS` for a Claude Code launched from
-a desktop icon, which inherits no shell. They used to be the *only* way to authenticate VS
-Code Copilot; since the file-exporter cutover Copilot needs no header at all, because
-`copilot push` supplies its own.
+Both at mode `0600`. They carry exactly three things — `GOVERNANCE_AUTH_ISSUER`,
+`GOVERNANCE_AUTH_CLIENT_ID`, and (with `--gateway-url`) `ANTHROPIC_BASE_URL` — so this binary
+works from any terminal with no flags and a subprocess that does not inherit them can still
+resolve.
 
-The token deliberately does **not** go into `.bashrc`. Those files are routinely mode `0644`
-and routinely committed to a dotfiles repo — writing a bearer token there is how a credential
-ends up in someone's public GitHub. The secret lives in the `0600` file and the rc file gets
-a one-line `source` of it, so a committed `.bashrc` leaks nothing.
+⚠️ **No OTLP configuration is written here, and that is deliberate.** There is one collector
+per audience: `otel.ai.camer.digital`'s OIDC gate accepts `governance-auth-cli` only, and
+`otel-opencode.ai.camer.digital`'s accepts `opencode-cli` only. `OTEL_EXPORTER_OTLP_ENDPOINT`
+and its siblings are *generic* OpenTelemetry variables — once sourced from an rc file they
+apply to every OTLP exporter on the machine, and SDKs read the environment **ahead of** their
+own configured default. So exporting one client's endpoint machine-wide makes every other
+client's correct default unreachable. That is not hypothetical: on 2026-09-02 OpenCode
+(`@vymalo/opencode-otel`, which resolves `env.OTEL_EXPORTER_OTLP_ENDPOINT || opts.endpoint`)
+silently exported to the Claude Code collector on every machine that had run
+`governance-auth`, and every span `401`'d. The endpoint is per-client, so it lives in each
+client's own config file: `~/.claude/settings.json`, `~/.codex/config.toml`, and VS Code's
+`settings.json`.
+
+No credential goes in either file now — the OTLP bearer went there to authenticate the
+endpoint that is no longer exported. They stay `0600`, and the rc file still only gets a
+one-line `source`, because `.bashrc` is routinely mode `0644` and routinely committed to a
+dotfiles repo.
+
+**A machine configured by an older build is fixed by the next run**: both files are rewritten
+wholesale and the rc block is replaced between its markers, so the stale `OTEL_*` exports
+disappear without anyone editing a dotfile by hand.
 
 ### Config files
 
@@ -350,11 +367,11 @@ forever) or "rewrite the file" (destroys the developer's own config). The path i
 `$HOME/…` so the line stays correct in a dotfiles repo shared between machines with different
 usernames.
 
-⚠️ `OTEL_EXPORTER_OTLP_HEADERS` is a **global** OpenTelemetry variable. Once exported, every
-OTLP exporter started from that shell attaches this `Authorization` header to whatever
-collector it targets. That was unavoidable while it was Copilot's only credential channel; it
-no longer is, so this is now a blast radius carried for Claude Code's desktop-launch case
-alone and worth revisiting.
+The block sources a file that carries **no** `OTEL_*` variable. `OTEL_EXPORTER_OTLP_ENDPOINT`
+and `OTEL_EXPORTER_OTLP_HEADERS` are global OpenTelemetry variables — once exported, every
+OTLP exporter started from that shell picks them up, including clients this binary does not
+configure and whose collector expects a different audience. See the warning under
+[Shell environment](#shell-environment) above.
 
 ---
 

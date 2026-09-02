@@ -23,7 +23,7 @@ capability works per client; that one says *how*, and exactly where it breaks.
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
 | **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
 | **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
-| **Telemetry endpoint** | ✅ `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ `otel.exporter.otlp-http.endpoint` | ❌ no OTEL support | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot push` |
+| **Telemetry endpoint** | ✅ `env.OTEL_EXPORTER_OTLP_ENDPOINT` in `settings.json` | ✅ `otel.exporter.otlp-http.endpoint` | ✅ `@vymalo/opencode-otel`, its OWN collector — see below | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot push` |
 | **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
 | **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | n/a — deliberately not used, see below |
 | **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | ✅ **already consumes `/v1/models/info`** | — |
@@ -32,6 +32,36 @@ capability works per client; that one says *how*, and exactly where it breaks.
 ✅ works · ⚠️ works with a caveat · ❌ no mechanism exists
 
 ## The caveats, in order of how much they bite
+
+### The endpoint is per-client, so it is never a shell variable
+
+Each collector's OIDC gate accepts exactly **one** audience:
+`otel.ai.camer.digital` takes `governance-auth-cli`, and
+`otel-opencode.ai.camer.digital` (chart values `opencodeOtel`) takes
+`opencode-cli`. So "the collector" is not one address — it is one per client.
+
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` and
+`OTEL_RESOURCE_ATTRIBUTES` are **generic** OpenTelemetry variables. Exported from
+a shell rc they reach every OTLP exporter on the machine, and SDKs consult the
+environment *before* their own configured default — so a machine-global value
+silently overrides each client's correct one.
+
+Measured 2026-09-02: `governance-auth` wrote the generic set into
+`~/.config/governance-auth/otel.env`, sourced from every rc file. OpenCode's
+plugin resolves `env.OTEL_EXPORTER_OTLP_ENDPOINT || opts.endpoint`, so on every
+machine that had ever run `governance-auth` it started with
+`endpoint=https://otel.ai.camer.digital`, logged `otel_export_failed status=401`
+on each export, and left 112 `token verification failed` lines on the *other*
+collector in 25 minutes.
+
+**`governance-auth` now writes no `OTEL_*` variable at all.** Every client it
+configures has its own file for telemetry: Claude Code
+`~/.claude/settings.json`, Codex `[otel]` in `~/.codex/config.toml`, Copilot its
+file exporter. opencode is not configured here and keeps whatever its well-known
+document pins — the per-signal `endpoints` that were pinned as the immediate
+unblock are no longer load-bearing against this binary, though they remain the
+more precise thing to pin.
 
 ### A command written into a config must be an ABSOLUTE path
 
@@ -231,9 +261,9 @@ about how it is wired are easy to get wrong:
 
 That is why `governance-auth` still does not configure opencode: both halves
 are already solved by the well-known document, and the one thing
-`governance-auth` could do to it — export a global OTLP endpoint — is exactly
-the thing that must stop (tracked as the `shell_exports` change in
-`app/governance-auth/src/otel.rs`).
+`governance-auth` could do to it — export a global OTLP endpoint — has now
+stopped. `shell_exports` (`app/governance-auth/src/otel.rs`) writes no `OTEL_*`
+variable; see the first caveat on this page.
 
 ⚠️ A developer's local `~/.config/opencode/opencode.json` is **JSONC**, so
 anything editing it faces the same comment-preservation hazard as VS Code's
