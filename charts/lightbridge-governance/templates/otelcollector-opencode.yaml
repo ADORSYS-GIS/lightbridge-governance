@@ -1,0 +1,16 @@
+{{- /*
+The OpenCode collector. Its body is `lightbridge-governance.publicOtelCollector`
+(_helpers.tpl), shared verbatim with the AI-CLI collector in
+otelcollector-ai-cli.yaml -- every ⚠️ comment there records a production
+incident, so it is instantiated twice rather than copy-pasted.
+
+This exists as a SECOND collector, not a second host on the first, because
+`oidcauthextension` accepts exactly one `audience` per extension instance and
+OpenCode's token carries `aud: opencode-cli` from the same issuer. Live proof
+and the ADR-0011 reason it cannot be fixed on the client side: see the
+`lightbridge-governance.opencodeOtelName` helper and values.yaml's
+`opencodeOtel` block.
+*/}}
+{{- if .Values.opencodeOtel.enabled }}
+{{- include "lightbridge-governance.publicOtelCollector" (dict "root" . "otel" .Values.opencodeOtel "name" (include "lightbridge-governance.opencodeOtelName" .)) }}
+{{- end }}

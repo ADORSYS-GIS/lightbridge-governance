@@ -93,6 +93,21 @@ per source and the conversion has to live somewhere deliberate.
 | Cursor | pull cron | day | org-scoped | C | — | [#99](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/99) |
 | JetBrains AI / Amazon Q / Tabnine | pull cron | day | org-scoped | C | — | [#100](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/100) |
 
+> **Amendment (2026-09-02) — the OpenCode row now has an ingest endpoint.** Pattern A's
+> public collector is not one endpoint but **two**, because the OTel Collector's
+> `oidcauthextension` accepts exactly one `audience` string per extension instance, and per
+> lightbridge-authz ADR-0011 Decision 5 a minted token's `aud` is always exactly the
+> requesting `client_id` — so `opencode-cli` tokens can never present `governance-auth-cli`.
+> `otel-opencode.ai.camer.digital` (chart values `opencodeOtel`, `governance.source=opencode`)
+> was added alongside `otel.ai.camer.digital` (`aiCliOtel`, `governance.source=ai-cli`).
+> Proven by probing production 2026-09-02: an OpenCode token against the existing host
+> returned `401 … expected audience "governance-auth-cli" got ["opencode-cli"]`, with the
+> issuer/signature check passing first. The axes of the row itself are unchanged — still
+> push OTLP, request grain, user identity, pattern A. **Not fixed by this:** the Codex and
+> Copilot-IDE rows authenticate with `aud: lightbridge-api-key`, which no collector trusts;
+> that needs a third audience and is unaddressed. Mapping:
+> `docs/integrations/ai-client-flows.md`, "Two public collectors, one audience each".
+
 **The tally, since the rest of this document counts against it.** Thirteen rows:
 **A** — 5 (Claude Code, Codex, OpenCode, Copilot IDE, VS Code LM provider) ·
 **B** — 1 (Foundry) ·

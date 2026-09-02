@@ -255,6 +255,105 @@ Fail-closed behaviour, also verified live: an unauthenticated POST returns
 
 ---
 
+## Two public collectors, one audience each
+
+Matrix rows: **Telemetry endpoint**, all fleets.
+
+There are now **two** public OTLP collectors, on two hosts, and which one a
+client must use is decided entirely by the `aud` claim its token carries.
+
+**Why a second collector exists at all.** The OpenTelemetry Collector's
+`oidcauthextension` accepts exactly **one** `audience` string per extension
+instance. Every laptop token here comes from the same issuer
+(`https://auth.ai.camer.digital`, authz-idp) but carries a different `aud`,
+because per lightbridge-authz ADR-0011 Decision 5 a minted token's `aud` is
+**always exactly the requesting `client_id`** and a client cannot ask for
+another. So the audience cannot be widened, and a client cannot be made to
+request a different one: one audience per extension, one extension per
+collector, therefore one collector per fleet.
+
+Proven by probing production on 2026-09-02, before the second collector
+existed:
+
+```
+POST https://otel.ai.camer.digital/v1/traces
+  no auth                 -> 401
+  Bearer <opencode token> -> 401 "failed to verify token: oidc: expected
+                             audience \"governance-auth-cli\" got [\"opencode-cli\"]"
+```
+
+The issuer/signature check **passed** in that second probe — the extension
+validates issuer before audience — which is what proves the OpenCode token is
+minted by the same authz-idp issuer and that only the audience differed.
+
+```mermaid
+flowchart LR
+    subgraph L["Developer laptops"]
+        CC["Claude Code<br/>aud: governance-auth-cli"]
+        OC["OpenCode<br/>aud: opencode-cli"]
+        CX["Codex / VS Code Copilot<br/>aud: lightbridge-api-key"]
+    end
+
+    A["otel.ai.camer.digital<br/>aiCliOtel<br/>trusts governance-auth-cli<br/>governance.source=ai-cli"]
+    B["otel-opencode.ai.camer.digital<br/>opencodeOtel<br/>trusts opencode-cli<br/>governance.source=opencode"]
+    Alloy["Alloy → Tempo / Loki / Mimir"]
+
+    CC -- "✅ 200" --> A
+    OC -- "✅ 200" --> B
+    CX -- "❌ 401 wrong audience,<br/>no collector trusts it" --> A
+    A --> Alloy
+    B --> Alloy
+```
+
+| Host | Values key | Trusted `aud` | `governance.source` | Fleet |
+|---|---|---|---|---|
+| `otel.ai.camer.digital` | `aiCliOtel` | `governance-auth-cli` | `ai-cli` | Claude Code (via `governance-auth`) |
+| `otel-opencode.ai.camer.digital` | `opencodeOtel` | `opencode-cli` | `opencode` | OpenCode |
+| — | — | `lightbridge-api-key` | — | **Codex, VS Code Copilot — no collector** |
+
+Both collectors render from one shared body
+(`lightbridge-governance.publicOtel{Collector,Ingress,NetworkPolicy}` in
+`charts/lightbridge-governance/templates/_helpers.tpl`): same issuer, same
+Alloy exporter, same three pipelines, same `memory_limiter`-first processor
+order, same no-`egress:` CiliumNetworkPolicy. Only host, audience, display name
+and source attribute differ. Both default to `enabled: false` in the chart and
+are switched on in `ai-helm-values`, because each opens a public endpoint.
+
+### The OpenCode credential is short-lived, not an API key
+
+This is the part that differs most from the "Telemetry auth (static)" section
+above. OpenCode does **not** hold a long-lived `lightbridge-authz` API key. Its
+token is a short-lived authz-idp **device-code** grant token, supplied to the
+OTLP exporter by a `tokenCommand` credential helper that reads the cache
+`@vymalo/opencode-oauth2` already maintains for inference — so the same
+refresh loop that keeps inference working keeps telemetry working, and nothing
+long-lived is written to disk by us.
+
+⚠️ **Not verified from this repository.** The device-code flow, the
+`tokenCommand` helper and the `@vymalo/opencode-oauth2` cache all live outside
+this repo; what was verified here is only the `aud: opencode-cli` claim in a
+real token and the 401 it produced against the `aiCliOtel` collector. This
+repo's own `docs/integrations/ai-client-support-matrix.md` still records
+OpenCode's `oauth2.issuer` as `https://auth.verif.fyi/realms/camer-digital`
+(Keycloak) — that snippet is **stale**: an `auth.verif.fyi`-issued token would
+have failed the collector's issuer/signature check, not its audience check.
+
+### Still open: Codex and VS Code Copilot
+
+Neither is fixed by this change. Both authenticate with a long-lived
+`lightbridge-authz` API key, which carries `aud: lightbridge-api-key`, and
+**no collector trusts that audience** — `aiCliOtel` stopped accepting it when
+its audience was narrowed to `governance-auth-cli`
+([#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) AC 4,
+recorded in `values.yaml`), and `opencodeOtel` trusts `opencode-cli`. Closing
+that gap needs a **third** audience — either a third collector on the same
+shared body, or an upstream change letting one extension trust a set. It is
+**not addressed here**, and the "Telemetry auth (static)" section above, which
+still describes that path as "the path that works today", is stale on exactly
+this point.
+
+---
+
 ## Written by `governance-auth configure`
 
 Matrix row: **Written by `governance-auth configure`**.
@@ -356,3 +455,13 @@ flowchart LR
 
 The asymmetry is the thing to remember: **Claude Code is the only client whose
 telemetry is broken, and the only one whose inference works.**
+
+⚠️ **Amended 2026-09-02 — the two `✅ static authz key` edges above are stale.**
+`aiCliOtel`'s trusted audience was narrowed to `governance-auth-cli`, so the
+`aud: lightbridge-api-key` credential Codex and VS Code Copilot use is now
+refused with a 401. See "Two public collectors, one audience each" above for
+the current host/audience/fleet mapping — including the second collector for
+OpenCode, and the fact that Codex and VS Code Copilot have **no** collector
+that trusts their audience today. The diagram is left as-is rather than
+rewritten because its inference edges are still accurate and the correction is
+narrower than a redraw.

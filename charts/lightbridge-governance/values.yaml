@@ -436,6 +436,15 @@ aiCliOtel:
   # digest captured at the time this was written:
   # curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
   initContainerImage: "curlimages/curl:8.11.1"
+  # Human-readable name for this collector, used in the CiliumNetworkPolicy's
+  # `spec.description`. Only prose -- nothing selects on it.
+  displayName: AI-CLI
+  # The `governance.source` resource attribute every span/metric/log through
+  # this collector is stamped with, so laptop telemetry is distinguishable from
+  # in-cluster telemetry -- and, now that there is more than one public
+  # collector, so is one client fleet from another. RFC-0003 §2 matrix row
+  # name, lowercased, matching `microsoft-foundry`'s existing convention.
+  sourceAttribute: ai-cli
   # memory_limiter runs first in every pipeline; these are its bounds.
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
@@ -479,6 +488,83 @@ aiCliOtel:
     # the Traefik LB via the wildcard record, exactly as auth.<domain> does.
     className: traefik
     host: otel.ai.camer.digital
+    clusterIssuer: cert-home-cert-http
+    # Namespace Traefik runs in, for the CiliumNetworkPolicy ingress rule.
+    # Wrong value here = every push silently dropped by Cilium while the
+    # collector looks perfectly healthy.
+    traefikNamespace: traefik
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Second public OTLP collector, for OpenCode laptops.
+#
+# ⚠️ WHY A SECOND ONE rather than another host on aiCliOtel: the collector's
+# `oidcauthextension` accepts exactly ONE `audience` string per extension
+# instance, and OpenCode presents a token with a different `aud` than the
+# clients governance-auth configures. Probed live against production
+# 2026-09-02:
+#
+#   POST https://otel.ai.camer.digital/v1/traces
+#     no auth                 -> 401
+#     Bearer <opencode token> -> 401 "failed to verify token: oidc: expected
+#                                audience \"governance-auth-cli\" got
+#                                [\"opencode-cli\"]"
+#
+# The issuer check PASSED there -- the extension validates issuer/signature
+# before audience -- which is what proves the OpenCode token is minted by the
+# same `https://auth.ai.camer.digital` (authz-idp) issuer, by its device-code
+# grant, and that ONLY the audience differs. Per lightbridge-authz ADR-0011
+# Decision 5 a minted token's `aud` is always exactly the requesting
+# `client_id` and a client cannot ask for another, so this can never be fixed
+# by making OpenCode request `governance-auth-cli`. One audience per
+# extension, one extension per collector.
+#
+# Everything else is shared: same issuer, same Alloy exporter, same three
+# pipelines, same rendered body (_helpers.tpl's `publicOtel*` defines).
+opencodeOtel:
+  # Off by default, exactly like aiCliOtel: this opens a PUBLIC endpoint, so
+  # turning it on is an explicit act in the values repo, not something a chart
+  # bump does.
+  enabled: false
+  replicas: 2
+  # `-contrib`: `oidcauthextension` ships only there. Same image and pin as
+  # aiCliOtel -- these two move together or the audience-vs-issuer behaviour
+  # verified on one stops being evidence for the other.
+  image: "otel/opentelemetry-collector-contrib:0.158.0"
+  # See the `initContainers` block in _helpers.tpl for why this exists (a real
+  # prod incident: 0/2 replicas, 100% CrashLoopBackOff, ai-helm-values#216).
+  initContainerImage: "curlimages/curl:8.11.1"
+  displayName: OpenCode
+  # RFC-0003 §2's matrix row for this source is "OpenCode"; lowercased here to
+  # match the existing `ai-cli`/`microsoft-foundry` convention. Not invented --
+  # `opencode` is also the token this repo already uses for the client
+  # everywhere else (`opencode-cli`, `opencode-oauth2`).
+  sourceAttribute: opencode
+  memoryLimiterMib: 400
+  memorySpikeLimitMib: 100
+  alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  oidc:
+    # Same issuer as aiCliOtel -- authz-idp. Only the audience differs.
+    issuerUrl: "https://auth.ai.camer.digital"
+    # ⚠️ A CLIENT ID, not a service name -- same rule as aiCliOtel's audience,
+    # and the same failure mode: this MUST equal the `client_id` OpenCode's
+    # device-code flow registers as in authz's `oauth2.clients`, and changing
+    # one without the other silently 401s every push. `opencode-cli` is the
+    # value the live probe above observed in the rejected token's `aud`.
+    audience: "opencode-cli"
+  ingress:
+    enabled: true
+    # Traefik, not the Envoy core-gateway: otel-opencode.<domain> resolves via
+    # the same wildcard *.ai.camer.digital record otel.<domain> and
+    # auth.<domain> use, so this needs no DNS change.
+    className: traefik
+    host: otel-opencode.ai.camer.digital
     clusterIssuer: cert-home-cert-http
     # Namespace Traefik runs in, for the CiliumNetworkPolicy ingress rule.
     # Wrong value here = every push silently dropped by Cilium while the

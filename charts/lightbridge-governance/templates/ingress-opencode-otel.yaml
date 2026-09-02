@@ -1,0 +1,7 @@
+{{- /*
+Body shared with the AI-CLI collector's ingress -- see
+`lightbridge-governance.publicOtelIngress` in _helpers.tpl.
+*/}}
+{{- if and .Values.opencodeOtel.enabled .Values.opencodeOtel.ingress.enabled }}
+{{- include "lightbridge-governance.publicOtelIngress" (dict "root" . "otel" .Values.opencodeOtel "name" (include "lightbridge-governance.opencodeOtelName" .)) }}
+{{- end }}
