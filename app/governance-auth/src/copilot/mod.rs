@@ -1,4 +1,4 @@
-//! `copilot-push`: drains VS Code Copilot Chat's OTel spool file and exports
+//! `copilot push`: drains VS Code Copilot Chat's OTel spool file and exports
 //! it to the governed collector over OTLP/HTTP.
 //!
 //! Copilot Chat is told to write telemetry to a file
@@ -82,7 +82,7 @@ use crate::{config::OauthConfig, oauth};
 pub async fn run(http: &reqwest::Client, config: &OauthConfig, dry_run: bool) -> Result<()> {
     let endpoint = config.otel_endpoint.as_deref().context(
         "no collector configured: supply --otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT (or set \
-         `otel_endpoint` in your config file) before running `copilot-push`",
+         `otel_endpoint` in your config file) before running `copilot push`",
     )?;
     let spool_path = resolve_spool_path(config)?;
 

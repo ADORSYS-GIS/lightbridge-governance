@@ -23,19 +23,20 @@
 //! A machine with no user systemd session -- a container, a WSL install
 //! without systemd, a CI runner -- must not turn a successful `configure` into
 //! a failed one. The config files are already written by the time this runs
-//! and `copilot-push` still works by hand, so a failure is reported with the
+//! and `copilot push` still works by hand, so a failure is reported with the
 //! two commands that finish the job and swallowed by the caller.
 //!
 //! ## Why the unit carries flags instead of trusting the config file
 //!
 //! `configure` writes `issuer`/`client_id`/`otel_endpoint`/
 //! `copilot_spool_path` to the per-user config file, so a bare
-//! `governance-auth copilot-push` would resolve today. It is passed
+//! `governance-auth copilot push` would resolve today. It is passed
 //! explicitly anyway: only the explicit form keeps working after someone edits
 //! that file, and a wake that fails every five minutes because a key moved is
 //! precisely the silent failure this module exists to remove.
 
 mod launchd;
+mod staleness;
 mod systemd;
 #[cfg(test)]
 mod tests;
@@ -43,8 +44,9 @@ mod tests;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+pub use staleness::stale;
 
-use crate::config::OauthConfig;
+use crate::{cli, config::OauthConfig};
 
 /// How often the drain wakes.
 ///
@@ -61,6 +63,7 @@ pub const LABEL: &str = "digital.camer.ai.governance-auth.copilot-push";
 pub const UNIT: &str = "governance-auth-copilot-push";
 
 /// Exactly what the scheduler runs, resolved once at `configure` time.
+#[derive(Debug, Clone)]
 pub struct Invocation {
     /// Absolute path to this binary. A scheduler does not inherit a login
     /// shell's `PATH`, so a bare name fails on every wake -- the same trap
@@ -90,8 +93,10 @@ impl Invocation {
                 endpoint.to_owned(),
                 "--copilot-spool-path".to_owned(),
                 spool.to_string_lossy().into_owned(),
-                "copilot-push".to_owned(),
-            ],
+            ]
+            .into_iter()
+            .chain(cli::COPILOT_PUSH.iter().map(|word| (*word).to_owned()))
+            .collect(),
         }))
     }
 }

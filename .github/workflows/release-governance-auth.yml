@@ -1,7 +1,7 @@
 name: Release governance-auth binaries
 
 # `governance-auth` is distributed to developer laptops, NOT bundled into the
-# server image (ADR-0010) -- so it needs its own asset build. `self-update`
+# server image (ADR-0010) -- so it needs its own asset build. `self update`
 # consumes exactly what this publishes: a RAW binary per platform plus a
 # sibling `.sha256`. Both names are load-bearing; `app/governance-auth/src/
 # update.rs::asset_name` must stay in lockstep with the matrix below, or
@@ -108,13 +108,13 @@ jobs:
       #
       # `--profile prod` (thin LTO, codegen-units=1, strip=true), not the
       # default `release`: these assets are downloaded by every developer and
-      # replaced by `self-update`, and stock `release` ships them unstripped.
+      # replaced by `self update`, and stock `release` ships them unstripped.
       # ⚠️ `GOVERNANCE_AUTH_RELEASE_VERSION` IS LOAD-BEARING, not metadata.
       #
       # release-please runs `release-type: simple` here, which bumps the
       # manifest and `Chart.yaml` but NOT `Cargo.toml`, so `[workspace.package]
       # version` stays behind the tag. v0.2.0 shipped binaries reporting
-      # `0.1.0`; `self-update` saw `0.2.0 > 0.1.0` on every single invocation
+      # `0.1.0`; `self update` saw `0.2.0 > 0.1.0` on every single invocation
       # and reinstalled forever. Injecting the tag being built is what lets a
       # released binary recognise itself and stop.
       #

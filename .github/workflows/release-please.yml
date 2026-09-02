@@ -3,7 +3,7 @@ name: Release Please
 # `release-please-config.json` and `.release-please-manifest.json` have been
 # committed since the repo was set up, but nothing ever ran release-please --
 # which is why `main` carries a `v0.1.0` tag and ZERO published releases, and
-# why `governance-auth self-update` takes its `releases/latest` 404 path on
+# why `governance-auth self update` takes its `releases/latest` 404 path on
 # every developer machine today. This workflow is the missing half.
 #
 # What it does: opens (and keeps rebasing) a release PR that bumps the version,
@@ -70,7 +70,7 @@ jobs:
       # recursive workflows. So without this step the chain breaks *silently*:
       # release-please cuts a perfectly good release, the asset workflow never
       # runs, and the release sits there with a changelog and no binaries. The
-      # only symptom is `self-update` reporting "no asset for your platform" on
+      # only symptom is `self update` reporting "no asset for your platform" on
       # a developer laptop, weeks later and far from the cause.
       #
       # `workflow_dispatch` and `repository_dispatch` are the two documented

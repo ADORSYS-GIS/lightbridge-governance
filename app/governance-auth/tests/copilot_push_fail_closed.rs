@@ -1,4 +1,4 @@
-//! `copilot-push` must fail closed: **no valid token means no data is
+//! `copilot push` must fail closed: **no valid token means no data is
 //! consumed.**
 //!
 //! This is the property the whole command is arranged around. A drain that

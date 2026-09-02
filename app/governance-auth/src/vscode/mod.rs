@@ -37,7 +37,7 @@ pub const FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
 /// authenticating it means syncing a bearer off-machine. The `otlp-http` this
 /// used to write had no header at all -- an authenticating collector 401'd
 /// every span while the config looked complete. The file exporter has neither
-/// problem: Copilot appends to `outfile`, and `copilot-push` ships those bytes
+/// problem: Copilot appends to `outfile`, and `copilot push` ships those bytes
 /// with a bearer it refreshes itself (`crate::copilot`, `crate::schedule`).
 pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     // VS Code Copilot's OTEL surface is telemetry-only -- there is no

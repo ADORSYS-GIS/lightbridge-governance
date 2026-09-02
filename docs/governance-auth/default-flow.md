@@ -98,11 +98,11 @@ later, and a value you have since edited yourself is never removed.
 | `env.OTEL_EXPORTER_OTLP_ENDPOINT` | the collector | collector |
 | `env.OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | collector |
 | `env.OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` | collector |
-| `otelHeadersHelper` + debounce | re-runs `otel-headers` | collector |
+| `otelHeadersHelper` + debounce | re-runs `otel headers` | collector |
 
 **Claude Code is the only tool with a fully self-renewing credential**, because
 it supports a headers *helper*: a hook that re-runs `governance-auth
-otel-headers` on a debounce shorter than the token lifetime. Nothing goes stale
+otel headers` on a debounce shorter than the token lifetime. Nothing goes stale
 and no long-lived secret is stored.
 
 ### Codex — `~/.codex/config.toml`
@@ -134,7 +134,7 @@ Written for each flavour present: `Code`, `Code - Insiders`, `VSCodium`.
 | `github.copilot.chat.otel.captureContent` | `false` | collector |
 
 **Copilot does not export over the network at all. It appends to a file, and
-`copilot-push` ships it on a schedule `configure` installs.**
+`copilot push` ships it on a schedule `configure` installs.**
 
 | Platform | Schedule | Files |
 |---|---|---|
@@ -157,7 +157,7 @@ it off-machine. The file exporter avoids the choice entirely.
 ⚠️ Restart VS Code after `configure`. Copilot reads these at window start.
 
 ⚠️ Nothing bounds the spool's growth (measured 73 KB → 315 KB in six minutes of
-ordinary use). `copilot-push` never truncates a file VS Code holds open for
+ordinary use). `copilot push` never truncates a file VS Code holds open for
 append; reclaiming disk is Copilot's own rotation or a human's. Tracked in
 [#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
 [#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241) — it

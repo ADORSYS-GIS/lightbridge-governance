@@ -111,7 +111,7 @@ pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<OidcMetada
     security::require_secure(&issuer_url).context("issuer URL")?;
 
     // Served from cache when fresh. This is on the hot path: `token` and
-    // `otel-headers` are spawned every 240s by two clients, and each one
+    // `otel headers` are spawned every 240s by two clients, and each one
     // previously paid a full discovery round trip before the refresh.
     if let Some(metadata) = load_cached(issuer, &issuer_url) {
         return Ok(metadata);

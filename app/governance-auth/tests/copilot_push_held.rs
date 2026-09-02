@@ -10,7 +10,7 @@
 //! pins is that the developer can *find out*. Round 2 deleted the doc sentence
 //! describing it and replaced it with nothing, leaving the behaviour to exist
 //! only as a comment in `export/isolate.rs`, while `status` rendered it as an
-//! ordinary yellow "N bytes pending ... run `governance-auth copilot-push`" --
+//! ordinary yellow "N bytes pending ... run `governance-auth copilot push`" --
 //! advice whose only effect is to reproduce the same failing wake.
 
 mod support;

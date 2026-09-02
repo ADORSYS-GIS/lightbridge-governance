@@ -15,7 +15,8 @@ fn argv() -> Vec<String> {
         // `&` is a plist parse error unescaped, and a percent sign is a
         // systemd specifier. One fixture, both traps.
         "https://auth.example/?realm=a&b=100%",
-        "copilot-push",
+        "copilot",
+        "push",
     ]
     .iter()
     .map(|arg| (*arg).to_owned())
@@ -47,7 +48,7 @@ fn exec_start_is_one_quoted_word_per_argv_entry() {
     assert_eq!(
         line,
         "ExecStart=\"/home/dev/.local/bin/governance-auth\" \"--issuer\" \
-         \"https://auth.example/?realm=a&b=100%%\" \"copilot-push\"",
+         \"https://auth.example/?realm=a&b=100%%\" \"copilot\" \"push\"",
         "each word quoted, and `%` doubled so systemd does not expand it"
     );
 }

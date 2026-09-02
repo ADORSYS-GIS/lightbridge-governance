@@ -1,6 +1,6 @@
 //! A mock OTLP/HTTP collector: `/v1/metrics` and `/v1/logs`, nothing else.
 //!
-//! Exists so `copilot-push` can be tested end to end without a network. The
+//! Exists so `copilot push` can be tested end to end without a network. The
 //! assertion these tests actually depend on is **negative** -- "the collector
 //! received nothing", "it never saw this record twice" -- which needs a real
 //! listener that can prove zero requests arrived, not a stubbed client that
@@ -76,7 +76,7 @@ impl MockCollector {
     }
 
     /// Changes what the collector answers with from here on. Tests use this
-    /// between two `copilot-push` runs to model a transport that refused a
+    /// between two `copilot push` runs to model a transport that refused a
     /// record once and takes it next time -- flaky, not poisonous.
     pub fn set_behavior(&self, behavior: Behavior) -> Result<()> {
         *self

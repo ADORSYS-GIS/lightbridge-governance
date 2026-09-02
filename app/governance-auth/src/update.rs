@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 const RELEASES_API: &str =
     "https://api.github.com/repos/ADORSYS-GIS/lightbridge-governance/releases/latest";
 
-/// The version this binary claims to be, and the ONLY thing `self-update`
+/// The version this binary claims to be, and the ONLY thing `self update`
 /// compares a release tag against.
 ///
 /// ⚠️ Why this is not simply `CARGO_PKG_VERSION`. release-please governs this
@@ -44,7 +44,7 @@ const RELEASES_API: &str =
 /// tag moves to `v0.2.0` while `[workspace.package] version` stays `0.1.0`.
 ///
 /// That shipped: release `v0.2.0` contains binaries whose `CARGO_PKG_VERSION`
-/// is `0.1.0`. `self-update` then sees `0.2.0 > 0.1.0`, reinstalls, and on the
+/// is `0.1.0`. `self update` then sees `0.2.0 > 0.1.0`, reinstalls, and on the
 /// next invocation sees the identical mismatch -- an unbounded reinstall loop
 /// that no amount of retrying escapes, because the newly-installed binary is
 /// just as stale as the one it replaced.
@@ -78,7 +78,7 @@ pub const VERSION: &str = match option_env!("GOVERNANCE_AUTH_RELEASE_VERSION") {
 /// Built at runtime rather than via `concat!`, which only accepts literals and
 /// so would pin this to `CARGO_PKG_VERSION` -- reintroducing, in the one string
 /// GitHub actually logs, exactly the stale-version claim [`VERSION`] exists to
-/// eliminate. Three short-lived allocations per `self-update` run, on a path
+/// eliminate. Three short-lived allocations per `self update` run, on a path
 /// that is already making network requests.
 fn user_agent() -> String {
     format!("governance-auth/{VERSION}")
@@ -203,7 +203,7 @@ fn ensure_replaceable(target: &Path) -> Result<()> {
     for (marker, command) in managed {
         if shown.contains(marker) {
             bail!(
-                "{shown} is managed by a package manager, so self-update refuses to overwrite \
+                "{shown} is managed by a package manager, so self update refuses to overwrite \
                  it (doing so would leave the package database describing a file that no longer \
                  matches, and the next upgrade would silently revert it).\n\nUpdate it with:\n  \
                  {command}"
@@ -219,7 +219,7 @@ fn ensure_replaceable(target: &Path) -> Result<()> {
         || shown.starts_with("/sbin/")
     {
         bail!(
-            "{shown} looks like a distro-packaged path, so self-update refuses to overwrite it.\
+            "{shown} looks like a distro-packaged path, so self update refuses to overwrite it.\
              \n\nUpdate it with your package manager, e.g.:\n  \
              sudo apt-get install --only-upgrade governance-auth\n  \
              sudo dnf upgrade governance-auth"
@@ -244,7 +244,7 @@ fn ensure_replaceable(target: &Path) -> Result<()> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => bail!(
-            "{} is not writable by this user ({error}), so self-update cannot replace {shown}.\
+            "{} is not writable by this user ({error}), so self update cannot replace {shown}.\
              \n\nEither re-run with the privileges that own it, or update it the way you \
              installed it.",
             dir.display()
@@ -587,9 +587,9 @@ mod tests {
 
     #[test]
     fn the_cli_reports_the_same_version_self_update_acts_on() {
-        let main_rs = include_str!("main.rs");
+        let cli_rs = include_str!("cli/mod.rs");
         assert!(
-            main_rs.contains("version = update::VERSION"),
+            cli_rs.contains("version = update::VERSION"),
             "`--version` must come from update::VERSION; bare `version` wires clap to \
              CARGO_PKG_VERSION, so a released binary would print a version that disagrees with \
              the one self-update compares -- and `--version` is what people run to check"

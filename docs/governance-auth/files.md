@@ -149,7 +149,7 @@ The lock file records the holder's PID. Two failure modes were paid for here:
 ```
 
 Mode `0600`, written tmp-then-rename. Records how far into the Copilot spool
-[`copilot-push`](./commands.md#copilot-push) has got:
+[`copilot push`](./commands.md#copilot-push) has got:
 
 | Key | Meaning |
 |---|---|
@@ -208,13 +208,13 @@ this default. `configure` writes the *resolved* value into
 `github.copilot.chat.otel.outfile` and into the drain's own schedule, so the two always match.
 
 ⚠️ **Nothing bounds this file's growth.** Measured at 73 KB → 315 KB in six minutes of
-ordinary use. `copilot-push` never truncates it (see below) and Copilot's own rotation is the
+ordinary use. `copilot push` never truncates it (see below) and Copilot's own rotation is the
 only thing that reclaims the space. Tracked as
 [#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
 [#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241); it was an opt-in
 risk while the file exporter was opt-in, and it is a default one now.
 
-`copilot-push` opens it **read-only** and never truncates it — VS Code holds it open for
+`copilot push` opens it **read-only** and never truncates it — VS Code holds it open for
 append, and truncating underneath a live writer makes the next append land at the old offset
 with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
 
@@ -258,7 +258,7 @@ launchctl bootout gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
 
 ⚠️ **A machine with no user systemd session** — a container, WSL without systemd, a CI runner
 — gets a warning, not a failed `configure`. The config files are already written and
-`copilot-push` still runs by hand.
+`copilot push` still runs by hand.
 
 `governance-auth status` carries a **copilot drain** row for exactly this: a schedule that was
 never activated, or that stopped, is otherwise invisible.
@@ -272,7 +272,7 @@ never activated, or that stopped, is otherwise invisible.
 
 Every command appends here, at `info` by default, `0600`. Not a second copy of the UX: stderr
 stays the place a human reads while `login` runs, and this is the place anyone reads
-afterwards — `token` and `otel-headers` are spawned by Claude Code and Codex with their stderr
+afterwards — `token` and `otel headers` are spawned by Claude Code and Codex with their stderr
 swallowed, and the drain wakes on a timer with nobody watching at all. `GOVERNANCE_AUTH_LOG`
 raises or lowers it independently of `RUST_LOG`, which still controls stderr alone.
 
@@ -303,7 +303,7 @@ at `trace` with a sentinel token and fails if it appears in the file.
 Both at mode `0600`. These carry `OTEL_EXPORTER_OTLP_HEADERS` for a Claude Code launched from
 a desktop icon, which inherits no shell. They used to be the *only* way to authenticate VS
 Code Copilot; since the file-exporter cutover Copilot needs no header at all, because
-`copilot-push` supplies its own.
+`copilot push` supplies its own.
 
 The token deliberately does **not** go into `.bashrc`. Those files are routinely mode `0644`
 and routinely committed to a dotfiles repo — writing a bearer token there is how a credential
@@ -352,7 +352,7 @@ Keys owned, in the `env` block and at the root:
 | Key | Written when | Value |
 |---|---|---|
 | `apiKeyHelper` (root) | `--gateway-url` set | `<abs path> token …` |
-| `otelHeadersHelper` (root) | `--otel-endpoint` set | `<abs path> otel-headers …` |
+| `otelHeadersHelper` (root) | `--otel-endpoint` set | `<abs path> otel headers …` |
 | `ANTHROPIC_BASE_URL` | `--gateway-url` set | `<gateway>/anthropic` |
 | `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | always | the debounce value |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | always | `1` |
@@ -474,7 +474,7 @@ all, so an authenticating collector returned **401 on every span** while the con
 complete.
 
 The file exporter has neither problem. Copilot appends to `outfile`;
-[`copilot-push`](./commands.md#copilot-push) drains it on the schedule `configure` installs,
+[`copilot push`](./commands.md#copilot-push) drains it on the schedule `configure` installs,
 authenticating with a bearer it refreshes itself. That makes Copilot the **second**
 self-renewing client after Claude Code, and leaves Codex as the only one still needing a
 long-lived `--otel-token`.

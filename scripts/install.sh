@@ -50,7 +50,7 @@ main() {
     fetch "${base}/${asset}" "${tmp}/${asset}" \
         || die "no asset '${asset}' in the ${version} release. See ${RELEASES}"
 
-    # ⚠️ A MISSING checksum is a refusal, not a skip. `self-update` already
+    # ⚠️ A MISSING checksum is a refusal, not a skip. `self update` already
     # refuses to install an unchecked binary, and first install is the one
     # running on a machine with no prior trust anchor at all -- so it is the
     # last place to relax the rule.
@@ -93,7 +93,7 @@ EOF
 #
 # ⚠️ These names must match `update.rs::asset_name()` character for character.
 # A mismatch does not fail here -- it installs fine and then makes every later
-# `self-update` ask for an asset that does not exist.
+# `self update` ask for an asset that does not exist.
 target() {
     os="$(uname -s)"
     arch="$(uname -m)"

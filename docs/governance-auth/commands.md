@@ -3,7 +3,7 @@
 Every subcommand, what it does, and — for the two that a machine parses — exactly what
 lands on stdout.
 
-**The stdout/stderr split is a contract, not a style choice.** `token` and `otel-headers`
+**The stdout/stderr split is a contract, not a style choice.** `token` and `otel headers`
 are invoked by Claude Code and Codex, which read stdout and parse it. So *all* UX, prompts,
 warnings and errors go to **stderr**, and stdout carries the credential and nothing else,
 ever. Anything extra on stdout breaks the caller's parse.
@@ -107,19 +107,113 @@ unusable the answer is a non-zero exit, and the fix is a human running `login`.
 
 ---
 
-## `otel-headers`
+## `refresh`
 
-The same token, wrapped in the JSON object Claude Code's `otelHeadersHelper` hook requires:
+Forces a credential refresh right now, even when the cached session is still fresh.
 
-```json
-{"Authorization": "Bearer …"}
+```bash
+governance-auth refresh
 ```
 
-Same refresh path, same lock, same fail-closed contract as `token` — this *is* `token`, in
-the shape the hook expects. That is what makes telemetry auth self-renewing instead of
-depending on someone rotating a long-lived key by hand, and it is why a 300-second access
-token is the right credential here where it is the wrong one for the static
-`OTEL_EXPORTER_OTLP_HEADERS` variable (see [`files.md`](./files.md)).
+The difference from `token`: `token` only refreshes when the cached session is inside the
+expiry skew, otherwise it prints the cached access token unchanged. `refresh` always goes to
+the authorization server, regardless of how long the current token has left. Use it after a
+server-side change — a role added, a scope edited — or when debugging, rather than waiting
+for the cached token to age into the skew window.
+
+**Prints nothing on stdout.** The refreshed token goes to the session cache, same as any
+other refresh; `token` remains the only command that ever emits a credential. All reporting
+is on stderr.
+
+Requires an existing cached session with a refresh token. No cached session, or a cached
+session with no refresh token, is a non-zero exit naming `login` — `refresh` never opens a
+browser and never falls back to an interactive flow.
+
+**A refused refresh leaves the cached session byte-identical.** If the authorization server
+rejects the refresh (network failure, revoked session, refused grant), nothing already
+cached is overwritten. A network blip while running `refresh` cannot log you out — the
+existing session is left exactly as it was, and the command reports the failure on stderr and
+exits non-zero.
+
+---
+
+## `status`
+
+```bash
+governance-auth status
+```
+
+Prints to **stderr**, one line:
+
+- `session cached, fresh, expires in <n>s`
+- `session cached, needs refresh, expires in <n>s`
+- `no cached session`
+
+Exit status is 0 in all three cases — this reports state, it does not assert it. A real
+request from Claude Code or Codex is the actual proof that onboarding worked; `status`
+rules out half the failure modes before you go looking at the tools.
+
+At a terminal it also prints a table. Those three lines are the contract; the table is an
+addition for a human and never a replacement, because `status` may be piped.
+
+### The `copilot drain` row
+
+Is anything going to come and collect the spool? `configure` installs the schedule, so this
+row reports something the binary owns rather than something it hoped a human did.
+
+| Shown | Colour | Means |
+|---|---|---|
+| `every 300s` | green | the timer/agent is installed **and** the scheduler confirms it is running |
+| `installed, not running` | **red** | the scheduler confirms it is stopped; the note names the command that starts it |
+| `installed` | yellow | the scheduler could not be asked — **not** the same as stopped |
+| `not scheduled` | **red** | Copilot's file exporter is on and nothing drains it: run `configure` |
+| `not scheduled` | none | no collector configured, so there is nothing to schedule |
+| `unknown` | yellow | the home directory could not be resolved |
+
+⚠️ `active` is three-valued on purpose, and the reason is measured. `systemctl --user
+is-active` exits non-zero for **both** a stopped timer and a machine with no user manager, so
+the exit code cannot tell them apart — it would send every container user to debug a timer that
+is fine. The **stdout** can: a stopped timer prints `inactive` (exit 3), while no reachable user
+manager prints nothing at all (exit 1, with `Failed to connect to user scope bus …` on stderr).
+That is what the row reads.
+
+### The `copilot spool` row
+
+| Shown | Colour | Means |
+|---|---|---|
+| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
+| `not enabled` | yellow | no spool file yet — Copilot has not exported since `configure` |
+| `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
+| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `held, waiting for a later record` | yellow | the spool's **last** record is refused; see above |
+| `up to date (<n> bytes)` | green | everything written has been pushed, and nothing was lost |
+| `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
+| `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
+| `unknown` | yellow | the state directory could not be resolved at all |
+
+Rows are checked in that order, so a discard outranks a hold, which outranks a backlog, which
+outranks green. `held` has to beat `<n> bytes pending` because the bytes genuinely *are*
+pending: nothing else in the row distinguishes the two, and the backlog row's advice ("run
+`governance-auth copilot push`") is the one command that cannot help.
+
+Two red rows, for the two ways this can fail silently:
+
+- **`<n> bytes pending`, never pushed.** A schedule that fails on every wake is
+  indistinguishable from a working one everywhere else a developer looks — bytes climbing
+  while `last push` stays at `never pushed` is the only visible difference. The `copilot
+  drain` row above catches the case where the schedule is *absent or stopped*; this one
+  catches the case where it fires and the wake fails. "Pending" after a successful push is
+  *not* red on purpose: it is the ordinary state between wakes, and a row that cries wolf is
+  one people stop reading.
+- **`<n> record(s) discarded`.** A Copilot release renames the private fields this parser
+  dispatches on; every record classifies as unrecognised, both payloads come out empty, no
+  POST is made, and the checkpoint advances over the lot. Nothing is pending afterwards, so
+  without this row the table said `up to date`, in green, while the whole spool went in the
+  bin. It fades to yellow after a day because the counter is cumulative and there is no
+  command to clear it — recent loss is an alarm, old loss is a note, neither is green.
+
+`copilot push --dry-run` prints the same tally the discard came from, which is where to look
+for *what* this build cannot read.
 
 ---
 
@@ -145,20 +239,84 @@ Which files, and which keys inside them, is [`files.md`](./files.md).
 
 ---
 
-## `copilot-push`
+## `logout`
+
+Revokes the refresh token at the authorization server, **then** clears local state.
+
+The order matters. Deleting the local file alone — what this used to do — leaves the
+refresh token valid at the server until its offline-session lifetime expires, while telling
+the developer `session cleared`. A logout that reports success and leaves a usable
+credential live is worse than one that fails loudly, because nobody goes back to check.
+
+### ⚠️ Logout is not immediate cutoff
+
+**An access token already issued keeps working until its own `exp` — up to 300 seconds after
+you log out.** `logout` stops *new* tokens being minted; it does not reach out and kill the
+one already in flight.
+
+Measured, both against the live deployment at the same moment, with the same token:
+
+| Request | Result |
+|---|---|
+| `GET /userinfo` at the issuer | **401** — the session really is revoked |
+| `POST /anthropic/v1/messages` at the gateway | **200** |
+| `POST /v1/chat/completions` at the gateway | **200** |
+
+The mechanism is that the gateway validates the JWT by **signature and `exp`**. It does not
+introspect, and it does not check session liveness — so a revoked session is invisible to it
+until the token expires on its own.
+
+That is a deliberate trade, not an oversight. Per-request introspection at the Authorino step
+is exactly what was disabled in production on 2026-07-02: the ext_authz timeout is shorter
+than the lookup takes (see the estate's `AGENTS.md` — *never add a database lookup to the
+Authorino step itself*). The access-token lifetime **is** the mitigation, which is the real
+argument for keeping it at 300s and for keeping
+`otel_headers_debounce_ms`/`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` underneath it.
+
+What follows for an operator:
+
+- For a routine logout, none of this matters.
+- For a **suspected compromise**, `logout` alone leaves a window of up to the remaining token
+  lifetime. If the credential is broadly scoped, treat the window as real and act at the
+  identity provider — end the user's sessions, and rotate or disable the account — rather than
+  assuming the CLI's `session cleared` ended access.
+
+The size of that window is the whole reason the scope of the token matters. A CLI credential
+carrying realm-administration or impersonation rights makes 300 seconds a meaningful blast
+radius; one scoped to inference does not.
+
+---
+
+## `otel headers`
+
+The same token, wrapped in the JSON object Claude Code's `otelHeadersHelper` hook requires:
+
+```json
+{"Authorization": "Bearer …"}
+```
+
+Same refresh path, same lock, same fail-closed contract as `token` — this *is* `token`, in
+the shape the hook expects. That is what makes telemetry auth self-renewing instead of
+depending on someone rotating a long-lived key by hand, and it is why a 300-second access
+token is the right credential here where it is the wrong one for the static
+`OTEL_EXPORTER_OTLP_HEADERS` variable (see [`files.md`](./files.md)).
+
+---
+
+## `copilot push`
 
 Drains VS Code Copilot Chat's OTel **spool file** and exports it to the collector over
 OTLP/HTTP.
 
 ```bash
-governance-auth copilot-push --otel-endpoint https://otel.example
-governance-auth copilot-push --dry-run      # parse and report; post nothing, move nothing
+governance-auth copilot push --otel-endpoint https://otel.example
+governance-auth copilot push --dry-run      # parse and report; post nothing, move nothing
 ```
 
 `--otel-endpoint` (or `GOVERNANCE_AUTH_OTEL_ENDPOINT`, or `otel_endpoint` in a config file —
 ADR-0012 Decision 2's usual five layers) is **required**: with no collector configured the
 command errors before it reads anything. `configure --otel-endpoint …` writes it to the
-per-user config file, after which the bare `governance-auth copilot-push` in the timer units
+per-user config file, after which the bare `governance-auth copilot push` in the timer units
 below works.
 
 ### Why this command exists
@@ -192,7 +350,7 @@ Restart VS Code after `configure`: Copilot reads these at window start.
 It is the OpenTelemetry **JS SDK's internal object graph**, serialised one JSON object per
 line, private `_`-prefixed fields and all — `_body`, `_rawAttributes`, `hrTime` as
 `[seconds, nanoseconds]`, and `dataPointType`/`aggregationTemporality` as the *JS SDK's*
-enum integers, which are not OTLP's. `copilot-push` translates all of it.
+enum integers, which are not OTLP's. `copilot push` translates all of it.
 
 None of that is a wire format anybody promised to keep stable, so the parser degrades:
 a record it cannot read is **skipped and counted**, never fatal. Every run that finds
@@ -333,11 +491,11 @@ the second condition above can never be met. The record is held rather than disc
 is the correct choice, because discarding on no evidence is how a misconfigured collector
 empties a spool — and every wake from then on reads it, refuses it, and exits 1.
 
-It clears when Copilot writes another record, and only then. Re-running `copilot-push` by hand
+It clears when Copilot writes another record, and only then. Re-running `copilot push` by hand
 does exactly what the timer just did.
 
 `status` reports this as its own row, **held, waiting for a later record** (yellow), rather
-than as `N bytes pending … run governance-auth copilot-push`. The byte counts are identical,
+than as `N bytes pending … run governance-auth copilot push`. The byte counts are identical,
 so nothing else in the row distinguishes them — and the backlog row's advice is a command that
 reproduces the same failing wake.
 
@@ -444,7 +602,7 @@ Description=Drain the GitHub Copilot OTel spool to the governed collector
 [Service]
 Type=oneshot
 # Absolute path: a user timer does not inherit your shell's PATH.
-ExecStart=%h/.local/bin/governance-auth copilot-push
+ExecStart=%h/.local/bin/governance-auth copilot push
 # ⚠️ NOT optional. systemd.service(5) defaults `TimeoutStartSec=` for a
 # `Type=oneshot` unit to *infinity*, so without this line a wake that gets
 # stuck is never killed — it just sits there. It is deliberately shorter than
@@ -513,7 +671,8 @@ the file with `sed "s|\$HOME|$HOME|"`.
   <key>ProgramArguments</key>
   <array>
     <string>/Users/YOUR-USERNAME/.local/bin/governance-auth</string>
-    <string>copilot-push</string>
+    <string>copilot</string>
+    <string>push</string>
   </array>
   <key>StartInterval</key>
   <integer>300</integer>
@@ -529,8 +688,8 @@ the file with `sed "s|\$HOME|$HOME|"`.
        copilot-push lock ceiling. Both are in-process, so they apply here
        exactly as they do under systemd.
        If you want an external backstop as well, install GNU coreutils and
-       wrap the two ProgramArguments strings in
-       `gtimeout 240 <path> copilot-push`. -->
+       wrap the three ProgramArguments strings in
+       `gtimeout 240 <path> copilot push`. -->
   <key>AbandonProcessGroup</key>
   <false/>
   <!-- Not /tmp: that is world-writable, so the name is predictable and another
@@ -556,146 +715,18 @@ keeping what it reads?). Independent answers, both needed — see below.
 
 ---
 
-## `status`
-
-```bash
-governance-auth status
-```
-
-Prints to **stderr**, one line:
-
-- `session cached, fresh, expires in <n>s`
-- `session cached, needs refresh, expires in <n>s`
-- `no cached session`
-
-Exit status is 0 in all three cases — this reports state, it does not assert it. A real
-request from Claude Code or Codex is the actual proof that onboarding worked; `status`
-rules out half the failure modes before you go looking at the tools.
-
-At a terminal it also prints a table. Those three lines are the contract; the table is an
-addition for a human and never a replacement, because `status` may be piped.
-
-### The `copilot drain` row
-
-Is anything going to come and collect the spool? `configure` installs the schedule, so this
-row reports something the binary owns rather than something it hoped a human did.
-
-| Shown | Colour | Means |
-|---|---|---|
-| `every 300s` | green | the timer/agent is installed **and** the scheduler confirms it is running |
-| `installed, not running` | **red** | the scheduler confirms it is stopped; the note names the command that starts it |
-| `installed` | yellow | the scheduler could not be asked — **not** the same as stopped |
-| `not scheduled` | **red** | Copilot's file exporter is on and nothing drains it: run `configure` |
-| `not scheduled` | none | no collector configured, so there is nothing to schedule |
-| `unknown` | yellow | the home directory could not be resolved |
-
-⚠️ `active` is three-valued on purpose, and the reason is measured. `systemctl --user
-is-active` exits non-zero for **both** a stopped timer and a machine with no user manager, so
-the exit code cannot tell them apart — it would send every container user to debug a timer that
-is fine. The **stdout** can: a stopped timer prints `inactive` (exit 3), while no reachable user
-manager prints nothing at all (exit 1, with `Failed to connect to user scope bus …` on stderr).
-That is what the row reads.
-
-### The `copilot spool` row
-
-| Shown | Colour | Means |
-|---|---|---|
-| `checkpoint unreadable` | red | `<state_dir>/copilot-push.json` will not parse |
-| `not enabled` | yellow | no spool file yet — Copilot has not exported since `configure` |
-| `<n> record(s) discarded` | **red** | data was consumed and never delivered, within the last 24h |
-| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
-| `held, waiting for a later record` | yellow | the spool's **last** record is refused; see above |
-| `up to date (<n> bytes)` | green | everything written has been pushed, and nothing was lost |
-| `<n> bytes pending` | yellow | a backlog, and a push has succeeded before |
-| `<n> bytes pending` | **red** | a backlog and **no push has ever succeeded** |
-| `unknown` | yellow | the state directory could not be resolved at all |
-
-Rows are checked in that order, so a discard outranks a hold, which outranks a backlog, which
-outranks green. `held` has to beat `<n> bytes pending` because the bytes genuinely *are*
-pending: nothing else in the row distinguishes the two, and the backlog row's advice ("run
-`governance-auth copilot-push`") is the one command that cannot help.
-
-Two red rows, for the two ways this can fail silently:
-
-- **`<n> bytes pending`, never pushed.** A schedule that fails on every wake is
-  indistinguishable from a working one everywhere else a developer looks — bytes climbing
-  while `last push` stays at `never pushed` is the only visible difference. The `copilot
-  drain` row above catches the case where the schedule is *absent or stopped*; this one
-  catches the case where it fires and the wake fails. "Pending" after a successful push is
-  *not* red on purpose: it is the ordinary state between wakes, and a row that cries wolf is
-  one people stop reading.
-- **`<n> record(s) discarded`.** A Copilot release renames the private fields this parser
-  dispatches on; every record classifies as unrecognised, both payloads come out empty, no
-  POST is made, and the checkpoint advances over the lot. Nothing is pending afterwards, so
-  without this row the table said `up to date`, in green, while the whole spool went in the
-  bin. It fades to yellow after a day because the counter is cumulative and there is no
-  command to clear it — recent loss is an alarm, old loss is a note, neither is green.
-
-`copilot-push --dry-run` prints the same tally the discard came from, which is where to look
-for *what* this build cannot read.
-
----
-
-## `logout`
-
-Revokes the refresh token at the authorization server, **then** clears local state.
-
-The order matters. Deleting the local file alone — what this used to do — leaves the
-refresh token valid at the server until its offline-session lifetime expires, while telling
-the developer `session cleared`. A logout that reports success and leaves a usable
-credential live is worse than one that fails loudly, because nobody goes back to check.
-
-### ⚠️ Logout is not immediate cutoff
-
-**An access token already issued keeps working until its own `exp` — up to 300 seconds after
-you log out.** `logout` stops *new* tokens being minted; it does not reach out and kill the
-one already in flight.
-
-Measured, both against the live deployment at the same moment, with the same token:
-
-| Request | Result |
-|---|---|
-| `GET /userinfo` at the issuer | **401** — the session really is revoked |
-| `POST /anthropic/v1/messages` at the gateway | **200** |
-| `POST /v1/chat/completions` at the gateway | **200** |
-
-The mechanism is that the gateway validates the JWT by **signature and `exp`**. It does not
-introspect, and it does not check session liveness — so a revoked session is invisible to it
-until the token expires on its own.
-
-That is a deliberate trade, not an oversight. Per-request introspection at the Authorino step
-is exactly what was disabled in production on 2026-07-02: the ext_authz timeout is shorter
-than the lookup takes (see the estate's `AGENTS.md` — *never add a database lookup to the
-Authorino step itself*). The access-token lifetime **is** the mitigation, which is the real
-argument for keeping it at 300s and for keeping
-`otel_headers_debounce_ms`/`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` underneath it.
-
-What follows for an operator:
-
-- For a routine logout, none of this matters.
-- For a **suspected compromise**, `logout` alone leaves a window of up to the remaining token
-  lifetime. If the credential is broadly scoped, treat the window as real and act at the
-  identity provider — end the user's sessions, and rotate or disable the account — rather than
-  assuming the CLI's `session cleared` ended access.
-
-The size of that window is the whole reason the scope of the token matters. A CLI credential
-carrying realm-administration or impersonation rights makes 300 seconds a meaningful blast
-radius; one scoped to inference does not.
-
----
-
-## `self-update`
+## `self update`
 
 Replaces this binary with the latest GitHub release for this platform, from
 `ADORSYS-GIS/lightbridge-governance`.
 
 ```bash
-governance-auth self-update
-governance-auth self-update --check   # report only, change nothing
+governance-auth self update
+governance-auth self update --dry-run   # report only, change nothing
 ```
 
 Unlike every other subcommand, this one **does not resolve the OAuth config** — it talks
-only to the GitHub releases API. Resolving first used to make `self-update` fail with
+only to the GitHub releases API. Resolving first used to make `self update` fail with
 `--issuer … is required` on a machine that had no config yet, which is precisely the
 machine most likely to be updating.
 
@@ -728,11 +759,11 @@ your platform"*.
 `-gnu` asset would update itself onto a build that cannot start on the distro it is running
 on — the glibc floor is the entire reason the musl assets exist.
 
-### `--version` and the self-update loop
+### `--version` and the self update loop
 
 A released binary reports its **release tag**, injected at build time via
 `GOVERNANCE_AUTH_RELEASE_VERSION`; a locally-built one falls back to `CARGO_PKG_VERSION`.
-Both `--version` and the version `self-update` compares against read the same constant.
+Both `--version` and the version `self update` compares against read the same constant.
 
 This is not a detail. When they disagreed, a binary that had just updated still reported the
 old version, decided it was out of date, and updated again — forever. Two tests pin it: one

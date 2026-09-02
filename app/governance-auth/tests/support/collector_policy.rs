@@ -6,7 +6,7 @@
 //! exists is the part a later reader needs.
 
 /// Held behind a mutex in [`super::mock_collector::MockCollector`] so a test
-/// can change it *between* two `copilot-push` runs. That is the only way to
+/// can change it *between* two `copilot push` runs. That is the only way to
 /// reproduce a transport that refuses a record on one wake and takes it on the
 /// next -- the case a drain must not answer by discarding the record.
 #[derive(Clone, Copy)]

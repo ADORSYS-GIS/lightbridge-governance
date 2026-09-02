@@ -17,6 +17,15 @@ use super::*;
 use crate::{dashboard::style::Colour, schedule::Schedule};
 
 fn drain(installed: bool, active: Option<bool>, collector: bool) -> Drain {
+    stale_drain(installed, active, collector, Some(false))
+}
+
+fn stale_drain(
+    installed: bool,
+    active: Option<bool>,
+    collector: bool,
+    stale: Option<bool>,
+) -> Drain {
     Drain {
         schedule: Some(Schedule {
             path: PathBuf::from(
@@ -26,7 +35,21 @@ fn drain(installed: bool, active: Option<bool>, collector: bool) -> Drain {
             active,
         }),
         collector,
+        stale,
     }
+}
+
+/// The upgrade case: a timer that is installed AND running, but running a
+/// command this binary no longer has. Green on `active` alone would be the
+/// most confident wrong line on the table -- it wakes every five minutes to
+/// fail on a clap parse error nobody reads. Pins that staleness is checked
+/// before `active`, not after.
+#[test]
+fn a_schedule_written_by_an_older_version_is_red_and_names_configure() {
+    let (value, colour, note) = stale_drain(true, Some(true), true, Some(true)).row();
+    assert_eq!(value, "out of date", "{note}");
+    assert_eq!(colour, Colour::Red);
+    assert!(note.contains("governance-auth configure"), "{note}");
 }
 
 #[test]

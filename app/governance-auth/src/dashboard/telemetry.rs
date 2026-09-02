@@ -20,7 +20,7 @@
 use std::path::Path;
 
 use super::{Session, style::Colour};
-use crate::managed;
+use crate::{cli, config::OauthConfig, managed};
 
 /// What is configured for telemetry, and whether it was applied.
 pub struct Telemetry {
@@ -37,6 +37,58 @@ pub struct Telemetry {
     /// client for which this is the difference between exporting and being
     /// rejected.
     pub has_static_token: bool,
+    /// Whether a helper command already written into a tool's config names a
+    /// command this version no longer has. See [`stale_wiring`].
+    pub stale: bool,
+}
+
+/// Does a command line we wrote into somebody else's config still end with a
+/// command we have?
+///
+/// `copilot-push` became `copilot push` and `otel-headers` became
+/// `otel headers` (the rule that allowed those moves is in [`crate::cli`]'s
+/// module doc). `configure` rewrites every file that carries one, so a
+/// developer who re-runs it is fixed -- but one who runs `self update` and
+/// nothing else keeps a `settings.json` whose `otelHeadersHelper` invokes a
+/// subcommand that no longer parses, and Claude Code reports that as no
+/// telemetry rather than as a broken helper. This row is where they find out.
+///
+/// Only the SUFFIX is compared, never the whole rendered line: the binary's
+/// path, the issuer and the client id all differ innocently between the
+/// `configure` that wrote the file and the `status` reading it back, and none
+/// of those differences means the wiring is broken.
+fn stale_wiring(home: &Path) -> bool {
+    let manifest = managed::load(&managed::manifest_path(home));
+    manifest
+        .targets
+        .iter()
+        .filter_map(|(target, keys)| {
+            let path = std::path::PathBuf::from(target);
+            let format = managed::Format::of(&path)?;
+            path.is_file().then_some(())?;
+            let document = format.read(&path).ok()?;
+            Some(keys.keys().filter_map(move |key| {
+                let tail = expected_tail(key)?;
+                Some((document.get(key)?, tail))
+            }))
+        })
+        .flatten()
+        .any(|(value, tail)| !value.ends_with(tail))
+}
+
+/// The command a managed key must end with, or `None` when the key holds
+/// something other than one of this binary's own command lines.
+fn expected_tail(key: &str) -> Option<&'static str> {
+    match key {
+        "otelHeadersHelper" => Some(cli::OTEL_HEADERS_TAIL),
+        // Claude Code's inference helper, and Codex's
+        // `model_providers.<id>.auth.command`. Neither name moved, so these
+        // never fire today -- they are here because the next rename should
+        // not need this function edited to be caught.
+        "apiKeyHelper" => Some(cli::TOKEN_TAIL),
+        key if key.ends_with(".auth.command") => Some(cli::TOKEN_TAIL),
+        _ => None,
+    }
 }
 
 /// Manifest keys whose presence means a static `Authorization` header was
@@ -57,7 +109,7 @@ fn is_otel_key(key: &str) -> bool {
 impl Telemetry {
     /// `home` is `None` when the environment has no usable `HOME`, in which
     /// case nothing can be read and the honest answer is "not applied".
-    pub fn survey(home: Option<&Path>, endpoint: Option<String>) -> Self {
+    pub fn survey(home: Option<&Path>, config: &OauthConfig) -> Self {
         let keys: Vec<String> = home
             .map(|home| managed::load(&managed::manifest_path(home)))
             .map(|manifest| {
@@ -70,9 +122,10 @@ impl Telemetry {
             .unwrap_or_default();
 
         Self {
-            endpoint,
+            endpoint: config.otel_endpoint.clone(),
             applied: keys.iter().any(|key| is_otel_key(key)),
             has_static_token: keys.iter().any(|key| is_token_key(key)),
+            stale: home.is_some_and(stale_wiring),
         }
     }
 
@@ -85,6 +138,18 @@ impl Telemetry {
     /// hint becomes a dead end, which is the bug #214 was opened for.
     pub(super) fn row(&self, session: &Session) -> (String, Colour, String) {
         let command = if session.cached { "configure" } else { "login" };
+        // Ahead of every other verdict: a helper that no longer parses exports
+        // nothing at all, so reporting the collector as green underneath one
+        // would be the most misleading line on this table. Same session-aware
+        // command as the branches below -- `configure` refuses without a
+        // cached session.
+        if let (Some(endpoint), true) = (&self.endpoint, self.stale) {
+            return (
+                endpoint.clone(),
+                Colour::Red,
+                format!("wiring was written by an older version: run {command}"),
+            );
+        }
         match (&self.endpoint, self.applied, self.has_static_token) {
             (None, _, _) => (
                 "not configured".to_owned(),

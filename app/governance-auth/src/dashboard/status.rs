@@ -45,13 +45,13 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     // Endpoint from the resolved config (it is persisted); everything else from
     // what was actually written -- see `super::telemetry`'s module doc for why
     // the token cannot be read back off the config.
-    let telemetry = Telemetry::survey(home.as_deref(), config.otel_endpoint.clone());
+    let telemetry = Telemetry::survey(home.as_deref(), config);
     // Reads two local files and never the network, same as the rest of this
     // command -- see `super::spool`.
     let spool = Spool::survey(config);
     // Reads the unit/plist and asks the platform's scheduler whether it is
     // loaded -- one short local command, no network. See `super::drain`.
-    let drain = Drain::survey(home.as_deref(), config.otel_endpoint.is_some());
+    let drain = Drain::survey(home.as_deref(), config);
     eprintln!(
         "{}",
         render(

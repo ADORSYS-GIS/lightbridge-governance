@@ -1,4 +1,4 @@
-//! Re-running `copilot-push` with no new data must push nothing and change
+//! Re-running `copilot push` with no new data must push nothing and change
 //! nothing.
 //!
 //! This is the "writes are idempotent" rule from `AGENTS.md` applied to a

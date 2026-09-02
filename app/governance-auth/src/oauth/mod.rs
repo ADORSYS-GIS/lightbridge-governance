@@ -1,4 +1,4 @@
-//! Orchestrates the login/token/status/logout commands over the flow
+//! Orchestrates the login/token/refresh/status/logout commands over the flow
 //! submodules. `token` is the credential-helper entrypoint wired into Claude
 //! Code's `apiKeyHelper` and Codex's `[model_providers.<id>.auth] command`:
 //! it must fail closed (non-zero exit, nothing on stdout) whenever it can't
@@ -12,13 +12,16 @@ mod device;
 mod discovery;
 mod exchange;
 mod pkce;
+mod refresh;
 mod token_endpoint;
 
 use anyhow::{Context, Result, bail};
 pub use discovery::OidcMetadata;
+pub use refresh::run as refresh;
 
 use crate::{
     cache::{self, CachedSession, FileLock},
+    cli,
     config::OauthConfig,
     config_file, config_persist, otel,
     redacted::Redacted,
@@ -115,40 +118,24 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
         client_id: config.client_id.clone(),
         endpoint: config.otel_endpoint.clone(),
         // One resolution for both halves of the Copilot path: what VS Code is
-        // told to write and what `copilot-push` drains. See
+        // told to write and what `copilot push` drains. See
         // `crate::copilot::resolve_spool_path`.
         copilot_spool: crate::copilot::resolve_spool_path(config)?,
         token: config.otel_token.clone().map(Redacted::new),
         resource_attributes,
-        // Point Claude Code at this very binary for fresh headers. Built
-        // from the same issuer/client-id the caller passed, so the helper
-        // line keeps working when those are supplied as flags rather than
-        // inherited env (a helper subprocess isn't guaranteed to inherit
-        // them -- the same reasoning as the `apiKeyHelper` line). `None`
+        // Point Claude Code at this very binary for fresh headers. `None`
         // when telemetry wasn't requested: writing a helper for a collector
         // that isn't configured would give Claude Code a working refresh
-        // loop pointed at nothing.
-        headers_helper: telemetry_requested.then(|| {
-            format!(
-                "{} --issuer {} --client-id {} otel-headers",
-                otel::binary_path(),
-                config.issuer,
-                config.client_id,
-            )
-        }),
+        // loop pointed at nothing. The spelling is `crate::cli::invoke`'s, so
+        // renaming the command updates this file without anyone remembering
+        // to.
+        headers_helper: telemetry_requested
+            .then(|| cli::otel_headers_command(&config.issuer, &config.client_id)),
         headers_helper_debounce_ms: config.otel_headers_debounce_ms,
-        // Same absolute-path rule as the helper above, and for a sharper
-        // reason: Codex spawns this one WITHOUT a shell, so a bare name
-        // cannot resolve at all. See `otel::OtelSettings::token_command`.
         // Built unconditionally -- harmless when inference wiring isn't
         // requested, since nothing reads it in that case (`OtelSettings`'s
         // writers gate on `gateway_url`, not on this string's presence).
-        token_command: format!(
-            "{} --issuer {} --client-id {} token",
-            otel::binary_path(),
-            config.issuer,
-            config.client_id,
-        ),
+        token_command: cli::token_command(&config.issuer, &config.client_id),
         gateway_url: config.gateway_url.clone(),
     };
 
@@ -167,7 +154,7 @@ fn apply_telemetry(config: &OauthConfig, session: &CachedSession) -> Result<()> 
                 // Codex is now the ONLY client without a dynamic-headers hook:
                 // Claude Code refreshes via `otelHeadersHelper`, and VS Code
                 // Copilot no longer exports for itself at all -- it writes a
-                // file that `copilot-push` ships with a bearer it refreshes.
+                // file that `copilot push` ships with a bearer it refreshes.
                 // Only when telemetry was actually requested, because a
                 // gateway-only run writes `config.toml` for the provider block
                 // alone, which needs no OTLP token.
@@ -219,7 +206,7 @@ pub async fn token(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     Ok(())
 }
 
-/// The access token `token`/`otel-headers` actually emit: the cached
+/// The access token `token`/`otel headers` actually emit: the cached
 /// upstream token unchanged, UNLESS token exchange (RFC 8693, opt-in, OFF by
 /// default) is configured -- in which case it's the EXCHANGED token, never
 /// the raw upstream one.
@@ -278,8 +265,10 @@ pub async fn otel_headers(http: &reqwest::Client, config: &OauthConfig) -> Resul
 }
 
 /// Loads the cached session, refreshing it if it's within the expiry skew.
-/// Shared by `token` and `otel-headers` so the two can't drift on when a
-/// refresh happens or on what "fails closed" means.
+/// Shared by `token` and `otel headers` so the two can't drift on when a
+/// refresh happens or on what "fails closed" means. `refresh` deliberately
+/// does NOT go through here: it must renew a session that is still fresh,
+/// which is the one thing this function will not do.
 pub(crate) async fn current_session(
     http: &reqwest::Client,
     config: &OauthConfig,
@@ -298,7 +287,7 @@ pub(crate) async fn current_session(
     Ok(refreshed)
 }
 
-async fn refresh_or_fail(
+pub(super) async fn refresh_or_fail(
     http: &reqwest::Client,
     config: &OauthConfig,
     session: &CachedSession,

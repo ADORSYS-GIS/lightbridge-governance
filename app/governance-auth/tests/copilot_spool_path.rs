@@ -1,4 +1,4 @@
-//! ADR-0012 Decision 2's precedence, for the one key `copilot-push` adds.
+//! ADR-0012 Decision 2's precedence, for the one key `copilot push` adds.
 //!
 //! Layer 5 (the compiled default) is the interesting one: it depends on
 //! `$HOME`, so it cannot be a clap `default_value` -- a `default_value` fires
@@ -55,7 +55,7 @@ async fn the_config_file_layer_supplies_the_spool_path() -> Result<()> {
     // point this run at the spool above.
     let output = harness
         .run_with_env(
-            &["copilot-push", "--otel-endpoint", &collector.base_url],
+            &["copilot", "push", "--otel-endpoint", &collector.base_url],
             &[("XDG_CONFIG_HOME", &root.display().to_string())],
         )
         .await?;
@@ -98,7 +98,8 @@ async fn an_explicit_flag_beats_the_config_file() -> Result<()> {
     let output = harness
         .run_with_env(
             &[
-                "copilot-push",
+                "copilot",
+                "push",
                 "--otel-endpoint",
                 &collector.base_url,
                 "--copilot-spool-path",
@@ -133,7 +134,7 @@ async fn the_compiled_default_is_the_state_directory_spool() -> Result<()> {
     fixture::seed_spool(&harness)?;
 
     let output = harness
-        .run(&["copilot-push", "--otel-endpoint", &collector.base_url])
+        .run(&["copilot", "push", "--otel-endpoint", &collector.base_url])
         .await?;
 
     assert!(

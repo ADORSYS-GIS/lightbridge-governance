@@ -1,4 +1,4 @@
-//! Fixtures for the `copilot-push` tests: a synthetic spool, the two session
+//! Fixtures for the `copilot push` tests: a synthetic spool, the two session
 //! shapes, and the one way these tests invoke the command.
 //!
 //! The spool content is **synthetic**. The parser was validated against a real
@@ -55,7 +55,8 @@ pub async fn push(
 ) -> Result<std::process::Output> {
     let spool = spool.display().to_string();
     let mut args = vec![
-        "copilot-push",
+        "copilot",
+        "push",
         "--otel-endpoint",
         collector,
         "--copilot-spool-path",

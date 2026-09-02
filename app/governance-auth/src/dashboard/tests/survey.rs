@@ -30,7 +30,23 @@ fn seed(home: &std::path::Path, keys: &[&str]) {
 }
 
 fn survey(home: &std::path::Path) -> Telemetry {
-    Telemetry::survey(Some(home), Some("https://otel.example".to_owned()))
+    Telemetry::survey(Some(home), &config())
+}
+
+fn config() -> crate::config::OauthConfig {
+    crate::config::OauthConfig {
+        issuer: "https://issuer.example".to_owned(),
+        client_id: "client".to_owned(),
+        scopes: "openid".to_owned(),
+        audience: None,
+        otel_endpoint: Some("https://otel.example".to_owned()),
+        otel_token: None,
+        gateway_url: None,
+        copilot_spool_path: None,
+        otel_headers_debounce_ms: 240_000,
+        open_browser: false,
+        token_exchange: None,
+    }
 }
 
 #[test]
@@ -101,7 +117,64 @@ fn inference_keys_alone_are_not_telemetry() {
 
 #[test]
 fn without_a_home_nothing_is_claimed() {
-    let t = Telemetry::survey(None, Some("https://otel.example".to_owned()));
+    let t = Telemetry::survey(None, &config());
     assert!(!t.applied);
     assert!(!t.has_static_token);
+}
+
+/// The upgrade case. `otel-headers` became `otel headers`, so a
+/// `settings.json` written by the previous release carries a helper whose
+/// command no longer parses -- Claude Code then exports nothing and reports it
+/// as "no telemetry", not as "broken helper". `configure` fixes it; this is
+/// how the developer who only ran `self update` finds out they need to.
+#[test]
+fn a_helper_naming_a_retired_command_is_reported_stale() {
+    let home = crate::managed::testutil::tempdir();
+    seed_claude_settings(home.path(), "/usr/local/bin/governance-auth otel-headers");
+    assert!(
+        survey(home.path()).stale,
+        "a helper ending in a command this binary no longer has must be stale"
+    );
+}
+
+/// The suffix is what is compared, never the whole line: the binary's path,
+/// the issuer and the client id all differ innocently between the `configure`
+/// that wrote the file and the `status` reading it back. Nagging on those
+/// would train the reader to ignore the row that matters above.
+#[test]
+fn a_helper_at_a_different_path_is_not_stale() {
+    let home = crate::managed::testutil::tempdir();
+    seed_claude_settings(
+        home.path(),
+        "/somewhere/else/governance-auth --issuer https://other --client-id other otel headers",
+    );
+    assert!(
+        !survey(home.path()).stale,
+        "only the command tail is ours to judge"
+    );
+}
+
+/// Writes a real `settings.json` carrying `helper`, and a manifest that claims
+/// we wrote that key -- the pair `stale_wiring` reads.
+fn seed_claude_settings(home: &std::path::Path, helper: &str) {
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().expect("parent")).expect("mkdir");
+    std::fs::write(
+        &settings,
+        serde_json::json!({ "otelHeadersHelper": helper }).to_string(),
+    )
+    .expect("write settings.json");
+
+    let mut keys = BTreeMap::new();
+    keys.insert("otelHeadersHelper".to_owned(), digest(helper));
+    let mut targets = BTreeMap::new();
+    targets.insert(settings.display().to_string(), keys);
+    save(
+        &manifest_path(home),
+        &Manifest {
+            version: 1,
+            targets,
+        },
+    )
+    .expect("save manifest");
 }

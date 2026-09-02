@@ -70,7 +70,7 @@ pub fn remember(config: &OauthConfig, path: &Path) -> Result<()> {
     set_or_clear(&mut doc, "otel_endpoint", config.otel_endpoint.as_deref());
     set_or_clear(&mut doc, "gateway_url", config.gateway_url.as_deref());
     // Persisted like any other durable path. `None` clears it, which is what
-    // returns `copilot-push` to the state-directory default rather than
+    // returns `copilot push` to the state-directory default rather than
     // leaving a path the developer stopped passing silently in force.
     set_or_clear(
         &mut doc,

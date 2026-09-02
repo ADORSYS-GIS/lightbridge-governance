@@ -11,7 +11,7 @@
 //! sentinel.
 //!
 //! The other half is the parsed contract: `token`'s stdout carries the
-//! access token and nothing else, `otel-headers`' carries one JSON object.
+//! access token and nothing else, `otel headers`' carries one JSON object.
 //! Both layers of the subscriber are pinned off stdout, and turning logging
 //! all the way up is exactly the configuration that would expose it if one
 //! were not.
@@ -151,7 +151,7 @@ async fn otel_headers_stdout_stays_a_bare_json_object_at_trace() -> Result<()> {
     let harness = Harness::new("https://unreachable.invalid.example")?;
     seed(&harness)?;
 
-    let output = harness.run_with_env(&["otel-headers"], &LOUDEST).await?;
+    let output = harness.run_with_env(&["otel", "headers"], &LOUDEST).await?;
 
     assert!(
         output.status.success(),
