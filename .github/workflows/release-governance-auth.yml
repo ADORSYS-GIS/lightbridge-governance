@@ -8,24 +8,30 @@ name: Release governance-auth binaries
 # self-update reports "no asset for your platform".
 on:
   release:
-    # ⚠️ `created`, NOT `published`, and this closes a real gap rather than
-    # being a preference. release-please now cuts the release as a DRAFT
-    # (`draft: true` in release-please-config.json), and GitHub's
-    # `/releases/latest` skips drafts -- so `releases/latest/download/<asset>`
-    # keeps resolving to the PREVIOUS release until this workflow finishes and
-    # publishes.
+    # ⚠️ `published`, not `created`, and the difference cost two broken
+    # releases -- see the note below before changing it again.
     #
-    # Before, the release was published first and the six-target build ran
-    # after it. For the ~7 minutes in between, `latest/download` pointed at a
-    # release with ZERO assets, so the documented
-    # `curl … install.sh | sh` failed for everyone. Measured on v0.6.0: 404,
-    # installer exits 1. That recurred on every single release.
+    # This means there IS a window: GitHub points `releases/latest/download/`
+    # at the new release the moment it is published, and the six-target build
+    # then takes ~7 minutes to attach the twelve assets. During it, the
+    # documented `curl … install.sh | sh` fails with a 404. Measured on v0.6.0.
     #
-    # `created` covers both shapes GitHub emits: a draft being saved, and a
-    # release published without ever being a draft (so a hand-cut release is
-    # still built). The `publish` job below is what un-drafts it, and
-    # publishing fires `published`, which nothing listens to -- no loop.
-    types: [created]
+    # Cutting the release as a DRAFT closes that window -- and was tried, in
+    # #256. It works for the window (measured on v1.0.0: `latest/download`
+    # kept resolving to v0.6.0 and the installer returned 200 throughout) and
+    # breaks the build, because **a draft release has no git tag**. GitHub
+    # creates the tag only on publish, so `ref: <tag>` fails to resolve and
+    # every target dies at `actions/checkout`. The release is then a draft that
+    # cannot publish itself, and a human has to publish it by hand -- which
+    # creates the tag and leaves a PUBLISHED release with zero assets, the very
+    # state the draft flow existed to prevent.
+    #
+    # It is fixable (resolve `github.event.release.target_commitish`, which is
+    # populated on a draft, instead of the tag). It is deliberately NOT fixed
+    # here: the window is a few minutes on release day, the draft flow cost two
+    # broken releases, and the decision is to revisit it later rather than
+    # iterate on it in production. See the follow-up issue.
+    types: [published]
   # Manual runs let a release that was cut before this workflow existed (or
   # one whose upload failed) be backfilled without re-tagging.
   workflow_dispatch:
@@ -196,37 +202,3 @@ jobs:
             "governance-auth-${{ matrix.target }}" \
             "governance-auth-${{ matrix.target }}.sha256" \
             --clobber --repo "${{ github.repository }}"
-
-  # Un-drafts the release once every target has uploaded. Separate job, so it
-  # runs only after ALL six matrix legs succeed -- `needs` on a matrix job waits
-  # for the whole matrix.
-  #
-  # ⚠️ If any target fails, the release stays a DRAFT for ever. That is the
-  # correct outcome, not a bug to work around: a published release whose assets
-  # are missing is exactly the state this change exists to prevent, and a draft
-  # is visible to a maintainer while being invisible to `latest/download`.
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Publish the release now that its assets exist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Same injection guard as the upload step: the workflow_dispatch
-          # `tag` input is supplied by whoever triggers the run.
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          case "$TAG" in
-            *[!A-Za-z0-9._-]*)
-              echo "refusing unsafe tag: $TAG" >&2
-              exit 1
-              ;;
-          esac
-          # Idempotent: a backfill run against an already-published release is
-          # a no-op rather than an error.
-          gh release edit "$TAG" --draft=false --repo "$REPO"
-          echo "Published $TAG with assets attached." >> "$GITHUB_STEP_SUMMARY"
