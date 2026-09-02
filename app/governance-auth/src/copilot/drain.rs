@@ -37,6 +37,13 @@
 //! the offset they belong to. An offset that survives a kill and a loss count
 //! that does not would resume past records nothing ever counted, which is the
 //! conservation rule breaking at every interrupted wake rather than never.
+//!
+//! ## Why the reclaim is last, and on both exits
+//!
+//! [`spool::reclaim`] may only destroy bytes the checkpoint has already
+//! passed, so it runs after the checkpoint is final, never before. Both exits
+//! offer it, and the *empty* one matters most: a wake that found nothing new
+//! has a spool quiescent since the last wake -- what the precondition wants.
 
 use std::path::Path;
 
@@ -47,7 +54,7 @@ use super::{
     journal::Journal,
     lock,
     pass::{self, Endpoint, Outcome, Target},
-    spool::{self, Restart},
+    spool::{self, Restart, reclaim},
 };
 use crate::redacted::Redacted;
 
@@ -64,6 +71,7 @@ pub async fn once(
 
     let checkpoint_path = checkpoint::path(&state_dir);
     let state = checkpoint::load(&checkpoint_path)?;
+    let reclaim_at = checkpoint_path.clone();
 
     let drained = spool::drain(spool_path, state.offset, state.spool.as_ref())?;
     if drained.missing {
@@ -100,6 +108,7 @@ pub async fn once(
         if drained.restarted.is_some() && !dry_run {
             journal.commit()?;
         }
+        reclaim::best_effort(spool_path, &reclaim_at, journal.state(), dry_run);
         return Ok(());
     }
 
@@ -129,6 +138,7 @@ pub async fn once(
     journal.finished(outcome.pushed, outcome.stalled, now);
     journal.commit()?;
     report(&journal, &outcome);
+    reclaim::best_effort(spool_path, &reclaim_at, journal.state(), dry_run);
 
     pass::settled(&outcome)
         .context("the collector did not accept every signal; those bytes stay pending")

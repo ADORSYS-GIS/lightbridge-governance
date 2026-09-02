@@ -1,16 +1,16 @@
-//! Reads the append-only spool from a byte offset, without ever writing to it.
+//! Reads the append-only spool from a byte offset.
 //!
-//! ## Why offset-only, and why the file is never truncated
+//! ## Why reading is offset-only, and where the truncation went
 //!
-//! VS Code holds this file **open for append** for the life of the window. On
-//! Linux, truncating a file another process holds at offset N does not move
-//! that process's offset: the next append lands at N and the kernel zero-fills
-//! the gap, so the spool grows a hole of NUL bytes and every subsequent parse
-//! is garbage. On macOS the same is true. There is no portable way to make
-//! "truncate underneath a live writer" safe, so this module does not try:
-//! **the checkpoint is the only thing that advances.** Reclaiming disk is left
-//! to the writer (Copilot rotates its own outfile) or to a human with VS Code
-//! closed.
+//! Nothing on the read path writes to the spool: a reader that rewrote the
+//! file it is reading would have to interleave with VS Code's appends.
+//! Reclaiming the file is a separate, deliberate act with a precondition of
+//! its own, and it lives in [`reclaim`] -- which also carries the correction
+//! to what this paragraph used to say. It claimed that truncating under a live
+//! writer leaves the next append at the old offset with the gap zero-filled,
+//! and that there was therefore no safe truncation to implement. Measured
+//! false on 2026-09-02: Copilot's descriptors are `O_APPEND`, so the next
+//! append lands at byte 0. See [`reclaim`] for the measurement.
 //!
 //! ## Why only whole lines are consumed
 //!
@@ -27,6 +27,7 @@
 //! that cost.
 
 mod identity;
+pub mod reclaim;
 
 use std::{
     fs::File,

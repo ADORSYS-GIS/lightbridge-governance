@@ -380,7 +380,7 @@ authenticate exits non-zero having advanced nothing, discarded nothing, and post
 that reads the spool without a credential, and "there is exactly one such path and it starts
 with authentication" is a far easier property to keep true.
 
-### Idempotency, and why the spool is never truncated
+### Idempotency
 
 Progress is a **byte offset** in `<state_dir>/copilot-push.json`, advanced only after the
 collector has returned 2xx. Re-running with nothing new appended posts nothing and changes
@@ -499,12 +499,61 @@ than as `N bytes pending … run governance-auth copilot push`. The byte counts 
 so nothing else in the row distinguishes them — and the backlog row's advice is a command that
 reproduces the same failing wake.
 
-The spool itself is never written to. VS Code holds it **open for append** for the life of
-the window; truncating a file another process holds at offset N does not move that process's
-offset, so the next append lands at N and the kernel zero-fills the gap — the file grows a
-hole of NUL bytes and every later parse is garbage. That is true on Linux and macOS alike, so
-there is no safe truncation to implement and none is attempted. Reclaiming disk is Copilot's
-job (it rotates its own outfile) or a human's, with VS Code closed.
+### Reclaiming the spool
+
+Nothing bounded this file until now. It was measured growing 73 KB → 315 KB in six minutes of
+ordinary use and reached **164 MB** on one machine, still climbing.
+
+A wake reclaims it when **both** of these hold, and never otherwise:
+
+- the spool is over **1 MiB** — the same figure the log rotation uses, and small enough that a
+  spool under it is not a disk problem worth acting on;
+- its size is **exactly** the checkpoint's `offset` — every byte in the file has been delivered
+  or counted.
+
+It is then truncated to zero, the checkpoint is reset to byte 0 with the identity of the file
+as it now stands, and the run says so. `--dry-run` never reclaims. A reclaim that fails is
+reported and the wake continues: an oversized spool is a disk problem, and failing the wake
+over it would make it a delivery one.
+
+⚠️ **This document said the opposite, and the correction is the point.** It said the spool is
+never written to, because truncating a file VS Code holds open at offset N leaves the next
+append at N with the gap zero-filled. That is true of a plain `O_WRONLY` handle and **false for
+this writer.**
+
+Measured on macOS on 2026-09-02: `lsof -o` showed VS Code holding three write descriptors on
+the spool, every one reporting an offset exactly equal to the file size and advancing in
+lockstep — three independent `open()` calls cannot stay synchronised unless every write seeks
+to EOF atomically, which is `O_APPEND`. The live spool was then truncated with VS Code running
+and holding those descriptors: Copilot's next append started at byte 0, `od -c` showed the
+record with **no NUL hole**, it parsed, and the next drain reported the truncation, restarted
+at byte 0 and left `discarded_total` at 0.
+
+Confirmed on Linux from the kernel rather than inferred — `/proc/PID/fdinfo` reports the open
+flags directly:
+
+```
+pid=2081405 code  fd=60  flags=02102001  O_APPEND=1
+pid=2081405 code  fd=62  flags=02102001  O_APPEND=1
+pid=2081405 code  fd=64  flags=02102001  O_APPEND=1
+```
+
+`02102001` is `O_WRONLY | O_APPEND | O_LARGEFILE | O_CLOEXEC`. The [log
+rotation](./files.md#log) had already written the same `O_APPEND` argument down in the
+affirmative about the same OS behaviour; the two disagreed, and this was the wrong one.
+
+**Conservation still binds.** A truncate destroys bytes instead of advancing over them, so it
+may only ever destroy bytes the offset has already passed — hence the exact `size == offset`
+precondition, re-read from the open descriptor immediately before the truncate. One byte past
+it, including a half-written record, and the wake declines. That narrows the race with a
+concurrent append; it does not close it, and no POSIX call does. The window and its measured
+bound are in `app/governance-auth/src/copilot/spool/reclaim.rs`, along with why a
+tail-preserving rewrite and a sparse hole-punch were both rejected. The bound on the file is
+honest rather than hard: 1 MiB plus whatever accrues between the wake that crosses it and the
+next fully caught-up wake.
+
+A crash between the truncate and the checkpoint write needs no handling of its own: it leaves
+a file shorter than the recorded offset, which is the truncation case below.
 
 ### Which file the offset belongs to
 

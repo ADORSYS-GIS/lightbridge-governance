@@ -207,16 +207,21 @@ from `--copilot-spool-path` / `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` / `copilot_sp
 this default. `configure` writes the *resolved* value into
 `github.copilot.chat.otel.outfile` and into the drain's own schedule, so the two always match.
 
-⚠️ **Nothing bounds this file's growth.** Measured at 73 KB → 315 KB in six minutes of
-ordinary use. `copilot push` never truncates it (see below) and Copilot's own rotation is the
-only thing that reclaims the space. Tracked as
-[#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
-[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241); it was an opt-in
-risk while the file exporter was opt-in, and it is a default one now.
+**Reclaimed by `copilot push`, above 1 MiB and only when it is caught up.** Growth was measured
+at 73 KB → 315 KB in six minutes of ordinary use, and the file reached **164 MB** on the machine
+that reported [#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
+[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241).
 
-`copilot push` opens it **read-only** and never truncates it — VS Code holds it open for
-append, and truncating underneath a live writer makes the next append land at the old offset
-with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
+A wake truncates it to zero when its size is **exactly** the checkpoint offset — every byte
+delivered — and leaves it alone otherwise. The bound is honest rather than hard: 1 MiB plus
+whatever accrues between the wake that crosses it and the next fully caught-up wake.
+
+⚠️ This page previously said the file is never truncated, because truncating underneath a live
+writer strands its offset and zero-fills the gap. That is true of a plain `O_WRONLY` handle and
+false for this one: Copilot opens the spool `O_APPEND`, so every write seeks to EOF atomically.
+Confirmed on macOS by three descriptor offsets tracking EOF in lockstep, and on Linux directly
+from `/proc/PID/fdinfo` (`flags=02102001`). See
+[`commands.md`](./commands.md#reclaiming-the-spool).
 
 ### Copilot drain schedule
 
