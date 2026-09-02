@@ -174,9 +174,12 @@ fn the_row_appears_in_the_rendered_table() {
         "https://auth.example",
         "cli",
         &session(true, true),
-        &otel(None, false),
-        &spool(Some(9000), 0, None, None),
-        &unsurveyed_drain(),
+        &Surveys {
+            telemetry: &otel(None, false),
+            daemon: &unsurveyed_daemon(),
+            spool: &spool(Some(9000), 0, None, None),
+            drain: &unsurveyed_drain(),
+        },
         &[],
     );
     assert!(out.contains("copilot spool"), "{out}");
