@@ -87,6 +87,43 @@ pub async fn both(to: &Endpoint<'_>, journal: &mut Journal<'_>, target: Target<'
     outcome
 }
 
+/// What one sweep came to, on stderr. Lives here rather than with the sweep
+/// because every field of it is an [`Outcome`] this module built.
+pub fn report(journal: &Journal<'_>, outcome: &Outcome) {
+    let state = journal.state();
+    if outcome.pushed > 0 {
+        eprintln!(
+            "Pushed {} record(s); checkpoint at byte {}.",
+            outcome.pushed, state.offset
+        );
+    }
+    if outcome.held > 0 {
+        eprintln!(
+            "{} record(s) the collector refused on their own are held, not discarded: a single \
+             400 can come from a proxy rather than from the payload. The next wake decides.",
+            outcome.held
+        );
+    }
+    if outcome.stalled {
+        eprintln!(
+            "The refused record is the LAST one in the spool, so there is nothing after it to \
+             prove the collector still works with -- and giving up on no evidence is how a \
+             misconfigured collector empties a spool. This does not clear on the next wake: it \
+             clears when Copilot writes another record. Re-running now repeats exactly this."
+        );
+    }
+    let discarded = journal.lost();
+    if discarded > 0 {
+        eprintln!(
+            "⚠️  discarded {discarded} record(s) that will never reach the collector ({} in \
+             total since this checkpoint was created). `governance-auth status` shows this until \
+             it ages out; a number that climbs after a VS Code update means the spool's shapes \
+             moved and this parser needs revisiting.",
+            state.discarded_total
+        );
+    }
+}
+
 /// The wake's own failure, if it had one. `Ok` means every line read was
 /// resolved.
 pub fn settled(outcome: &Outcome) -> Result<()> {

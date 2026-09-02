@@ -42,9 +42,24 @@
 //! [`export`] for the rule that keeps a misconfigured collector from using
 //! that permission to empty the whole spool.
 //!
-//! The spool itself is never written to at all -- see [`spool`]'s module doc
-//! for why truncating a file VS Code holds open is unsafe on both target
-//! platforms.
+//! ## And the third: the file does not grow for ever
+//!
+//! The spool used to be read-only to this binary, on the stated grounds that
+//! truncating a file VS Code holds open leaves a zero-filled hole. That was
+//! measured false on 2026-09-02 -- Copilot's descriptors are `O_APPEND`, so an
+//! append after a truncate lands at byte 0 -- and the file had reached 12 MB
+//! on the machine that measured it. [`spool::reclaim`] now truncates it, but
+//! only when `size == offset` exactly, so it destroys nothing the checkpoint
+//! has not already passed. That precondition narrows rather than closes the
+//! race with a concurrent append; the module doc states its measured bound
+//! instead of pretending it is zero.
+//!
+//! That precondition is also why a wake is a **loop**. One wake used to read
+//! 8 MiB and stop, which on the 164 MB spool measured on 2026-09-02 was
+//! 27 KB/s -- so the spool never became caught up and the reclaim never fired
+//! on the machines that needed it. [`drain`] now sweeps until the spool is
+//! caught up or one of its two bounds says stop; each sweep still reads at
+//! most 8 MiB, so peak memory is where it was.
 
 mod batch;
 mod checkpoint;
@@ -64,6 +79,7 @@ mod quarantine;
 mod record;
 mod spool;
 mod status;
+mod sweep;
 
 #[cfg(test)]
 mod tests;

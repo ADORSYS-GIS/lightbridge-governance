@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode, Uri},
     routing::post,
 };
@@ -64,6 +64,8 @@ impl MockCollector {
         let router = Router::new()
             .route("/v1/metrics", post(receive))
             .route("/v1/logs", post(receive))
+            // axum's default 2 MiB body cap would 413 one sweep's 8 MiB post.
+            .layer(DefaultBodyLimit::disable())
             .with_state(this.clone());
 
         let served = this.clone();
@@ -125,12 +127,9 @@ impl MockCollector {
     /// nothing, so counting them would hide the very duplication these tests
     /// exist to catch.
     pub fn accepted_log_bodies(&self) -> Result<Vec<String>> {
-        let array = |value: &Value, key: &str| {
-            value
-                .get(key)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
+        let array = |value: &Value, key: &str| match value.get(key) {
+            Some(Value::Array(items)) => items.clone(),
+            _ => Vec::new(),
         };
         let mut bodies = Vec::new();
         for received in lock(&self.state)?.requests.iter() {

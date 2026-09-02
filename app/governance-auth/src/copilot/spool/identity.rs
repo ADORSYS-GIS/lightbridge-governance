@@ -79,6 +79,29 @@ pub enum Restart {
     Replaced,
 }
 
+impl Restart {
+    /// What to tell whoever is reading stderr. The two read differently on
+    /// purpose: one sends the reader looking for a truncation and the other
+    /// for a file swap, and being sent to the wrong one is worse than being
+    /// told nothing.
+    pub fn explain(self, path: &Path, offset: u64) -> String {
+        match self {
+            Self::Truncated => format!(
+                "The spool at {} is shorter than the recorded offset ({offset} bytes): it was \
+                 truncated or rotated, so the drain restarted at byte 0.",
+                path.display()
+            ),
+            Self::Replaced => format!(
+                "The spool at {} is not the file byte {offset} was measured against -- it was \
+                 replaced, not appended to (VS Code recreating its outfile does this). The drain \
+                 restarted at byte 0, so records the old file already delivered may arrive again \
+                 if the two files share content.",
+                path.display()
+            ),
+        }
+    }
+}
+
 /// The identity of the file at `path` as it is right now.
 pub fn of(path: &Path, metadata: &std::fs::Metadata) -> Result<Identity> {
     read(path, metadata, HEAD_BYTES.min(metadata.len()))

@@ -17,7 +17,7 @@
 //! | not enabled (yellow) | no spool file yet: Copilot has not exported |
 //! | `<n>` record(s) discarded (red/yellow) | data was consumed and never delivered |
 //! | held, waiting for a later record (yellow) | see below |
-//! | up to date (green)   | spool exists, nothing pending, nothing lost |
+//! | up to date (green)   | nothing pending, nothing lost; the count is the offset, which a reclaim resets to 0 |
 //! | pending (yellow)     | bytes waiting, and a push has succeeded before |
 //! | never pushed (red)   | bytes waiting and no push has *ever* succeeded |
 //! | unknown (yellow)     | the state directory could not be resolved |

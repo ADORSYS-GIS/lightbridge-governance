@@ -156,13 +156,14 @@ it off-machine. The file exporter avoids the choice entirely.
 
 ⚠️ Restart VS Code after `configure`. Copilot reads these at window start.
 
-⚠️ Nothing bounds the spool's growth (measured 73 KB → 315 KB in six minutes of
-ordinary use). `copilot push` never truncates a file VS Code holds open for
-append; reclaiming disk is Copilot's own rotation or a human's. Tracked in
-[#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
-[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241) — it
-was an opt-in risk while the file exporter was opt-in, and it is a default one
-now.
+⚠️ The spool grows fast (measured 73 KB → 315 KB in six minutes of ordinary use,
+and 164 MB on one machine). `copilot push` now reclaims it: past 1 MiB, a wake
+whose file size is exactly its checkpoint offset — so every byte was delivered —
+truncates it to zero and says so. This reverses what this page said before, on
+the evidence that Copilot opens the spool `O_APPEND`, confirmed on macOS by
+descriptor offsets and on Linux by `/proc/PID/fdinfo`
+([#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230) /
+[#241](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/241)).
 
 ### The shell — `~/.config/governance-auth/otel.env` (and `.fish`)
 

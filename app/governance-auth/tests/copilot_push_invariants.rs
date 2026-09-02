@@ -1,14 +1,16 @@
 //! The four properties every earlier round established, re-measured at scale.
 //!
-//! These are slow and deliberately so: they are the ones a regression would hide
-//! from the smaller, faster tests. Each prints its measurement, so the numbers in
-//! a review are read off a run rather than asserted from memory.
+//! Slow, deliberately: these are the ones a regression hides from the smaller,
+//! faster tests. Each prints its measurement, so the numbers in a review are
+//! read off a run rather than asserted from memory.
 //!
-//! - **Conservation.** Every record is delivered or counted in `discarded_total`;
-//!   the two together must account for the whole spool.
-//! - **Zero duplicates across wakes**, at 2,600 records with 10 refused and at
-//!   512 with 12.
+//! - **Conservation.** Every record is delivered or counted in `discarded_total`,
+//!   and the two together account for the whole spool.
+//! - **Zero duplicates across wakes**, at 2,600 records / 10 refused and 512 / 12.
 //! - **The two-separate-wakes rule** still gates every discard.
+//! - **A reclaim costs nothing.** The 2,600-record spool clears the 1 MiB bar,
+//!   so the wake that finishes it truncates the file and takes the offset back
+//!   to 0. All of the above holds across that, `discarded_total` included.
 //!
 //! The fourth -- concurrent wakes costing one wake's requests -- lives with the
 //! rest of the locking in `copilot_push_concurrency.rs`.
@@ -36,6 +38,13 @@ fn spool_with(count: usize, refused: &[usize]) -> Vec<Value> {
         .collect()
 }
 
+/// Mirrors `copilot::spool::reclaim::RECLAIM_ABOVE`; `tests/` cannot reach
+/// `src/`, and a drift shows up at the end of `drain_to_end`.
+const RECLAIM_ABOVE: u64 = 1024 * 1024;
+
+fn size(spool: &std::path::Path) -> Result<u64> {
+    Ok(std::fs::metadata(spool).context("sizing")?.len())
+}
 fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
     let path = fixture::checkpoint_path(harness);
     if !path.exists() {
@@ -76,20 +85,31 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
     let spool = fixture::seed_spool(&harness)?;
     harness.seed_session(&fixture::fresh_session(harness.issuer())?)?;
     fixture::write_spool(&spool, &spool_with(count, refused))?;
-    let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
+    let initial = size(&spool)?;
 
+    // "Drained" is not `offset == the size we started with`: the wake that
+    // reaches the end of a spool over `RECLAIM_ABOVE` truncates it too, a
+    // legitimate 0-of-0. Re-read the size each lap; progress is the offset
+    // advancing OR the file shrinking under it.
     let mut wakes = 0;
     let mut previous = 0;
-    while number(&checkpoint(&harness)?, "offset") < size && wakes < 60 {
+    let mut reclaimed = false;
+    while wakes < 60 {
+        let before = size(&spool)?;
+        if number(&checkpoint(&harness)?, "offset") >= before {
+            break;
+        }
         let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
         wakes += 1;
         let now = number(&checkpoint(&harness)?, "offset");
+        let shrank = size(&spool)? < before;
         assert!(
-            now > previous,
-            "{label}: wake {wakes} made no progress, offset stuck at {now} of {size}. stderr: {}",
+            now > previous || shrank,
+            "{label}: wake {wakes} made no progress, offset stuck at {now} of {before}. stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        previous = now;
+        reclaimed |= shrank;
+        previous = if shrank { 0 } else { now };
     }
 
     let state = checkpoint(&harness)?;
@@ -106,13 +126,19 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
         number(&state, "discarded_total"),
     );
 
-    assert_eq!(number(&state, "offset"), size, "{label}: never drained");
-    assert!(
-        repeated.is_empty(),
-        "{label}: {} record(s) delivered twice: {:?}",
-        repeated.len(),
-        repeated.iter().take(5).collect::<Vec<_>>()
+    assert_eq!(
+        number(&state, "offset"),
+        size(&spool)?,
+        "{label}: not drained"
     );
+    assert_eq!(
+        reclaimed,
+        initial > RECLAIM_ABOVE,
+        "{label}: {initial} bytes must be reclaimed exactly when over the bar -- never firing \
+         leaves the file growing, firing under it takes the truncate race for nothing"
+    );
+    let sample = repeated.iter().take(5).collect::<Vec<_>>();
+    assert!(repeated.is_empty(), "{label}: delivered twice: {sample:?}");
     // Conservation: every record either arrived or was counted as lost.
     let accounted = delivered.len() as u64 + number(&state, "discarded_total");
     assert_eq!(

@@ -6,6 +6,8 @@
 //! is committed. The shapes below reproduce what was observed, with the
 //! identifying values replaced.
 
+use std::path::PathBuf;
+
 use serde_json::{Value, json};
 
 use super::{batch, record, spool};
@@ -17,7 +19,36 @@ mod identity;
 mod journal;
 mod points;
 mod quarantine;
+mod reclaim;
 mod transform;
+
+/// A scratch directory that removes itself. Shared rather than per-module
+/// because two modules had already written it and a third was about to; the
+/// tag keeps concurrently running tests off each other's paths.
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn new(tag: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let path =
+            std::env::temp_dir().join(format!("copilot-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("creating the scratch directory");
+        Self(path)
+    }
+
+    pub fn file(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// A metrics line carrying one SUM and one HISTOGRAM, in the exact nesting
 /// Copilot's file exporter writes.
