@@ -56,6 +56,15 @@ rejected: `/bin` is OS-owned, and a new dotdir contradicts the
 | Per-user config | `$XDG_CONFIG_HOME`, else `~/.config/governance-auth/` | `~/.config/governance-auth/` |
 | State (session, lock) | `$XDG_STATE_HOME`, else `~/.local/state/` | `~/Library/Application Support/` |
 | Cache (OIDC discovery) | `$XDG_CACHE_HOME`, else `~/.cache/` | `~/Library/Caches/` |
+| Log | `$XDG_STATE_HOME/governance-auth/logs/`, else `~/.local/state/…` | `~/Library/Logs/governance-auth/` |
+
+**The log row was added after the fact** (see `app/governance-auth/src/logging`) and follows
+the same "one convention per KIND of data" rule as the rest. Logs are their own kind: the XDG
+spec names "actions history (logs, …)" as `$XDG_STATE_HOME` content, so Linux is state plus one
+segment; macOS is `~/Library/Logs` rather than Application Support because that is what
+Console.app reads and — decisively — where the launchd agent this binary installs already
+redirected the drain's stderr. That capture was moved onto the same file rather than a second
+one being created beside it, and it is now bounded (copy-truncate at 1 MiB, 3 generations).
 
 **Machine-wide config is `/etc/` on macOS too**, and this is the one place we
 knowingly diverge from

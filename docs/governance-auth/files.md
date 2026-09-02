@@ -147,8 +147,13 @@ with the gap zero-filled. See [`commands.md`](./commands.md#copilot-push).
 ~/.config/systemd/user/governance-auth-copilot-push.service        # Linux
 ~/.config/systemd/user/governance-auth-copilot-push.timer          # Linux
 ~/Library/LaunchAgents/digital.camer.ai.governance-auth.copilot-push.plist   # macOS
-~/Library/Logs/governance-auth-copilot-push.log                    # macOS, the job's stderr
 ```
+
+The agent's `StandardErrorPath` is **not** a file of its own: it points at the same rotating
+log described below, so the drain's stderr and the drain's own log lines end up in one place
+and one bound. Builds before that reconciliation used
+`~/Library/Logs/governance-auth-copilot-push.log`, which nothing rotated; `configure` deletes
+it on the next run.
 
 **Written and activated by `configure`.** Copilot's file exporter appends to the spool and
 stops; nothing in VS Code ships it. Without this the exporter `configure` just turned on would
@@ -180,6 +185,36 @@ launchctl bootout gui/$(id -u)/digital.camer.ai.governance-auth.copilot-push
 
 `governance-auth status` carries a **copilot drain** row for exactly this: a schedule that was
 never activated, or that stopped, is otherwise invisible.
+
+### Log
+
+```
+~/.local/state/governance-auth/logs/governance-auth.log            # Linux ($XDG_STATE_HOME honoured)
+~/Library/Logs/governance-auth/governance-auth.log                 # macOS
+```
+
+Every command appends here, at `info` by default, `0600`. Not a second copy of the UX: stderr
+stays the place a human reads while `login` runs, and this is the place anyone reads
+afterwards — `token` and `otel-headers` are spawned by Claude Code and Codex with their stderr
+swallowed, and the drain wakes on a timer with nobody watching at all. `GOVERNANCE_AUTH_LOG`
+raises or lowers it independently of `RUST_LOG`, which still controls stderr alone.
+
+**Linux is `$XDG_STATE_HOME`** because the XDG basedir spec names "actions history (logs, …)"
+as an example of what belongs there, so this is one segment below the session's own directory
+and inherits its `0700`. **macOS is `~/Library/Logs`** because that is what Console.app reads
+and where the launchd agent already wrote.
+
+⚠️ **Bounded, unlike the Copilot spool above.** Past 1 MiB the live file is rotated to
+`.log.1`, `.log.1` to `.log.2`, and so on for 3 generations — **4 MiB, for ever**. Rotation is
+**copy-truncate**, not rename: launchd and any concurrently running `governance-auth` hold
+open handles on this file, and renaming it would leave all of them writing into `.log.1` while
+the file everyone reads stays empty. Truncation keeps the inode, and every writer is
+`O_APPEND`, so they resume at zero rather than leaving a zero-filled hole. Two processes
+cannot rotate at once — the same lock the session uses guards it.
+
+**No secret is ever written here.** A token on stderr is gone when the terminal scrolls; a
+token in this file is a credential at rest. `tests/logging_redaction.rs` runs the real binary
+at `trace` with a sentinel token and fails if it appears in the file.
 
 ### OTLP credential for the shell
 

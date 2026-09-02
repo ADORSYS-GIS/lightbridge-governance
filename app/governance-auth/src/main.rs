@@ -12,8 +12,9 @@
 //! printing it -- OFF by default, see `crate::config::ExchangeConfig` and
 //! `oauth::exchange`.
 //!
-//! All UX, prompts and errors go to stderr. `token`'s stdout carries the
-//! access token and nothing else, ever.
+//! All UX, prompts and errors go to stderr, and a durable copy of the
+//! diagnostics goes to a rotating file (`crate::logging`). `token`'s stdout
+//! carries the access token and nothing else, ever.
 
 mod browser;
 mod cache;
@@ -22,6 +23,7 @@ mod config_file;
 mod config_persist;
 mod copilot;
 mod dashboard;
+mod logging;
 mod managed;
 mod oauth;
 mod otel;
@@ -125,12 +127,10 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    logging::init();
 
     let cli = Cli::parse();
+    tracing::info!(command = ?cli.command, version = update::VERSION, "invoked");
     // Clap can't enforce "issuer/client-id must be present" itself once
     // they're `global` (see `OauthConfigArgs`'s doc comment) -- do it here,
     // before anything else runs, so a missing flag/env var/config-file key is
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
         .build()
         .context("building the HTTP client")?;
 
-    match cli.command {
+    let outcome = match cli.command {
         Command::Login { device_code } => {
             oauth::login(&http, &cli.oauth.resolve()?, device_code).await
         }
@@ -192,5 +192,6 @@ async fn main() -> Result<()> {
         Command::Logout => oauth::logout(&http, &cli.oauth.resolve()?).await,
         // Deliberately does NOT resolve: see the comment above.
         Command::SelfUpdate { check } => update::run(&http, check).await,
-    }
+    };
+    logging::finish(outcome)
 }

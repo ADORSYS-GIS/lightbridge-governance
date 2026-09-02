@@ -535,10 +535,12 @@ the file with `sed "s|\$HOME|$HOME|"`.
   <false/>
   <!-- Not /tmp: that is world-writable, so the name is predictable and another
        local user can pre-create or replace the file. ~/Library/Logs is the
-       per-user location Console.app already reads. Nothing rotates it, so
-       either trim it occasionally or add a newsyslog.d entry. -->
+       per-user location Console.app already reads. This is the SAME file
+       governance-auth writes its own log to, which is what bounds it: the
+       binary copy-truncates it past 1 MiB and keeps 3 generations, so no
+       newsyslog.d entry and no hand-trimming is needed. -->
   <key>StandardErrorPath</key>
-  <string>/Users/YOUR-USERNAME/Library/Logs/governance-auth-copilot-push.log</string>
+  <string>/Users/YOUR-USERNAME/Library/Logs/governance-auth/governance-auth.log</string>
 </dict>
 </plist>
 ```
