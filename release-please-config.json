@@ -18,6 +18,7 @@
   "packages": {
     ".": {
       "package-name": "lightbridge-governance",
+      "draft": true,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         { "type": "yaml", "path": "charts/lightbridge-governance/Chart.yaml", "jsonpath": "$.version" },
