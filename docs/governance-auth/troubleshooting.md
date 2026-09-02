@@ -181,6 +181,28 @@ anything here.
 
 ## Client wiring
 
+**Another AI CLI's telemetry started 401-ing against the wrong collector**
+
+Any build before the fix exported the generic OpenTelemetry variables —
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `_PROTOCOL`, `_HEADERS`, `OTEL_METRICS_EXPORTER`,
+`OTEL_LOGS_EXPORTER`, `OTEL_RESOURCE_ATTRIBUTES` — into
+`~/.config/governance-auth/otel.env`, which every shell sources. Those are machine-global and
+OpenTelemetry SDKs read them *ahead of* their own configured default, so any other OTLP
+exporter on the laptop silently retargeted at this binary's collector and got `401` there,
+because each collector's OIDC gate accepts one audience only. Observed on OpenCode, whose
+plugin resolves `env.OTEL_EXPORTER_OTLP_ENDPOINT || opts.endpoint`.
+
+Fix: **`governance-auth configure`** after updating. `self update` replaces the binary but
+touches no config — the stale exports live in `otel.env`/`otel.fish`, and only a `configure`
+run rewrites them. Confirm with:
+
+```bash
+grep OTEL_ ~/.config/governance-auth/otel.env ~/.config/governance-auth/otel.fish
+```
+
+No output is the fixed state. Then open a new shell (or `unset` the variables in the current
+one — sourcing the new file cannot remove what the old one already exported).
+
 **Codex proceeds unauthenticated**
 
 Almost always the helper path. Codex spawns the auth command **directly, not through a
