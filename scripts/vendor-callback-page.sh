@@ -15,7 +15,11 @@
 set -eu
 
 REPO="ADORSYS-GIS/converse-frontends"
-ARTIFACT="ghcr.io/adorsys-gis/governance-auth-callback"
+# Overridable so the pull path is EXERCISABLE against a local registry --
+# `docs/governance-auth/files.md` carries a runnable example. A refresh that
+# only ever works against production is a refresh nobody can test.
+CANONICAL="ghcr.io/adorsys-gis/governance-auth-callback"
+ARTIFACT="${GOVERNANCE_AUTH_CALLBACK_ARTIFACT:-$CANONICAL}"
 DEST="app/governance-auth/src/oauth/callback_page"
 
 main() {
@@ -26,8 +30,22 @@ main() {
     tmp="$(mktemp -d)" || die "could not create a temporary directory"
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
+    # ⚠️ Plain HTTP for loopback ONLY, and never for anything else. This is
+    # the same HTTPS-or-loopback rule `crate::security` applies to the issuer
+    # URL, for the same reason: a local registry has no certificate to present,
+    # while a remote one downgraded to plaintext is an attack. The registry is
+    # matched on host, not on a flag someone can pass by mistake.
+    scheme=""
+    case "$ARTIFACT" in
+        # ⚠️ `'[::1]:'` is QUOTED. Unquoted, the brackets are a glob character
+        # class matching a single `:` or `1`, so the IPv6 loopback pattern
+        # silently matched nothing at all. Caught by shellcheck SC2102.
+        127.0.0.1:*|localhost:*|'[::1]:'*) scheme="--plain-http" ;;
+    esac
+
     say "Pulling ${ARTIFACT}:sha-${sha}..."
-    oras pull "${ARTIFACT}:sha-${sha}" --output "$tmp" \
+    # shellcheck disable=SC2086 # $scheme is a single literal flag or empty
+    oras pull $scheme "${ARTIFACT}:sha-${sha}" --output "$tmp" \
         || die "could not pull sha-${sha}. Is that commit built and pushed?"
 
     src="${tmp}/index.html"
@@ -49,10 +67,22 @@ main() {
   "path": "apps/governance-auth",
   "commit": "${sha}",
   "sha256": "${digest}",
-  "artifact": "${ARTIFACT}",
+  "artifact": "${CANONICAL}",
   "tag": "sha-${sha}"
 }
 JSON
+    # ⚠️ `artifact` above records the CANONICAL publish location, not whatever
+    # this run pulled from -- the field answers "where does this come from",
+    # and a localhost ref committed into provenance would be a lie about the
+    # supply chain. The override exists to exercise the pull path, so a run
+    # that used it says so out loud rather than producing a file that looks
+    # ordinary.
+    [ "$ARTIFACT" = "$CANONICAL" ] || {
+        say "warning: pulled from ${ARTIFACT}, not ${CANONICAL}."
+        say "         The bytes are whatever that registry served. Do not commit this"
+        say "         unless you know it is the same build."
+    }
+
     say "Vendored ${DEST}/callback.html"
     say "  source commit: ${sha}"
     say "  sha256:        ${digest}"

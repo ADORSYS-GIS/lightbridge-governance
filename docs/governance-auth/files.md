@@ -47,6 +47,37 @@ what is committed. Refreshing is an explicit act that produces a reviewable diff
 `the_vendored_page_matches_its_recorded_digest` fails if `callback.html` is edited by hand, which
 is the one failure the upstream build gate cannot see.
 
+### Trying it without touching GHCR
+
+The pull path is exercisable against a local registry, so you can verify the whole loop before
+anything is published — and so a refresh is not something only CI can do:
+
+```bash
+docker run -d --name reg -p 5555:5000 registry:2
+
+# push, exactly as the workflow does
+cd <converse-frontends>/apps/governance-auth/dist
+oras push --plain-http 127.0.0.1:5555/governance-auth-callback:sha-$SHA \
+  --artifact-type application/vnd.adorsys.governance-auth-callback.v1 \
+  index.html:text/html
+
+# pull, through the real script
+cd <lightbridge-governance>
+GOVERNANCE_AUTH_CALLBACK_ARTIFACT=127.0.0.1:5555/governance-auth-callback \
+  scripts/vendor-callback-page.sh $SHA
+cargo test -p governance-auth --bin governance-auth callback_page
+```
+
+The script adds `--plain-http` for loopback registries only — `127.0.0.1`, `localhost`, `[::1]` —
+which is the same HTTPS-or-loopback rule [`security.rs`](../../app/governance-auth/src/security.rs)
+applies to the issuer URL, and for the same reason: a local registry has no certificate to present,
+while a remote one downgraded to plaintext is an attack.
+
+⚠️ Provenance always records the **canonical** GHCR location, never the registry a given run
+happened to pull from — the field answers *where does this come from*, and a `127.0.0.1` ref
+committed into it would be a lie about the supply chain. A run using the override says so on
+stderr.
+
 ### Why it can carry `default-src 'none'`
 
 The response sets a Content-Security-Policy whose hashes are **derived from the page itself** at
