@@ -57,12 +57,13 @@ pub fn bind_loopback() -> Result<TcpListener> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{
         io::{Read, Write},
         net::{Shutdown, TcpStream},
         sync::{Mutex, OnceLock},
     };
+
+    use super::*;
 
     /// Serializes tests that bind the single fixed port (Rust runs tests in
     /// parallel; with one port a loser's bind fails and reports "skipped").
