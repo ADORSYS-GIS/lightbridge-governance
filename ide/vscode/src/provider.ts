@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 
-import { getToken, hasCredential } from './auth.js';
+import { NoCredentialError, getToken, resolveAuthState } from './auth.js';
+import { authFailureAdvice } from './auth-failure.js';
+import { reportAuthFailure } from './auth-ui.js';
 import { fetchCatalogue, logCatalogueFailure } from './catalogue.js';
 import { readConfig } from './config.js';
 import { errorMessage, log, redact } from './log.js';
@@ -29,6 +31,13 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
    * case an absent credential means we contribute nothing — we do not prompt,
    * and we do not list models we would then fail to serve. A model in the
    * picker that errors on first use is worse than one that was never offered.
+   *
+   * Withholding is still the right call; being quiet about it was not. When the
+   * developer is the one who asked (`silent: false` — they opened the picker or
+   * the manage entry), an empty list is the answer to a question they just
+   * asked out loud, so the reason is raised there rather than filed in an
+   * output channel they have no reason to open. In silent mode the status-bar
+   * item carries it instead: passive, no prompt, but not invisible.
    */
   async provideLanguageModelChatInformation(
     options: { readonly silent: boolean },
@@ -40,8 +49,16 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       return [];
     }
 
-    if (options.silent && !(await hasCredential(config))) {
-      log().info('No cached session; contributing no models in silent mode.');
+    // Cached, so a burst of picker queries does not become a burst of process
+    // spawns. It gates the *listing* only — `fetchCatalogue` below still calls
+    // `getToken`, so a session that lapsed inside the cache window fails there
+    // rather than being served on the strength of a stale belief.
+    const auth = await resolveAuthState(config);
+    if (!auth.signedIn) {
+      log().info(`No usable session (${auth.kind ?? 'unknown'}); contributing no models.`);
+      if (!options.silent) {
+        await reportAuthFailure(auth.kind ?? 'unknown', config);
+      }
       return [];
     }
 
@@ -52,6 +69,9 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       // purpose: serving a stale catalogue after the gateway has stopped
       // answering is how a model that policy has withdrawn stays selectable.
       logCatalogueFailure(err);
+      if (!options.silent && err instanceof NoCredentialError) {
+        await reportAuthFailure(err.kind, config);
+      }
       return [];
     }
   }
@@ -70,7 +90,27 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     }
 
     // Throws rather than proceeding anonymously. See auth.ts.
-    const accessToken = await getToken(config);
+    //
+    // This is the point of use, and the one place VS Code will render our words
+    // to the developer inside the conversation they were having. So the raw
+    // `NoCredentialError` is re-thrown as a `LanguageModelError`: chat gives a
+    // `LanguageModelError` a first-class failure presentation, while a bare
+    // `Error` from a provider surfaces as a generic "something went wrong" that
+    // reads like the extension is broken. `NoPermissions` is the honest code —
+    // there is no credential, so we have no permission to ask.
+    let accessToken: string;
+    try {
+      accessToken = await getToken(config);
+    } catch (err) {
+      if (err instanceof NoCredentialError) {
+        const advice = authFailureAdvice(err.kind, config.governanceAuthPath);
+        // The notification carries the buttons the chat error cannot: one that
+        // opens a terminal on `governance-auth login`, one that opens the log.
+        void reportAuthFailure(err.kind, config);
+        throw vscode.LanguageModelError.NoPermissions(advice.detail);
+      }
+      throw err;
+    }
 
     const controller = new AbortController();
     const cancel = token.onCancellationRequested(() => controller.abort());

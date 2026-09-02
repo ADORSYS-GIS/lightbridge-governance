@@ -1,18 +1,30 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-// From ./redact.js rather than ./log.js, which would pull `vscode` into this
-// module and make the credential path un-testable outside an extension host.
-import { errorMessage } from './redact.js';
+// From ./auth-failure.js and ./auth-state.js rather than ./log.js, which would
+// pull `vscode` into this module and make the credential path un-testable
+// outside an extension host.
+import { authFailureAdvice, classifyAuthFailure } from './auth-failure.js';
+import { AUTH_STATE_TTL_MS, cachedAuthState, recordAuthOutcome } from './auth-state.js';
+import type { AuthFailureKind } from './auth-failure.js';
+import type { AuthState } from './auth-state.js';
 import type { Config } from './config.js';
 
 const run = promisify(execFile);
 
-/** Thrown when no usable credential could be obtained. Never carries the token. */
+/**
+ * Thrown when no usable credential could be obtained. Never carries the token,
+ * and — see `failure()` below — never carries `governance-auth`'s own stderr
+ * either. `kind` is what callers branch on: an editor cannot offer a
+ * useful next step from a string.
+ */
 export class NoCredentialError extends Error {
-  constructor(message: string) {
+  readonly kind: AuthFailureKind;
+
+  constructor(kind: AuthFailureKind, message: string) {
     super(message);
     this.name = 'NoCredentialError';
+    this.kind = kind;
   }
 }
 
@@ -36,6 +48,10 @@ export class NoCredentialError extends Error {
  * is how an outage becomes an authorization bypass — the gateway would see an
  * anonymous request, and anonymous is precisely the posture this product exists
  * to eliminate.
+ *
+ * Both outcomes are recorded in the auth-state cache. That is deliberate: it
+ * means the cheap answer to "are we signed in?" is a by-product of work the
+ * extension was doing anyway, rather than an extra process spawn.
  */
 export async function getToken(config: Config, signal?: AbortSignal): Promise<string> {
   // `execFile`'s promisified signature widens stdout to string | Buffer once
@@ -51,36 +67,59 @@ export async function getToken(config: Config, signal?: AbortSignal): Promise<st
     };
     ({ stdout } = await run(config.governanceAuthPath, ['token'], opts));
   } catch (err) {
-    // Deliberately does not include stderr verbatim. It is a diagnostic from a
-    // credential tool and is not a place to be casual about what gets echoed.
-    throw new NoCredentialError(
-      `'${config.governanceAuthPath} token' failed (${errorMessage(err)}). ` +
-        `Run 'governance-auth login', or set lightbridge.governanceAuthPath to an absolute path.`,
-    );
+    throw failure(config, classifyAuthFailure(err));
   }
 
   const token = (typeof stdout === 'string' ? stdout : stdout.toString('utf8')).trim();
   if (token === '') {
-    throw new NoCredentialError(
-      `'${config.governanceAuthPath} token' exited 0 but printed nothing. Run 'governance-auth login'.`,
-    );
+    throw failure(config, 'empty-output');
   }
 
+  recordAuthOutcome(true);
   return token;
 }
 
 /**
- * Whether a credential is currently obtainable.
+ * Build the error, and record the state, from a classified kind.
  *
- * Used by the silent path of `provideLanguageModelChatInformation`, which must
- * not prompt. Swallows the reason on purpose — the caller only gets to decide
- * whether to show models, and a boolean is the whole of that decision.
+ * The message is **ours**: the `title` this extension wrote for that kind, not
+ * anything Node or `governance-auth` produced. That is a change from the first
+ * version of this file, whose comment claimed stderr was excluded while
+ * `errorMessage(err)` embedded it — Node's `execFile` builds its message as
+ * `Command failed: <argv>\n<stderr>`, so every byte the credential tool printed
+ * was reaching the output channel and, on the chat path, the transcript.
  */
-export async function hasCredential(config: Config): Promise<boolean> {
+function failure(config: Config, kind: AuthFailureKind): NoCredentialError {
+  recordAuthOutcome(false, kind);
+  return new NoCredentialError(kind, authFailureAdvice(kind, config.governanceAuthPath).title);
+}
+
+/**
+ * The extension's current belief about whether it is signed in.
+ *
+ * Answers from the cache when it can and spawns `governance-auth token` only
+ * when it cannot. Callers get the reason as well as the boolean, because every
+ * caller here has a UI affordance to fill in and "false" alone cannot say
+ * whether the fix is a login or a `PATH`.
+ *
+ * The probe throws nothing: an unusable session is an answer, not an error.
+ */
+export async function resolveAuthState(
+  config: Config,
+  maxAgeMs: number = AUTH_STATE_TTL_MS,
+): Promise<AuthState> {
+  const cached = cachedAuthState(maxAgeMs);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   try {
     await getToken(config);
-    return true;
-  } catch {
-    return false;
+    return recordAuthOutcome(true);
+  } catch (err) {
+    return recordAuthOutcome(
+      false,
+      err instanceof NoCredentialError ? err.kind : classifyAuthFailure(err),
+    );
   }
 }
