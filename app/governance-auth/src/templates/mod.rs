@@ -6,6 +6,12 @@
 //! Only files `governance-auth` **owns outright** -- the shell env files, and
 //! the comment banners it injects into TOML it is already editing.
 //!
+//! The loopback callback page is NOT here. It is built in
+//! `ADORSYS-GIS/converse-frontends` (`apps/governance-auth`) and vendored as
+//! one self-contained HTML file -- see `crate::oauth::callback_page`. It used
+//! to be a template here; moving it out is what let it share the product's
+//! design system instead of approximating it.
+//!
 //! Claude Code's `settings.json`, Codex's `config.toml` and VS Code's
 //! `settings.json` are **merged into, never replaced** (`otel.rs`, and
 //! `config_file.rs`'s "owned entirely by governance-auth" note). Rendering a

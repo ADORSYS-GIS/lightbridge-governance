@@ -36,11 +36,20 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 # second TOML crate. Adds `serde_core`/`serde_spanned` to the tree, both
 # MIT/Apache-2.0 and already covered by `deny.toml`'s allow-list.
 toml_edit = { version = "0.25", features = ["serde"] }
-# Templating for the operator-facing HTML `governance-auth` serves on its
-# loopback callback. `default-features = false` + `builtins`: the default set
-# pulls `loader` (filesystem template loading), which this binary must not have
-# -- templates are `include_str!`d at compile time so a single shipped file has
-# no runtime template directory to find, or to be swapped.
+# Templating for the files `governance-auth` generates whole: the shell env
+# files, the systemd unit and timer, the launchd agent, and the comment banners
+# it injects into TOML it is already editing.
+#
+# ⚠️ NOT the loopback callback page any more. That is built in
+# ADORSYS-GIS/converse-frontends and vendored as one self-contained HTML file
+# (`oauth/callback_page/callback.html`), so it shares the product's visual
+# identity instead of being hand-written markup in a Jinja template. minijinja
+# stays for everything above, which is still template-shaped.
+#
+# `default-features = false` + `builtins`: the default set pulls `loader`
+# (filesystem template loading), which this binary must not have -- templates
+# are `include_str!`d at compile time so a single shipped file has no runtime
+# template directory to find, or to be swapped.
 # `status`'s human dashboard. Here for `user_attended()` -- TTY detection, not
 # colour: `token` runs as a subprocess every few minutes and must stay silent,
 # and stdout is a parsed contract. Styling is a side benefit.
