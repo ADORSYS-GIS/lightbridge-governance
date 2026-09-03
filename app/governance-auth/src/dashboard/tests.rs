@@ -81,6 +81,13 @@ fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
         endpoint: endpoint.map(ToOwned::to_owned),
         applied: endpoint.is_some(),
         has_static_token,
+        // Matches every existing caller's assumption before #272 introduced
+        // these fields: a static token is expected (manual profile) and
+        // Codex is installed, so a missing token still warns as it always
+        // did. Tests of the new daemon/no-Codex behaviour construct these
+        // fields directly rather than through this helper.
+        token_required: true,
+        codex_installed: true,
         stale: false,
     }
 }

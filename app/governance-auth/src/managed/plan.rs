@@ -135,23 +135,18 @@ fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(P
         }
     }
 
-    // `copilot_drain_available`, not `telemetry`: matches
-    // `vscode::configure`'s own gate exactly, for the same reason the
-    // Codex `Authorization` key above is gated on `settings.token.is_some()`
-    // rather than on `telemetry` alone. `telemetry` is true under `daemon`
-    // (the loopback substitute), but nothing drains Copilot's spool there
-    // yet (#272) -- listing these keys as owned on `telemetry` alone would
-    // make a stale `manual`-profile file-exporter config read as "still
-    // ours" forever, so switching to `daemon` would stop writing it but
-    // never retract it.
-    let vscode: Vec<String> = if settings.copilot_drain_available {
-        crate::vscode::settings(&settings.copilot_spool)
-            .into_iter()
-            .map(|(key, _)| key.to_owned())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // `crate::vscode::entries`, not a second listing of its keys: the two
+    // Copilot paths (`manual`'s file exporter, `daemon`'s direct otlp-http --
+    // #272 AC3) write disjoint key sets, and whichever one `vscode::configure`
+    // did NOT just write must be a retraction candidate here or switching
+    // between them stops writing the old path's keys without ever removing
+    // them. Matches the same reasoning as the Codex `Authorization` key
+    // above: `telemetry` alone (`endpoint.is_some()`, true under BOTH
+    // profiles) is not enough to tell which keys this run actually owns.
+    let vscode: Vec<String> = crate::vscode::entries(settings)
+        .into_iter()
+        .map(|(key, _)| key.to_owned())
+        .collect();
 
     // VS Code ships under several flavour directories and any subset may exist,
     // so each is its own target rather than one path.

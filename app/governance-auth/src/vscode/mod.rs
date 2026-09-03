@@ -30,30 +30,41 @@ pub const FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
 /// Setting names are verbatim from
 /// <https://code.visualstudio.com/docs/agents/guides/monitoring-agents>.
 ///
-/// ⚠️ **The exporter written here is `file`, not `otlp-http`, and that is the
-/// whole point.** Copilot's direct HTTP exporter carries no Authorization
-/// header this binary can supply: `github.copilot.chat.otel.headers` exists
-/// but is *static*, and `settings.json` is covered by Settings Sync, so
-/// authenticating it means syncing a bearer off-machine. The `otlp-http` this
-/// used to write had no header at all -- an authenticating collector 401'd
-/// every span while the config looked complete. The file exporter has neither
-/// problem: Copilot appends to `outfile`, and `copilot push` ships those bytes
-/// with a bearer it refreshes itself (`crate::copilot`, `crate::schedule`).
+/// ⚠️ **`manual` writes `file`, not `otlp-http`, and that used to be the whole
+/// point.** Copilot's direct HTTP exporter carries no Authorization header
+/// this binary can supply under `manual`: `github.copilot.chat.otel.headers`
+/// exists but is *static*, and `settings.json` is covered by Settings Sync,
+/// so authenticating it there means syncing a bearer off-machine. The file
+/// exporter has neither problem under `manual`: Copilot appends to `outfile`,
+/// and `copilot push` ships those bytes with a bearer it refreshes itself
+/// (`crate::copilot`, `crate::schedule`).
+///
+/// **`daemon` reintroduces `otlp-http` (#272 AC3), and the reasoning above no
+/// longer applies to it**: the loopback daemon needs no credential at all, so
+/// there is nothing to sync off-machine by pointing Copilot's own exporter at
+/// it directly. `github.copilot.chat.otel.otlpEndpoint` accepting a plain-HTTP
+/// loopback address is the one load-bearing assumption this depends on and
+/// has **not** been independently confirmed against a real VS Code install --
+/// see the epic's (#260) own "settle in week one" note and the manual E2E
+/// protocol this ships alongside. If it is false, `daemon` should fall back to
+/// the file path here, shrinking this to Codex alone; nothing else in #272
+/// depends on it.
 pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     // VS Code Copilot's OTEL surface is telemetry-only -- there is no
     // gateway/inference setting this writer could touch instead. With
-    // nowhere for the drain to push, turning the file exporter on would
-    // spool telemetry to disk for ever and export none of it: a quiet no-op
-    // is the honest outcome, not a `Skipped` about a tool that may not even
-    // be installed here.
+    // neither Copilot path active, turning either exporter on would either
+    // spool telemetry nothing drains (`file`) or point at an endpoint that
+    // was never configured (`otlp-http`): a quiet no-op is the honest
+    // outcome, not a `Skipped` about a tool that may not even be installed
+    // here.
     //
-    // `copilot_drain_available`, not `settings.endpoint.is_none()`: under
-    // `daemon`, `endpoint` holds the loopback substitute, which is `Some`,
-    // but #272 has not rewired Copilot onto the daemon yet, so "nowhere to
-    // push" is still true there. Confirmed live: reading `endpoint` alone
-    // here left the file exporter on with the drain that used to empty it
-    // removed, and the spool grew unbounded.
-    if !settings.copilot_drain_available {
+    // Exactly one of the two flags gates each path -- never
+    // `settings.endpoint.is_none()`, which is `Some` under `daemon` too (the
+    // loopback substitute) regardless of which Copilot path is active.
+    // Confirmed live (pre-#272): reading `endpoint` alone here left the file
+    // exporter on with the drain that used to empty it removed, and the
+    // spool grew unbounded.
+    if !settings.copilot_drain_available && !settings.copilot_otlp_direct {
         return Ok(Vec::new());
     }
 
@@ -63,7 +74,7 @@ pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
         if !dir.is_dir() {
             continue;
         }
-        outcomes.push(configure_flavour(&dir, &settings.copilot_spool)?);
+        outcomes.push(configure_flavour(&dir, settings)?);
     }
     if outcomes.is_empty() {
         outcomes.push(Outcome::Skipped(user_dir(home, "Code")));
@@ -83,7 +94,7 @@ pub fn user_dir(home: &Path, flavour: &str) -> PathBuf {
     base.join(flavour).join("User")
 }
 
-fn configure_flavour(user_dir: &Path, spool: &Path) -> Result<Outcome> {
+fn configure_flavour(user_dir: &Path, settings: &OtelSettings) -> Result<Outcome> {
     let path = user_dir.join("settings.json");
 
     let existing = match fs::read_to_string(&path) {
@@ -108,7 +119,7 @@ fn configure_flavour(user_dir: &Path, spool: &Path) -> Result<Outcome> {
                  cannot be rewritten without discarding them). Leaving it untouched -- add \
                  these settings by hand:\n{}",
                 path.display(),
-                settings_hint(spool)
+                entries_hint(settings)
             )
         })?
     };
@@ -117,7 +128,7 @@ fn configure_flavour(user_dir: &Path, spool: &Path) -> Result<Outcome> {
         .as_object_mut()
         .with_context(|| format!("{} is not a JSON object", path.display()))?;
 
-    for (key, value) in settings(spool) {
+    for (key, value) in entries(settings) {
         object.insert(key.to_owned(), value);
     }
 
@@ -127,9 +138,27 @@ fn configure_flavour(user_dir: &Path, spool: &Path) -> Result<Outcome> {
     Ok(Outcome::Written(path))
 }
 
-/// The exact `settings.json` entries this module owns, in one place so the
-/// "what do we touch" question and the paste-this-by-hand fallback can't
-/// drift apart.
+/// The exact `settings.json` entries this module owns for whichever Copilot
+/// path is active, in one place so the "what do we touch" question, the
+/// paste-this-by-hand fallback, and `managed::plan`'s retraction candidate
+/// list can never drift apart from what this actually writes. Empty when
+/// neither path is active -- see [`configure`]'s own guard.
+pub fn entries(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)> {
+    if settings.copilot_otlp_direct {
+        settings
+            .endpoint
+            .as_deref()
+            .map(otlp_settings)
+            .unwrap_or_default()
+    } else if settings.copilot_drain_available {
+        file_settings(&settings.copilot_spool)
+    } else {
+        Vec::new()
+    }
+}
+
+/// `manual`'s path: Copilot's file exporter, drained out of band by
+/// `copilot push`.
 ///
 /// `captureContent` is pinned to `false`: the collector's redaction is the
 /// authoritative control, but a client that never sends prompts is one fewer
@@ -138,9 +167,8 @@ fn configure_flavour(user_dir: &Path, spool: &Path) -> Result<Outcome> {
 ///
 /// `otlpEndpoint` is deliberately absent. A key this run does not write is a
 /// key `managed::retract_stale` removes on the next `configure`, which is how
-/// the cutover from the 401-ing direct exporter cleans up after itself
-/// (`vscode_direct_export_is_retracted_on_the_next_configure`).
-pub fn settings(spool: &Path) -> Vec<(&'static str, serde_json::Value)> {
+/// switching away from `daemon`'s [`otlp_settings`] cleans up after itself.
+pub fn file_settings(spool: &Path) -> Vec<(&'static str, serde_json::Value)> {
     vec![
         (
             "github.copilot.chat.otel.enabled",
@@ -161,11 +189,40 @@ pub fn settings(spool: &Path) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
+/// `daemon`'s path (#272 AC3): Copilot's own `otlp-http` exporter, pointed
+/// directly at the loopback daemon. No `headers` key: the daemon needs no
+/// credential, which is the entire reason this path is safe where it wasn't
+/// before (see [`configure`]'s module doc).
+///
+/// `outfile` is deliberately absent, for the same reason [`file_settings`]
+/// omits `otlpEndpoint`: retraction is what removes whichever key the OTHER
+/// profile owned.
+pub fn otlp_settings(endpoint: &str) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            "github.copilot.chat.otel.enabled",
+            serde_json::Value::Bool(true),
+        ),
+        (
+            "github.copilot.chat.otel.exporterType",
+            serde_json::Value::String("otlp-http".to_owned()),
+        ),
+        (
+            "github.copilot.chat.otel.otlpEndpoint",
+            serde_json::Value::String(endpoint.to_owned()),
+        ),
+        (
+            "github.copilot.chat.otel.captureContent",
+            serde_json::Value::Bool(false),
+        ),
+    ]
+}
+
 /// Rendered into the error when a JSONC `settings.json` can't be rewritten
 /// losslessly, so declining to edit still leaves the developer with
 /// everything they need to do it themselves.
-fn settings_hint(spool: &Path) -> String {
-    settings(spool)
+fn entries_hint(settings: &OtelSettings) -> String {
+    entries(settings)
         .into_iter()
         .map(|(key, value)| format!("  \"{key}\": {value},"))
         .collect::<Vec<_>>()

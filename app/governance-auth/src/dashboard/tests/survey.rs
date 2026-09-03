@@ -58,6 +58,35 @@ fn no_manifest_means_nothing_was_applied() {
     assert!(!t.has_static_token);
 }
 
+/// #272 AC4: `token_required` tracks the profile, not any manifest content --
+/// a static token is only ever expected under `manual`.
+#[test]
+fn token_required_tracks_the_profile() {
+    let home = crate::managed::testutil::tempdir();
+    for (profile, expected) in [
+        (crate::profile::Profile::Daemon, false),
+        (crate::profile::Profile::Manual, true),
+    ] {
+        let config = crate::config::OauthConfig {
+            profile,
+            ..config()
+        };
+        let telemetry = Telemetry::survey(Some(home.path()), &config);
+        assert_eq!(telemetry.token_required, expected, "profile = {profile}");
+    }
+}
+
+/// #272 AC4: `codex_installed` reads the filesystem, not the config -- a
+/// `~/.codex` that does not exist means Codex is not installed here.
+#[test]
+fn codex_installed_reflects_whether_the_directory_exists() {
+    let home = crate::managed::testutil::tempdir();
+    assert!(!survey(home.path()).codex_installed, "nothing created yet");
+
+    std::fs::create_dir_all(home.path().join(".codex")).expect("mkdir .codex");
+    assert!(survey(home.path()).codex_installed);
+}
+
 /// The regression this module exists for. `otel_token` is never persisted, so
 /// the old `config.otel_token.is_some()` test reported "no OTLP token" on every
 /// run after the login that wrote one. The manifest still knows.

@@ -35,8 +35,19 @@ pub struct Telemetry {
     /// via `otelHeadersHelper` and VS Code Copilot holds no credential at all
     /// since the file-exporter cutover (`crate::vscode`), so Codex is the only
     /// client for which this is the difference between exporting and being
-    /// rejected.
+    /// rejected -- under `manual`. Under `daemon` no client holds a
+    /// credential at all (`TelemetryWiring::resolve`), so the absence of one
+    /// here is the design, not a fault; see `token_required`.
     pub has_static_token: bool,
+    /// `false` under `daemon` (#272 AC4): a missing static token there is
+    /// correct by construction -- the loopback daemon mints its own bearer
+    /// per forward, so Codex needs none. Gates whether `row()` treats
+    /// `has_static_token == false` as something to warn about at all.
+    pub token_required: bool,
+    /// Whether `~/.codex` exists on this machine. `row()`'s only static-token
+    /// warning names Codex specifically; a machine that never installed it
+    /// must not be told a tool it doesn't have "cannot export".
+    pub codex_installed: bool,
     /// Whether a helper command already written into a tool's config names a
     /// command this version no longer has. See [`stale_wiring`].
     pub stale: bool,
@@ -125,6 +136,8 @@ impl Telemetry {
             endpoint: config.otel_endpoint.clone(),
             applied: keys.iter().any(|key| is_otel_key(key)),
             has_static_token: keys.iter().any(|key| is_token_key(key)),
+            token_required: config.profile == crate::profile::Profile::Manual,
+            codex_installed: home.is_some_and(|home| home.join(".codex").is_dir()),
             stale: home.is_some_and(stale_wiring),
         }
     }
@@ -165,6 +178,14 @@ impl Telemetry {
                 format!("configured but not applied yet: run {command}"),
             ),
             (Some(endpoint), true, true) => (endpoint.clone(), Colour::Green, String::new()),
+            // #272 AC4: under `daemon`, no client holds a credential by
+            // design (`TelemetryWiring::resolve`), so a missing static token
+            // is not a fault to report -- and on a machine with no Codex at
+            // all, it never was one under `manual` either (nothing here
+            // holds a static credential except Codex's).
+            (Some(endpoint), true, false) if !self.token_required || !self.codex_installed => {
+                (endpoint.clone(), Colour::Green, String::new())
+            }
             // Yellow, not red, and worded as a consequence rather than a
             // fault: this is the same condition `apply_telemetry` already warns
             // about, and it now names ONE client -- Claude Code refreshes its

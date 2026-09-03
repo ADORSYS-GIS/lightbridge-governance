@@ -72,14 +72,21 @@ pub struct OtelSettings {
     pub copilot_spool: PathBuf,
     /// Whether Copilot's *file* exporter should be turned on at all --
     /// distinct from `endpoint.is_some()`, which under the `daemon` profile
-    /// is true (it holds the loopback substitute) even though nothing drains
-    /// Copilot's spool there yet (#272 has not rewired it onto the daemon).
+    /// is true (it holds the loopback substitute) even though `daemon` uses
+    /// [`Self::copilot_otlp_direct`] for Copilot instead of this path.
     /// `vscode::configure`'s own doc already refuses to turn the exporter on
     /// with nowhere to push -- this is that same rule, reached by profile
     /// instead of by a missing endpoint. `false` here must retract, not just
     /// skip writing, any exporter config a prior `manual` run left behind;
     /// see `managed::plan`'s own use of this field.
     pub copilot_drain_available: bool,
+    /// Whether Copilot's OWN `otlp-http` exporter should point directly at
+    /// `endpoint` (#272 AC3) -- the `daemon` profile's Copilot path, and
+    /// mutually exclusive with `copilot_drain_available` by construction
+    /// (`TelemetryWiring::resolve` never sets both). `false` here must
+    /// retract this path's keys for the same reason
+    /// `copilot_drain_available = false` must retract the file exporter's.
+    pub copilot_otlp_direct: bool,
     /// Long-lived OTLP ingest credential, rendered into the header value both
     /// tools send verbatim. `None` writes the endpoint but no header, which
     /// is only useful against a collector that doesn't authenticate.
@@ -877,6 +884,7 @@ mod tests {
             endpoint: Some("https://otel.example.com".to_owned()),
             copilot_spool: PathBuf::from("/state/governance-auth/copilot-otel.jsonl"),
             copilot_drain_available: true,
+            copilot_otlp_direct: false,
             token: Some(Redacted::new("ingest-token".to_owned())),
             headers_helper: None,
             headers_helper_debounce_ms: 240_000,
@@ -961,6 +969,7 @@ mod tests {
             token: None,
             headers_helper: None,
             copilot_drain_available: false,
+            copilot_otlp_direct: false,
             ..settings()
         };
 
@@ -1015,17 +1024,23 @@ mod tests {
         );
     }
 
-    /// Confirmed live, on a real machine: without `copilot_drain_available`
-    /// gating BOTH `vscode::configure`'s writer AND `managed::plan`'s
-    /// candidate list, switching to `daemon` only stopped WRITING Copilot's
-    /// file exporter -- it never RETRACTED a prior `manual` run's, because
-    /// `telemetry` (`endpoint.is_some()`) stays true under `daemon` (the
-    /// loopback substitute), so `plan()` kept reading the untouched config
-    /// back and recording it as still owned. Copilot kept appending to a
-    /// spool the drain that used to empty it no longer existed to drain --
-    /// unbounded, not just lost.
+    /// Confirmed live, on a real machine (pre-#272): without
+    /// `copilot_drain_available` gating BOTH `vscode::configure`'s writer AND
+    /// `managed::plan`'s candidate list, switching to `daemon` only stopped
+    /// WRITING Copilot's file exporter -- it never RETRACTED a prior `manual`
+    /// run's, because `telemetry` (`endpoint.is_some()`) stays true under
+    /// `daemon` (the loopback substitute), so `plan()` kept reading the
+    /// untouched config back and recording it as still owned. Copilot kept
+    /// appending to a spool the drain that used to empty it no longer existed
+    /// to drain -- unbounded, not just lost.
+    ///
+    /// #272 gave `daemon` a real Copilot path (`copilot_otlp_direct`,
+    /// otlp-http at loopback), so this now proves the FULL switch: `outfile`
+    /// gone (nothing should still be appending to it), `exporterType` changed
+    /// from `file` to `otlp-http` (not merely absent), and `otlpEndpoint`
+    /// present.
     #[test]
-    fn switching_to_daemon_retracts_copilots_file_exporter_not_just_stops_writing_it() {
+    fn switching_to_daemon_retracts_copilots_file_exporter_for_its_own_otlp_path() {
         let home = tempdir();
         fs::create_dir_all(crate::vscode::user_dir(home.path(), "Code")).expect("vscode dir");
         let vscode_path = crate::vscode::user_dir(home.path(), "Code").join("settings.json");
@@ -1036,33 +1051,66 @@ mod tests {
             token: None,
             headers_helper: None,
             copilot_drain_available: false,
+            copilot_otlp_direct: true,
             ..settings()
         };
 
         configure_all(home.path(), &manual, ClientOptOut::default()).expect("manual run");
         let after_manual = fs::read_to_string(&vscode_path).expect("read vscode settings");
         assert!(
-            after_manual.contains("github.copilot.chat.otel.exporterType"),
+            after_manual.contains("\"file\""),
             "manual must enable Copilot's file exporter: {after_manual}"
         );
 
         configure_all(home.path(), &daemon, ClientOptOut::default()).expect("daemon run");
         let after_daemon = fs::read_to_string(&vscode_path).expect("read vscode settings");
-        // `outfile`/`exporterType`, not the full key set: `managed`'s own
-        // digest tracking is string-only (see its module doc -- the same
-        // reason Codex's boolean `log_user_prompt` was never retractable
-        // either), so the JSON *booleans* `enabled`/`captureContent` were
-        // never tracked and stay behind. That is a pre-existing, accepted
-        // limitation, not new here -- what actually stops the spool from
-        // growing is `outfile` (where Copilot writes) and `exporterType`
-        // (which exporter it uses) both being gone.
         assert!(
             !after_daemon.contains("github.copilot.chat.otel.outfile"),
             "daemon must retract the outfile Copilot was writing to: {after_daemon}"
         );
         assert!(
-            !after_daemon.contains("github.copilot.chat.otel.exporterType"),
-            "daemon must retract which exporter Copilot uses: {after_daemon}"
+            after_daemon.contains("\"otlp-http\""),
+            "daemon must switch Copilot onto its own otlp-http exporter, not merely stop the \
+             file one: {after_daemon}"
+        );
+        assert!(
+            after_daemon.contains(OTEL_LOOPBACK_ENDPOINT),
+            "daemon must point Copilot's otlp-http exporter at loopback: {after_daemon}"
+        );
+    }
+
+    /// The other direction: a developer switching FROM `daemon` back TO
+    /// `manual` must have the otlp-http keys retracted, not left beside the
+    /// file exporter's -- the two paths are mutually exclusive by design
+    /// (`TelemetryWiring::resolve`), and Copilot only honours one
+    /// `exporterType` at a time regardless.
+    #[test]
+    fn switching_back_to_manual_retracts_daemons_otlp_exporter() {
+        let home = tempdir();
+        fs::create_dir_all(crate::vscode::user_dir(home.path(), "Code")).expect("vscode dir");
+        let vscode_path = crate::vscode::user_dir(home.path(), "Code").join("settings.json");
+
+        let manual = settings();
+        let daemon = OtelSettings {
+            endpoint: Some(OTEL_LOOPBACK_ENDPOINT.to_owned()),
+            token: None,
+            headers_helper: None,
+            copilot_drain_available: false,
+            copilot_otlp_direct: true,
+            ..settings()
+        };
+
+        configure_all(home.path(), &daemon, ClientOptOut::default()).expect("daemon run");
+        configure_all(home.path(), &manual, ClientOptOut::default()).expect("manual run");
+        let after_manual = fs::read_to_string(&vscode_path).expect("read vscode settings");
+
+        assert!(
+            !after_manual.contains("github.copilot.chat.otel.otlpEndpoint"),
+            "manual must retract daemon's otlpEndpoint: {after_manual}"
+        );
+        assert!(
+            after_manual.contains("github.copilot.chat.otel.outfile"),
+            "manual must write its own outfile: {after_manual}"
         );
     }
 
@@ -1603,6 +1651,7 @@ mod tests {
             client_id: "cli".to_owned(),
             endpoint: None,
             copilot_drain_available: false,
+            copilot_otlp_direct: false,
             headers_helper: None,
             ..settings_with_gateway()
         }

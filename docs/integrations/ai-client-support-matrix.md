@@ -156,7 +156,7 @@ Consequences, both load-bearing:
   tidy — leaving both would be genuinely misleading, since the one you can
   see in `env` is the one being ignored.
 
-### VS Code Copilot cannot hold a refreshing OTLP credential, so it holds none
+### VS Code Copilot cannot hold a refreshing OTLP credential, so it holds none — under `manual`
 
 `github.copilot.chat.otel.headers` **does** exist (verified live 2026-08-31,
 correcting RFC-0003's *Risks* section), but it is a **static** map and
@@ -165,15 +165,41 @@ syncs off-machine. The other channel, `OTEL_EXPORTER_OTLP_HEADERS`, is a
 **global** OpenTelemetry variable that a desktop-launched VS Code never sees
 anyway.
 
-So neither is used. `configure` writes `exporterType: "file"` + `outfile`
-instead, and `governance-auth copilot push` — on a systemd user timer or a
-launchd agent that `configure` installs — ships the spool with a bearer it
+So under `manual`, neither is used. `configure` writes `exporterType: "file"` +
+`outfile` instead, and `governance-auth copilot push` — on a systemd user timer
+or a launchd agent that `configure` installs — ships the spool with a bearer it
 refreshes per wake. Copilot never holds a credential, which removes the problem
 rather than choosing between two bad answers to it.
 
-⚠️ The cost is a spool file nothing bounds
-([#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230)),
-measured growing 73 KB → 315 KB in six minutes of ordinary use.
+The cost is a spool file: durability is `copilot push`'s own concern (#S2,
+tracked separately from the daemon's), bounded to a measured worst case, not a
+hard cap — see `crate::copilot::spool::reclaim`'s module doc.
+
+### The profile axis (#260/#272): under `daemon`, no client above holds a static credential
+
+ADR-0016's local collector daemon (`serve --otel`) changes every row above that
+mentions a credential, for every client at once:
+
+| | `manual` (the rows above) | `daemon` |
+|---|---|---|
+| Claude Code | `otelHeadersHelper` refreshes its own | points at loopback; `otelHeadersHelper` not written (nothing to refresh) |
+| Codex | static `Authorization` header, the credential that can never refresh | points at loopback; **no header written at all** — the static credential this whole epic exists to remove is simply absent |
+| Copilot | file exporter + out-of-band drain (this section) | its **own** `otlp-http` exporter, pointed directly at loopback, no `headers` key |
+
+The daemon mints a fresh bearer per forward and holds it only inside its own
+process (#268) — no client, under `daemon`, holds a credential of any kind.
+Copilot's `otlp-http` exporter was abandoned for `manual` specifically because
+a static header in `settings.json` syncs off-machine; that reasoning does not
+apply to a loopback endpoint nothing off-machine can reach, which is what makes
+reusing `otlp-http` for `daemon` safe where it wasn't for `manual`.
+
+⚠️ **Not yet independently confirmed against a real VS Code install**:
+whether `otlpEndpoint` accepts a plain-`http://` loopback address. Codex and
+Claude Code's loopback wiring is verified (#268/#270's own test suites drive
+the real daemon end to end); Copilot's is verified at the config-file level
+only (`vscode::tests::daemon_profile_points_copilots_own_otlp_exporter_at_loopback`).
+If the exporter refuses plain HTTP, `daemon` should fall back to the file path
+for Copilot alone — nothing else in this table depends on the answer.
 
 ### A JSONC `settings.json` is refused, not rewritten
 

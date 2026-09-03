@@ -62,6 +62,47 @@ fn an_endpoint_without_a_token_names_the_one_client_it_breaks() {
     );
 }
 
+/// #272 AC4: under `daemon` no client holds a static credential by design
+/// (`TelemetryWiring::resolve`), so the same "no token" condition that warns
+/// under `manual` must read as green here, not as a fault nothing can fix.
+#[test]
+fn under_daemon_a_missing_static_token_is_not_a_fault() {
+    let telemetry = Telemetry {
+        endpoint: Some("https://otel.example".to_owned()),
+        applied: true,
+        has_static_token: false,
+        token_required: false,
+        codex_installed: true,
+        stale: false,
+    };
+    let out = table("i", "c", &session(true, true), &telemetry, &[]);
+    let line = row(&out);
+    assert!(
+        !line.contains("cannot export"),
+        "daemon needs no static token, so this must not read as broken: {line}"
+    );
+}
+
+/// #272 AC4's other half: a machine with no Codex installed must not be told
+/// Codex "cannot export" -- there is no Codex here to be broken.
+#[test]
+fn with_no_codex_installed_the_warning_does_not_name_it() {
+    let telemetry = Telemetry {
+        endpoint: Some("https://otel.example".to_owned()),
+        applied: true,
+        has_static_token: false,
+        token_required: true,
+        codex_installed: false,
+        stale: false,
+    };
+    let out = table("i", "c", &session(true, true), &telemetry, &[]);
+    let line = row(&out);
+    assert!(
+        !line.contains("Codex"),
+        "nothing here names a tool that isn't installed: {line}"
+    );
+}
+
 /// `status` must not make network calls -- it answers fastest when something is
 /// already broken, and a probe would hang behind an unreachable collector. This
 /// pins that the row reports CONFIGURATION, never reachability.
@@ -112,6 +153,8 @@ fn a_configured_but_unapplied_endpoint_says_so() {
         endpoint: Some("https://otel.example".to_owned()),
         applied: false,
         has_static_token: false,
+        token_required: true,
+        codex_installed: true,
         stale: false,
     };
     let out = table("i", "c", &session(true, true), &unapplied, &[]);

@@ -34,12 +34,22 @@ pub(super) struct TelemetryWiring {
     pub wants_headers_helper: bool,
     /// `false` under `daemon`, `endpoint.is_some()` under `manual` --
     /// distinct from `endpoint` itself, which is `Some` under `daemon` too
-    /// (the loopback substitute). Copilot has no path to the daemon yet
-    /// (#272), so `daemon` must turn its file exporter OFF, not point it at
-    /// an endpoint nothing drains -- see
+    /// (the loopback substitute). `manual`'s Copilot path (the file exporter
+    /// plus `copilot push`) has no reason to run under `daemon`, where
+    /// [`Self::copilot_otlp_direct`] is Copilot's path instead -- see
     /// [`crate::otel::OtelSettings::copilot_drain_available`], which this
     /// feeds directly.
     pub copilot_drain_available: bool,
+    /// `true` under `daemon` with an endpoint configured (#272 AC3): Copilot
+    /// points its OWN `otlp-http` exporter at the loopback daemon, needing no
+    /// credential at all -- the reason that exporter was abandoned in favour
+    /// of the file (a static header syncing off-machine via Settings Sync)
+    /// does not apply to a loopback endpoint nothing can reach without also
+    /// being on this machine. Mutually exclusive with
+    /// [`Self::copilot_drain_available`] by construction: exactly one of the
+    /// two Copilot paths is active per profile, never both, never neither
+    /// while an endpoint is configured.
+    pub copilot_otlp_direct: bool,
 }
 
 impl TelemetryWiring {
@@ -60,6 +70,7 @@ impl TelemetryWiring {
             token,
             wants_headers_helper: !is_daemon,
             copilot_drain_available: !is_daemon && config.otel_endpoint.is_some(),
+            copilot_otlp_direct: is_daemon && config.otel_endpoint.is_some(),
         }
     }
 }
@@ -151,15 +162,16 @@ mod tests {
         }
     }
 
-    /// Confirmed live: without this, `daemon` substitutes a non-empty
-    /// loopback `endpoint`, `vscode::configure`'s `endpoint.is_none()` gate
-    /// reads that as "turn the file exporter on", and Copilot's spool grows
-    /// forever with the drain that used to empty it removed (#272 has not
-    /// rewired Copilot onto the daemon). `endpoint` itself must still carry
-    /// the loopback value -- Claude Code and Codex still need it -- so the
-    /// fix is a second signal, not touching `endpoint`.
+    /// Confirmed live (pre-#272): without `copilot_drain_available` gated on
+    /// the profile, `daemon`'s loopback `endpoint` substitution alone made
+    /// `vscode::configure`'s old `endpoint.is_none()` gate read as "turn the
+    /// file exporter on", and Copilot's spool grew forever with the drain
+    /// that used to empty it removed. `endpoint` itself must still carry the
+    /// loopback value -- Claude Code and Codex still need it -- so the fix is
+    /// a second signal, not touching `endpoint`. #272 gave that signal a
+    /// destination (`copilot_otlp_direct`) instead of leaving it unused.
     #[test]
-    fn daemon_profile_has_an_endpoint_but_no_copilot_drain() {
+    fn daemon_profile_has_an_endpoint_with_direct_otlp_not_the_file_drain() {
         let config = OauthConfig {
             otel_endpoint: Some("https://otel.example".to_owned()),
             profile: crate::profile::Profile::Daemon,
@@ -172,7 +184,11 @@ mod tests {
         );
         assert!(
             !wiring.copilot_drain_available,
-            "nothing drains Copilot's spool under `daemon` until #272 lands"
+            "the file+drain path is `manual`'s, not `daemon`'s"
+        );
+        assert!(
+            wiring.copilot_otlp_direct,
+            "daemon`'s Copilot path is its own otlp-http exporter at loopback"
         );
     }
 
@@ -184,10 +200,33 @@ mod tests {
                 profile: crate::profile::Profile::Manual,
                 ..config()
             };
+            let wiring = TelemetryWiring::resolve(&config);
             assert_eq!(
-                TelemetryWiring::resolve(&config).copilot_drain_available,
-                expected,
+                wiring.copilot_drain_available, expected,
                 "endpoint = {endpoint:?}"
+            );
+            assert!(
+                !wiring.copilot_otlp_direct,
+                "`manual` never uses the direct otlp-http path"
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_copilot_path_is_ever_active_at_once() {
+        for profile in [
+            crate::profile::Profile::Daemon,
+            crate::profile::Profile::Manual,
+        ] {
+            let config = OauthConfig {
+                otel_endpoint: Some("https://otel.example".to_owned()),
+                profile,
+                ..config()
+            };
+            let wiring = TelemetryWiring::resolve(&config);
+            assert_ne!(
+                wiring.copilot_drain_available, wiring.copilot_otlp_direct,
+                "{profile} must pick exactly one Copilot path, not both or neither"
             );
         }
     }

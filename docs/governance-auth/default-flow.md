@@ -25,6 +25,16 @@ longer resolves.
 bearer gets 401 and drops every span silently. That is the correct posture, and
 it is why one of the three tools below has a caveat rather than a clean path.
 
+⚠️ **Every telemetry key and caveat below describes `--profile manual`** (the
+compiled default before #268/#269/#272; `configure --profile manual` keeps it
+exactly as documented here). Under `--profile daemon` (ADR-0016), all three
+tools instead point at a local loopback collector (`serve --otel`) that mints
+its own bearer per forward — **no client below holds a credential of any
+kind** under `daemon`, which removes the "one tool has a caveat" line above
+entirely. See
+[`ai-client-support-matrix.md`'s profile axis](../integrations/ai-client-support-matrix.md#the-profile-axis-260272-under-daemon-no-client-above-holds-a-static-credential)
+for the per-client detail; this page is not re-verified per profile below.
+
 ## Step 1 — install the binary
 
 ```bash
