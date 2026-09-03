@@ -6,6 +6,7 @@
 //! manifest, and it is the one that proves an already-configured machine ends
 //! up with the new exporter and not both.
 
+mod daemon;
 mod retraction;
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -80,48 +81,8 @@ fn vscode_settings_are_merged_into_an_existing_user_config() {
     );
 }
 
-/// #272 AC3: `daemon`'s Copilot path is its own `otlp-http` exporter at
-/// loopback, not the file one -- the mirror of the test above for the other
-/// profile.
-#[test]
-fn daemon_profile_points_copilots_own_otlp_exporter_at_loopback() {
-    let home = tempdir();
-    let user = user_dir(home.path(), "Code");
-    fs::create_dir_all(&user).expect("create VS Code User dir");
-
-    let daemon = OtelSettings {
-        endpoint: Some("http://127.0.0.1:17457".to_owned()),
-        copilot_drain_available: false,
-        copilot_otlp_direct: true,
-        ..settings()
-    };
-    let outcomes = configure(home.path(), &daemon).expect("configure vscode");
-    assert!(matches!(outcomes.as_slice(), [Outcome::Written(_)]));
-
-    let value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(user.join("settings.json")).expect("read"))
-            .expect("valid JSON out");
-    assert_eq!(value["github.copilot.chat.otel.enabled"], true);
-    assert_eq!(value["github.copilot.chat.otel.exporterType"], "otlp-http");
-    assert_eq!(
-        value["github.copilot.chat.otel.otlpEndpoint"],
-        "http://127.0.0.1:17457"
-    );
-    assert_eq!(value["github.copilot.chat.otel.captureContent"], false);
-    assert!(
-        value.get("github.copilot.chat.otel.outfile").is_none(),
-        "daemon's path writes no outfile -- nothing drains one"
-    );
-    // No `headers` key of any kind: the whole point of pointing Copilot's own
-    // exporter at the loopback daemon is that it needs no credential.
-    assert!(
-        !fs::read_to_string(user.join("settings.json"))
-            .expect("read")
-            .to_lowercase()
-            .contains("header"),
-        "the daemon path must carry no credential"
-    );
-}
+// #272 AC3's daemon-profile Copilot path has its own file, `daemon.rs`, for
+// the same LoC-ceiling reason `retraction.rs` does.
 
 #[test]
 fn a_jsonc_vscode_config_is_refused_rather_than_stripped_of_its_comments() {

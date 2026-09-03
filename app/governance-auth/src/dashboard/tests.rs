@@ -16,6 +16,7 @@ mod spool_held;
 mod survey;
 mod targets;
 mod telemetry;
+mod telemetry_profile;
 
 /// [`render`] with the two Copilot rows fixed at "nothing surveyed", so the
 /// tests that predate them keep asserting on exactly what they did before and
@@ -81,11 +82,7 @@ fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
         endpoint: endpoint.map(ToOwned::to_owned),
         applied: endpoint.is_some(),
         has_static_token,
-        // Matches every existing caller's assumption before #272 introduced
-        // these fields: a static token is expected (manual profile) and
-        // Codex is installed, so a missing token still warns as it always
-        // did. Tests of the new daemon/no-Codex behaviour construct these
-        // fields directly rather than through this helper.
+        // Pre-#272 assumption: manual profile, Codex installed.
         token_required: true,
         codex_installed: true,
         stale: false,

@@ -103,6 +103,10 @@ fn with_no_codex_installed_the_warning_does_not_name_it() {
     );
 }
 
+// #272 AC4's `token_required`/`codex_installed` derivations (via
+// `Telemetry::survey`, not the struct literals this file uses) are pinned in
+// `telemetry_profile.rs` -- purely to stay under the LoC ceiling.
+
 /// `status` must not make network calls -- it answers fastest when something is
 /// already broken, and a probe would hang behind an unreachable collector. This
 /// pins that the row reports CONFIGURATION, never reachability.
