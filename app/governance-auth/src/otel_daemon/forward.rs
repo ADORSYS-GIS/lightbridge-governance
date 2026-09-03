@@ -7,9 +7,8 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::{config::OauthConfig, copilot, redacted::Redacted};
-
 pub use crate::copilot::{Signal, Verdict};
+use crate::{config::OauthConfig, copilot, redacted::Redacted};
 
 /// Posts one payload to the governed collector for the given signal.
 ///
