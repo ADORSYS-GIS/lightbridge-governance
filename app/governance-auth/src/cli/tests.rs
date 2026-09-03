@@ -38,6 +38,7 @@ fn the_tree_is_the_documented_one() {
         &["status"],
         &["configure"],
         &["logout"],
+        &["serve", "otel"],
         &["otel", "headers"],
         &["copilot", "push"],
         &["self", "update"],

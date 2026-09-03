@@ -13,13 +13,6 @@ use anyhow::{Context, Result};
 /// value. In the window that matters: **below 32768** (outside both OS
 /// ephemeral ranges) and **above 1024** (no root needed). The specific value
 /// is arbitrary; the window is load-bearing (ADR-0015).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "shipped contract for #268's `serve --otel` daemon and #270/#271; remove once a non-test consumer exists"
-    )
-)]
 pub const OTEL_PORT: u16 = 17457;
 
 /// The URL shape clients are configured to post OTLP to. Derived from
@@ -39,13 +32,6 @@ pub const OTEL_LOOPBACK_ENDPOINT: &str = const_format::formatcp!("http://127.0.0
 /// Binds the fixed loopback OTEL port, refusing to fall back to an ephemeral
 /// one — a fallback would leave the receiver where no client's telemetry can
 /// arrive, and every client's bytes would vanish silently, so it fails loudly.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "receiver bootstrapping for #268's `serve --otel` daemon; remove once the daemon lands"
-    )
-)]
 pub fn bind_loopback() -> Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", OTEL_PORT))
         .with_context(|| format!("binding the OTEL loopback receiver on 127.0.0.1:{OTEL_PORT}"))

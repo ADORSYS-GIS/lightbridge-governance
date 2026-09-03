@@ -9,7 +9,7 @@
 
 use clap::Subcommand;
 
-use super::scopes::{CopilotCommand, OtelCommand, SelfCommand};
+use super::scopes::{CopilotCommand, OtelCommand, SelfCommand, ServeCommand};
 use crate::optout::ClientOptOut;
 
 #[derive(Debug, Subcommand)]
@@ -68,6 +68,12 @@ pub enum Command {
     },
     /// Remove the cached session, revoking the refresh token first.
     Logout,
+    /// Run the telemetry daemon: receive OTLP on loopback, forward it
+    /// authenticated.
+    Serve {
+        #[command(subcommand)]
+        command: ServeCommand,
+    },
     /// OTLP export helpers.
     Otel {
         #[command(subcommand)]

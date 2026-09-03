@@ -70,7 +70,10 @@ pub enum Verdict {
 ///
 /// What is left is the collector saying the *content* is unacceptable: a
 /// malformed payload (400/422) or one too large for its body limit (413).
-fn is_permanent(status: reqwest::StatusCode) -> bool {
+///
+/// `pub(crate)`: shared with [`crate::otel_daemon::forward`] so the daemon
+/// and the drain agree on what "permanent" means.
+pub(crate) fn is_permanent(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
         reqwest::StatusCode::BAD_REQUEST

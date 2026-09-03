@@ -49,10 +49,10 @@ use clap::Parser;
 pub use invoke::{
     COPILOT_PUSH, OTEL_HEADERS_TAIL, TOKEN_TAIL, otel_headers_command, token_command,
 };
-use scopes::{CopilotCommand, OtelCommand, SelfCommand};
+use scopes::{CopilotCommand, OtelCommand, SelfCommand, ServeCommand};
 use verbs::Command;
 
-use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, update};
+use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, otel_daemon, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -115,6 +115,9 @@ impl Cli {
             Command::Status => dashboard::status(&self.oauth.resolve()?),
             Command::Configure { optout } => oauth::configure(&self.oauth.resolve()?, optout),
             Command::Logout => oauth::logout(http, &self.oauth.resolve()?).await,
+            Command::Serve {
+                command: ServeCommand::Otel,
+            } => otel_daemon::serve(http, &self.oauth.resolve()?).await,
             Command::Otel {
                 command: OtelCommand::Headers,
             } => oauth::otel_headers(http, &self.oauth.resolve()?).await,
