@@ -1,4 +1,4 @@
-//! `serve otel` (issue #268): the forwarding surface — any-path admission (A2),
+//! `serve --otel` (issue #268): the forwarding surface — any-path admission (A2),
 //! signal routing, identity stamping (A6), and protobuf passthrough (the F1 fix).
 //!
 //! Drives the real binary as a subprocess against a mock (or raw-bytes)

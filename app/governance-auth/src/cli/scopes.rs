@@ -42,22 +42,6 @@ pub enum OtelCommand {
     Headers,
 }
 
-/// `governance-auth serve …` -- the long-running telemetry daemon.
-///
-/// One verb for now (#268's receiver); sibling stories (#S3 service install,
-/// #S4 health reporting) add to this scope.
-#[derive(Debug, Subcommand)]
-pub enum ServeCommand {
-    /// Receive OTLP on loopback and forward it to the governed collector.
-    ///
-    /// Listens on the fixed loopback port (ADR-0016), accepts OTLP/HTTP on
-    /// any path, mints a fresh bearer per forward through the same `oauth`
-    /// path `token` uses, and never hands a credential to a client. Fails
-    /// closed: a refused mint or an unreachable collector means the bytes are
-    /// retained in memory, never forwarded unauthenticated and never dropped.
-    Otel,
-}
-
 /// `governance-auth self …` -- this binary acting on itself.
 #[derive(Debug, Subcommand)]
 pub enum SelfCommand {

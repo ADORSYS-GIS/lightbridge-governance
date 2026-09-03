@@ -24,7 +24,7 @@ pub async fn post(
 ) -> Result<Verdict> {
     let base = config.otel_endpoint.as_deref().context(
         "no collector configured: supply --otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT before \
-         running `serve otel`",
+         running `serve --otel`",
     )?;
     let url = copilot::endpoint(base, signal);
     // Preserve the wire format: a JSON payload (possibly identity-stamped) goes

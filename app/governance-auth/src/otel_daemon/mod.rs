@@ -1,4 +1,4 @@
-//! `serve otel`: the local collector daemon (ADR-0016, issue #268).
+//! `serve --otel`: the local collector daemon (ADR-0016, issue #268).
 //!
 //! Receives OTLP/HTTP on the fixed loopback port, mints a fresh bearer per
 //! forward through the same `oauth` path `token` uses, and posts to the
@@ -55,7 +55,7 @@ struct DaemonState {
 pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     config.otel_endpoint.as_deref().context(
         "no collector configured: supply --otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT (or set \
-         `otel_endpoint` in your config file) before running `serve otel`",
+         `otel_endpoint` in your config file) before running `serve --otel`",
     )?;
 
     let listener = otel_port::bind_loopback()?;

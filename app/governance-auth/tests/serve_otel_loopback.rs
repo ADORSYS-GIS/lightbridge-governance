@@ -1,4 +1,4 @@
-//! `serve otel` (issue #268): loopback-only binding (A1). The daemon binds
+//! `serve --otel` (issue #268): loopback-only binding (A1). The daemon binds
 //! `127.0.0.1`, never a wildcard, so a non-loopback address of this host must
 //! refuse the connection.
 //!

@@ -1,4 +1,4 @@
-//! A minimal raw-bytes OTLP collector for the `serve otel` tests.
+//! A minimal raw-bytes OTLP collector for the `serve --otel` tests.
 //!
 //! Accepts **any** body and records `(path, content-type, bytes)`. Exists
 //! because the shared [`super::mock_collector`] only accepts JSON, and the

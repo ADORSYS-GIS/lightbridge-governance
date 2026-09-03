@@ -44,12 +44,12 @@ mod invoke;
 mod scopes;
 mod verbs;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 pub use invoke::{
     COPILOT_PUSH, OTEL_HEADERS_TAIL, TOKEN_TAIL, otel_headers_command, token_command,
 };
-use scopes::{CopilotCommand, OtelCommand, SelfCommand, ServeCommand};
+use scopes::{CopilotCommand, OtelCommand, SelfCommand};
 use verbs::Command;
 
 use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, otel_daemon, update};
@@ -115,9 +115,11 @@ impl Cli {
             Command::Status => dashboard::status(&self.oauth.resolve()?),
             Command::Configure { optout } => oauth::configure(&self.oauth.resolve()?, optout),
             Command::Logout => oauth::logout(http, &self.oauth.resolve()?).await,
-            Command::Serve {
-                command: ServeCommand::Otel,
-            } => otel_daemon::serve(http, &self.oauth.resolve()?).await,
+            Command::Serve { otel: true } => otel_daemon::serve(http, &self.oauth.resolve()?).await,
+            // No signal source named -- mirrors `apply_telemetry`'s "nothing
+            // to configure" rather than silently exiting 0 having served
+            // nothing.
+            Command::Serve { otel: false } => bail!("nothing to serve: pass --otel"),
             Command::Otel {
                 command: OtelCommand::Headers,
             } => oauth::otel_headers(http, &self.oauth.resolve()?).await,

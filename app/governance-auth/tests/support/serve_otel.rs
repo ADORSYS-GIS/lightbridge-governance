@@ -1,4 +1,4 @@
-//! The `serve otel` daemon (issue #268) driven for real: spawn it as a
+//! The `serve --otel` daemon (issue #268) driven for real: spawn it as a
 //! subprocess, poke its fixed loopback port, and tear it down.
 //!
 //! ## One fixed port, therefore one process at a time
@@ -48,14 +48,14 @@ fn port_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// A running `serve otel` daemon. Holds the fixed-port lock until `stop`.
+/// A running `serve --otel` daemon. Holds the fixed-port lock until `stop`.
 pub struct Daemon {
     child: Child,
     _port_guard: MutexGuard<'static, ()>,
 }
 
 impl Daemon {
-    /// Spawns `serve otel --otel-endpoint <collector>` and returns without
+    /// Spawns `serve --otel --otel-endpoint <collector>` and returns without
     /// waiting -- the daemon runs until killed. `extra` carries any additional
     /// flags a test needs.
     pub async fn start(harness: &Harness, collector: &str, extra: &[&str]) -> Result<Self> {
@@ -73,13 +73,15 @@ impl Daemon {
             .arg("--client-id")
             .arg(harness.client_id())
             .arg("serve")
-            .arg("otel")
+            .arg("--otel")
             .arg("--otel-endpoint")
             .arg(collector)
             .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let child = command.spawn().context("spawning the serve otel daemon")?;
+        let child = command
+            .spawn()
+            .context("spawning the serve --otel daemon")?;
         let daemon = Self {
             child,
             _port_guard: guard,
@@ -91,7 +93,7 @@ impl Daemon {
     /// Blocks until the daemon has bound the loopback port, so callers can POST
     /// without racing the spawn.
     pub async fn until_ready(&self) -> Result<()> {
-        interrupt::until("the serve otel daemon to bind the loopback port", || {
+        interrupt::until("the serve --otel daemon to bind the loopback port", || {
             Ok(TcpStream::connect(("127.0.0.1", 17457)).is_ok())
         })
         .await

@@ -1,4 +1,4 @@
-//! `serve otel` (issue #268): fail-closed — the daemon never forwards anything
+//! `serve --otel` (issue #268): fail-closed — the daemon never forwards anything
 //! it could not authenticate, and a refused/unreachable collector never loses
 //! bytes. Together these are A4: the unavailable branch is the restrictive one.
 //!

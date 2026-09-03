@@ -1,4 +1,4 @@
-//! OTLP payload + session fixtures for the `serve otel` tests.
+//! OTLP payload + session fixtures for the `serve --otel` tests.
 //!
 //! Split out of [`super::serve_otel`] so that support module stays under the
 //! repo's 200-LoC gate: the `Daemon` subprocess driver lives there, the wire
