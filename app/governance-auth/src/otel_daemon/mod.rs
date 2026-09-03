@@ -16,11 +16,15 @@
 //!
 //! ## And the second: nothing is lost quietly
 //!
-//! Bytes go to the in-memory spool on any refusal and are never dropped. The
-//! spool is in-memory and lost on process exit — **that is accepted for #268
-//! only** because durability (#S2) is a separate story that must land before
-//! the daemon becomes the default profile.
+//! Bytes go to the durable spool on any refusal and are never dropped.
+//! [`spool::DurableSpool`] writes to disk before this handler ever answers
+//! the client, so a killed daemon (or a killed laptop) loses at most the
+//! narrow, documented exception in that module's doc -- not everything that
+//! was in flight. That durability (#269) is what makes `daemon` safe to
+//! become the default profile; #268 shipped with an accepted in-memory-only
+//! gap this closes.
 
+mod checkpoint;
 mod classify;
 mod drain;
 mod forward;
@@ -42,7 +46,7 @@ use crate::{config::OauthConfig, otel_port};
 struct DaemonState {
     http: reqwest::Client,
     config: OauthConfig,
-    spool: Arc<Mutex<spool::Spool>>,
+    spool: Arc<Mutex<spool::DurableSpool>>,
 }
 
 /// Runs the daemon until a shutdown signal arrives.
@@ -72,17 +76,28 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     let state = DaemonState {
         http: http.clone(),
         config: config.clone(),
-        spool: Arc::new(Mutex::new(spool::Spool::new())),
+        spool: Arc::new(Mutex::new(
+            spool::DurableSpool::open().context("opening the daemon's durable spool")?,
+        )),
     };
+
+    // Keeps retrying independent of client traffic -- see `drain::pump`'s
+    // doc for why the opportunistic drain in `handle_request` alone is not
+    // enough for AC1/AC2. Aborted below once the server itself stops; a
+    // detached task would otherwise outlive the listener with nothing left
+    // to hand its results to.
+    let pump = tokio::spawn(drain::pump(state.clone()));
 
     let router = Router::new()
         .fallback(any(handle_request))
         .with_state(state);
 
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .context("running the OTEL loopback receiver")
+        .context("running the OTEL loopback receiver");
+    pump.abort();
+    result
 }
 
 /// Handles one OTLP request: receive -> classify -> mint -> normalize ->

@@ -15,7 +15,6 @@
 //! for whoever is looking, not for this process.
 
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -23,7 +22,8 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{private_file, push::Signal, quarantine::Quarantine, spool::Identity};
+use super::{push::Signal, quarantine::Quarantine, spool::Identity};
+use crate::durable_state;
 
 /// The file name under the state dir. Sibling of the session files, which are
 /// named by `sha256(issuer + client_id)` -- this one is not, deliberately:
@@ -143,38 +143,17 @@ pub fn path(state_dir: &Path) -> PathBuf {
 }
 
 /// A missing checkpoint means "never drained", which is the honest starting
-/// state. An unreadable one is an error -- see the module doc.
+/// state. An unreadable one is an error -- see the module doc, and
+/// [`durable_state`]'s for the write/read discipline this delegates to.
 pub fn load(path: &Path) -> Result<Checkpoint> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Checkpoint::default());
-        }
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
-    serde_json::from_slice(&bytes).with_context(|| {
-        format!(
-            "parsing the Copilot push checkpoint at {}. Delete it to restart the drain from the \
-             beginning of the spool (which re-sends records the collector may already have).",
-            path.display()
-        )
-    })
+    durable_state::load(path).context("reading the Copilot push checkpoint")
 }
 
 /// Writes tmp-then-rename so a reader never sees a half-written offset, and
 /// an interrupted write leaves the previous checkpoint intact rather than a
 /// truncated one this module would then refuse to parse.
 pub fn store(path: &Path, checkpoint: &Checkpoint) -> Result<()> {
-    let dir = path
-        .parent()
-        .context("the checkpoint path has no parent directory")?;
-    private_file::create_dir(dir)?;
-
-    let bytes = serde_json::to_vec(checkpoint).context("serialising the push checkpoint")?;
-    let tmp = path.with_extension("json.tmp");
-    private_file::write(&tmp, &bytes)?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
+    durable_state::store(path, checkpoint).context("writing the Copilot push checkpoint")
 }
 
 pub fn now_unix() -> Result<u64> {

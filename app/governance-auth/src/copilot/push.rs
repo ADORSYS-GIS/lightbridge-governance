@@ -8,6 +8,7 @@
 //! token rejected, 404 = wrong base URL, 413 = batch too large).
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::redacted::Redacted;
@@ -15,7 +16,11 @@ use crate::redacted::Redacted;
 /// The two OTLP/HTTP signal paths this drain uses. Traces are absent because
 /// Copilot's file exporter writes none -- adding a `/v1/traces` POST of an
 /// empty payload would be a request that can only ever fail or no-op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` are for `otel_daemon::spool` (#269), which
+/// records which signal a retained payload was routed on inside its own
+/// durable envelope -- a retry has to re-post to the same path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Signal {
     Metrics,
     Logs,

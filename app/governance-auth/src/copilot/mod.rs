@@ -73,11 +73,17 @@ mod metrics;
 mod otlp;
 mod pass;
 mod points;
-mod private_file;
+// `pub(crate)`: the file-identity/tailer, the private-file write discipline
+// and the two-separate-wakes quarantine table are all content-agnostic --
+// nothing in any of the three parses a Copilot record -- so `otel_daemon`'s
+// durable spool (#269) reuses them rather than re-implementing an offset
+// tailer and a 0600-file writer a second time. See `otel_daemon::spool`'s
+// module doc for exactly what is and is not shared this way.
+pub(crate) mod private_file;
 mod push;
-mod quarantine;
+pub(crate) mod quarantine;
 mod record;
-mod spool;
+pub(crate) mod spool;
 mod status;
 mod sweep;
 
