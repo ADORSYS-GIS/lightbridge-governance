@@ -32,6 +32,14 @@ pub(super) struct TelemetryWiring {
     /// doesn't know whether an endpoint was configured, only what the
     /// profile implies if one was.
     pub wants_headers_helper: bool,
+    /// `false` under `daemon`, `endpoint.is_some()` under `manual` --
+    /// distinct from `endpoint` itself, which is `Some` under `daemon` too
+    /// (the loopback substitute). Copilot has no path to the daemon yet
+    /// (#272), so `daemon` must turn its file exporter OFF, not point it at
+    /// an endpoint nothing drains -- see
+    /// [`crate::otel::OtelSettings::copilot_drain_available`], which this
+    /// feeds directly.
+    pub copilot_drain_available: bool,
 }
 
 impl TelemetryWiring {
@@ -51,6 +59,7 @@ impl TelemetryWiring {
             endpoint,
             token,
             wants_headers_helper: !is_daemon,
+            copilot_drain_available: !is_daemon && config.otel_endpoint.is_some(),
         }
     }
 }
@@ -138,6 +147,47 @@ mod tests {
             assert!(
                 TelemetryWiring::resolve(&config).endpoint.is_none(),
                 "{profile} must not manufacture an endpoint nothing configured"
+            );
+        }
+    }
+
+    /// Confirmed live: without this, `daemon` substitutes a non-empty
+    /// loopback `endpoint`, `vscode::configure`'s `endpoint.is_none()` gate
+    /// reads that as "turn the file exporter on", and Copilot's spool grows
+    /// forever with the drain that used to empty it removed (#272 has not
+    /// rewired Copilot onto the daemon). `endpoint` itself must still carry
+    /// the loopback value -- Claude Code and Codex still need it -- so the
+    /// fix is a second signal, not touching `endpoint`.
+    #[test]
+    fn daemon_profile_has_an_endpoint_but_no_copilot_drain() {
+        let config = OauthConfig {
+            otel_endpoint: Some("https://otel.example".to_owned()),
+            profile: crate::profile::Profile::Daemon,
+            ..config()
+        };
+        let wiring = TelemetryWiring::resolve(&config);
+        assert!(
+            wiring.endpoint.is_some(),
+            "Claude Code and Codex still need the loopback endpoint"
+        );
+        assert!(
+            !wiring.copilot_drain_available,
+            "nothing drains Copilot's spool under `daemon` until #272 lands"
+        );
+    }
+
+    #[test]
+    fn manual_profile_has_a_copilot_drain_exactly_when_an_endpoint_is_configured() {
+        for (endpoint, expected) in [(Some("https://otel.example"), true), (None, false)] {
+            let config = OauthConfig {
+                otel_endpoint: endpoint.map(str::to_owned),
+                profile: crate::profile::Profile::Manual,
+                ..config()
+            };
+            assert_eq!(
+                TelemetryWiring::resolve(&config).copilot_drain_available,
+                expected,
+                "endpoint = {endpoint:?}"
             );
         }
     }

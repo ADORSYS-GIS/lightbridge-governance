@@ -41,12 +41,19 @@ pub const FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
 /// with a bearer it refreshes itself (`crate::copilot`, `crate::schedule`).
 pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     // VS Code Copilot's OTEL surface is telemetry-only -- there is no
-    // gateway/inference setting this writer could touch instead. With no
-    // collector there is nowhere for the drain to push, so turning the file
-    // exporter on would spool telemetry to disk for ever and export none of
-    // it: a quiet no-op is the honest outcome, not a `Skipped` about a tool
-    // that may not even be installed here.
-    if settings.endpoint.is_none() {
+    // gateway/inference setting this writer could touch instead. With
+    // nowhere for the drain to push, turning the file exporter on would
+    // spool telemetry to disk for ever and export none of it: a quiet no-op
+    // is the honest outcome, not a `Skipped` about a tool that may not even
+    // be installed here.
+    //
+    // `copilot_drain_available`, not `settings.endpoint.is_none()`: under
+    // `daemon`, `endpoint` holds the loopback substitute, which is `Some`,
+    // but #272 has not rewired Copilot onto the daemon yet, so "nowhere to
+    // push" is still true there. Confirmed live: reading `endpoint` alone
+    // here left the file exporter on with the drain that used to empty it
+    // removed, and the spool grew unbounded.
+    if !settings.copilot_drain_available {
         return Ok(Vec::new());
     }
 

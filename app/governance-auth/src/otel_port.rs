@@ -13,13 +13,12 @@ use anyhow::{Context, Result};
 /// value. In the window that matters: **below 32768** (outside both OS
 /// ephemeral ranges) and **above 1024** (no root needed). The specific value
 /// is arbitrary; the window is load-bearing (ADR-0015).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "shipped contract for #268's `serve --otel` daemon and #270/#271; remove once a non-test consumer exists"
-    )
-)]
+///
+/// No `dead_code` suppression: [`OTEL_LOOPBACK_ENDPOINT`] derives from this
+/// at compile time, and that constant is consumed by `oauth::apply_telemetry`
+/// (#270 AC1) -- which makes this one transitively used too. The suppression
+/// that used to sit here went stale (`unfulfilled_lint_expectations`) the
+/// moment that landed; removed rather than left to warn.
 pub const OTEL_PORT: u16 = 17457;
 
 /// The URL shape clients are configured to post OTLP to. Derived from

@@ -70,6 +70,16 @@ pub struct OtelSettings {
     /// default cannot disagree -- which they silently would if each side
     /// computed its own. See `crate::copilot::resolve_spool_path`.
     pub copilot_spool: PathBuf,
+    /// Whether Copilot's *file* exporter should be turned on at all --
+    /// distinct from `endpoint.is_some()`, which under the `daemon` profile
+    /// is true (it holds the loopback substitute) even though nothing drains
+    /// Copilot's spool there yet (#272 has not rewired it onto the daemon).
+    /// `vscode::configure`'s own doc already refuses to turn the exporter on
+    /// with nowhere to push -- this is that same rule, reached by profile
+    /// instead of by a missing endpoint. `false` here must retract, not just
+    /// skip writing, any exporter config a prior `manual` run left behind;
+    /// see `managed::plan`'s own use of this field.
+    pub copilot_drain_available: bool,
     /// Long-lived OTLP ingest credential, rendered into the header value both
     /// tools send verbatim. `None` writes the endpoint but no header, which
     /// is only useful against a collector that doesn't authenticate.
@@ -863,6 +873,7 @@ mod tests {
             client_id: "cli".to_owned(),
             endpoint: Some("https://otel.example.com".to_owned()),
             copilot_spool: PathBuf::from("/state/governance-auth/copilot-otel.jsonl"),
+            copilot_drain_available: true,
             token: Some(Redacted::new("ingest-token".to_owned())),
             headers_helper: None,
             headers_helper_debounce_ms: 240_000,
@@ -943,9 +954,10 @@ mod tests {
 
         let manual = settings();
         let daemon = OtelSettings {
-            endpoint: Some(crate::otel_port::OTEL_LOOPBACK_ENDPOINT.to_owned()),
+            endpoint: Some(OTEL_LOOPBACK_ENDPOINT.to_owned()),
             token: None,
             headers_helper: None,
+            copilot_drain_available: false,
             ..settings()
         };
 
@@ -967,7 +979,7 @@ mod tests {
             "daemon must retract the header manual wrote: {after_daemon}"
         );
         assert!(
-            after_daemon.contains(crate::otel_port::OTEL_LOOPBACK_ENDPOINT),
+            after_daemon.contains(OTEL_LOOPBACK_ENDPOINT),
             "daemon must point Codex at loopback: {after_daemon}"
         );
 
@@ -997,6 +1009,57 @@ mod tests {
             after_hand_edit.contains("Authorization = \"Bearer developers-own-token\""),
             "a hand-edited value must survive retraction, not be deleted with the key: \
              {after_hand_edit}"
+        );
+    }
+
+    /// Confirmed live, on a real machine: without `copilot_drain_available`
+    /// gating BOTH `vscode::configure`'s writer AND `managed::plan`'s
+    /// candidate list, switching to `daemon` only stopped WRITING Copilot's
+    /// file exporter -- it never RETRACTED a prior `manual` run's, because
+    /// `telemetry` (`endpoint.is_some()`) stays true under `daemon` (the
+    /// loopback substitute), so `plan()` kept reading the untouched config
+    /// back and recording it as still owned. Copilot kept appending to a
+    /// spool the drain that used to empty it no longer existed to drain --
+    /// unbounded, not just lost.
+    #[test]
+    fn switching_to_daemon_retracts_copilots_file_exporter_not_just_stops_writing_it() {
+        let home = tempdir();
+        fs::create_dir_all(crate::vscode::user_dir(home.path(), "Code")).expect("vscode dir");
+        let vscode_path = crate::vscode::user_dir(home.path(), "Code").join("settings.json");
+
+        let manual = settings();
+        let daemon = OtelSettings {
+            endpoint: Some(OTEL_LOOPBACK_ENDPOINT.to_owned()),
+            token: None,
+            headers_helper: None,
+            copilot_drain_available: false,
+            ..settings()
+        };
+
+        configure_all(home.path(), &manual, ClientOptOut::default()).expect("manual run");
+        let after_manual = fs::read_to_string(&vscode_path).expect("read vscode settings");
+        assert!(
+            after_manual.contains("github.copilot.chat.otel.exporterType"),
+            "manual must enable Copilot's file exporter: {after_manual}"
+        );
+
+        configure_all(home.path(), &daemon, ClientOptOut::default()).expect("daemon run");
+        let after_daemon = fs::read_to_string(&vscode_path).expect("read vscode settings");
+        // `outfile`/`exporterType`, not the full key set: `managed`'s own
+        // digest tracking is string-only (see its module doc -- the same
+        // reason Codex's boolean `log_user_prompt` was never retractable
+        // either), so the JSON *booleans* `enabled`/`captureContent` were
+        // never tracked and stay behind. That is a pre-existing, accepted
+        // limitation, not new here -- what actually stops the spool from
+        // growing is `outfile` (where Copilot writes) and `exporterType`
+        // (which exporter it uses) both being gone.
+        assert!(
+            !after_daemon.contains("github.copilot.chat.otel.outfile"),
+            "daemon must retract the outfile Copilot was writing to: {after_daemon}"
+        );
+        assert!(
+            !after_daemon.contains("github.copilot.chat.otel.exporterType"),
+            "daemon must retract which exporter Copilot uses: {after_daemon}"
         );
     }
 
@@ -1531,6 +1594,7 @@ mod tests {
             issuer: "https://auth.example".to_owned(),
             client_id: "cli".to_owned(),
             endpoint: None,
+            copilot_drain_available: false,
             headers_helper: None,
             ..settings_with_gateway()
         }
