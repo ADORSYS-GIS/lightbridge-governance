@@ -64,6 +64,7 @@ pub(super) fn unsurveyed_daemon() -> Daemon {
     Daemon {
         schedule: None,
         profile: crate::profile::Profile::Daemon,
+        collector: true,
     }
 }
 

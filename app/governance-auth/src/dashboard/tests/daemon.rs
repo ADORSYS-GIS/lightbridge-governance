@@ -12,7 +12,23 @@ use std::path::PathBuf;
 use super::*;
 use crate::{dashboard::style::Colour, profile::Profile, schedule::Schedule};
 
+/// A collector is always configured here -- every test below is about the
+/// service's own state, given one. [`no_collector_daemon`] is the sibling
+/// for the "nothing configured yet" axis.
 fn daemon(installed: bool, active: Option<bool>, profile: Profile) -> Daemon {
+    collector_daemon(installed, active, profile, true)
+}
+
+fn no_collector_daemon(installed: bool, profile: Profile) -> Daemon {
+    collector_daemon(installed, None, profile, false)
+}
+
+fn collector_daemon(
+    installed: bool,
+    active: Option<bool>,
+    profile: Profile,
+    collector: bool,
+) -> Daemon {
     Daemon {
         schedule: Some(Schedule {
             path: PathBuf::from(
@@ -22,6 +38,7 @@ fn daemon(installed: bool, active: Option<bool>, profile: Profile) -> Daemon {
             active,
         }),
         profile,
+        collector,
     }
 }
 
@@ -85,6 +102,36 @@ fn an_unaskable_daemon_is_not_reported_as_stopped() {
         "unknown is not the same as stopped, and must not be coloured like it"
     );
     assert!(note.contains("could not ask"), "{note}");
+}
+
+/// Confirmed live: a fresh install -- `daemon` fresh off the compiled
+/// default, no `--otel-endpoint` chosen yet -- is the most ordinary state a
+/// machine can be in, and without `Daemon::collector` this read red,
+/// "not installed", with a fix command that fails with "nothing to
+/// configure: supply --otel-endpoint". Mirrors `Drain`'s own
+/// `no_collector_and_no_schedule_is_plain_information`.
+#[test]
+fn no_collector_and_nothing_installed_is_plain_information() {
+    let (value, colour, note) = no_collector_daemon(false, Profile::Daemon).row();
+    assert_eq!(value, "not applicable");
+    assert_eq!(colour, Colour::None);
+    assert_eq!(note, "no collector configured");
+}
+
+/// The leftover half of the pair above: a service still installed with no
+/// collector configured is worth naming, not silently folded into "not
+/// applicable" -- same idiom as every other leftover branch in this row and
+/// `Drain`'s own `a_leftover_schedule_with_no_collector_is_not_reported_as_
+/// unscheduled`.
+#[test]
+fn a_leftover_daemon_with_no_collector_is_yellow_not_silent() {
+    let (value, colour, note) = no_collector_daemon(true, Profile::Daemon).row();
+    assert_eq!(value, "installed, no collector");
+    assert_eq!(colour, Colour::Yellow);
+    assert!(
+        note.contains("--otel-endpoint"),
+        "must name the way to resolve it, got: {note}"
+    );
 }
 
 /// #271 AC3: under `manual` this row is information, not an alarm -- the

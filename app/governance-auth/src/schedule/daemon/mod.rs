@@ -150,3 +150,32 @@ pub fn start_command() -> String {
         format!("systemctl --user enable --now {DAEMON_UNIT}.service")
     }
 }
+
+/// How long `survey` waits for the platform scheduler to answer before
+/// giving up and reporting `None` -- "could not ask" -- instead. `status`
+/// now shells out to ask twice per run (the Copilot drain's survey, then
+/// this one), and `std::process::Command::output()` has no built-in bound:
+/// a hung `systemctl`/`launchctl` (seen in practice when the session bus is
+/// gone) must not hang `status` itself, just this one row.
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`std::process::Command::output`], but bounded by [`ASK_TIMEOUT`] rather
+/// than unbounded. The wait runs on its own thread so the timeout can be
+/// enforced with a channel `recv_timeout` rather than polling; on timeout
+/// the child is not killed (this binary denies `unsafe_code`, so there is
+/// no `kill(2)` without shelling out to a second, equally unbounded process
+/// to do it) -- it is simply not waited on any further, so this function
+/// returns promptly either way, which is the property that matters here.
+pub(super) fn output_within(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let child = std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    rx.recv_timeout(ASK_TIMEOUT).ok()?.ok()
+}

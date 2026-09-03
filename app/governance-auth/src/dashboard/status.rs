@@ -1,10 +1,11 @@
 //! The `status` subcommand itself.
 //!
 //! Moved here from `crate::oauth` when the Copilot spool row was added: it
-//! surveys four sources (the session cache, the managed-key manifest, the
-//! per-target config files and now the drain checkpoint) and renders them,
-//! which is this module's job and not the OAuth flow's. `oauth` keeps the
-//! commands that actually talk to the authorization server.
+//! surveys five sources (the session cache, the managed-key manifest, the
+//! per-target config files, the drain checkpoint, and now the daemon
+//! service) and renders them, which is this module's job and not the OAuth
+//! flow's. `oauth` keeps the commands that actually talk to the
+//! authorization server.
 //!
 //! The TTY split is the contract described in [`super`]'s module doc: with no
 //! terminal, `status` prints exactly the one documented line it always has,
@@ -47,8 +48,10 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     // the token cannot be read back off the config.
     let telemetry = Telemetry::survey(home.as_deref(), config);
     // Reads the unit/plist and asks the platform's scheduler whether it is
-    // loaded -- one short local command, no network, same as `drain` below.
-    // See `super::daemon`.
+    // loaded, same as `drain` below -- bounded to `schedule::daemon::
+    // ASK_TIMEOUT` rather than genuinely unbounded, since this is `status`'s
+    // SECOND such shell-out per run and a hung one must not hang the whole
+    // command. See `super::daemon`.
     let daemon = Daemon::survey(home.as_deref(), config);
     // Reads two local files and never the network, same as the rest of this
     // command -- see `super::spool`.
