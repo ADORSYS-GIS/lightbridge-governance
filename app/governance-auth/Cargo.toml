@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+const_format.workspace = true
 clap.workspace = true
 tokio.workspace = true
 reqwest.workspace = true

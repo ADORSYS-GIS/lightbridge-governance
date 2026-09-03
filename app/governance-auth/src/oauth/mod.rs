@@ -16,6 +16,17 @@ mod refresh;
 mod token_endpoint;
 
 use anyhow::{Context, Result, bail};
+// The callback ports are a cross-cutting contract (the daemon's fixed OTEL
+// port must not collide with them); exposed here so tests and later stories
+// can assert that without reaching into the private callback module.
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "shipped contract for the #268 otel daemon + #270/#271 consumers; remove once a non-test consumer exists"
+    )
+)]
+pub use callback_port::CALLBACK_PORTS;
 pub use discovery::OidcMetadata;
 pub use refresh::run as refresh;
 

@@ -18,6 +18,11 @@ governance-copilot = { path = "./crates/governance-copilot" }
 governance-foundry = { path = "./crates/governance-foundry" }
 governance-redact = { path = "./crates/governance-redact" }
 
+# Const-string formatting, so a `pub const` URL can be derived from a `u16`
+# port instead of hand-writing both literals (otel_port). Pure const, no
+# runtime cost; MIT/Apache-2.0, already covered by deny.toml's allow-list.
+const_format = "0.2.36"
+
 # --- serde / encoding ---
 serde = { version = "1.0", features = ["derive"] }
 # `preserve_order` so rewriting a developer's `~/.claude/settings.json`
