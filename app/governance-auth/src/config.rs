@@ -124,6 +124,24 @@ pub struct OauthConfigArgs {
     #[arg(long, env = "GOVERNANCE_AUTH_GATEWAY_URL", value_parser = parse_issuer, global = true)]
     gateway_url: Option<String>,
 
+    /// Telemetry wiring profile: `daemon` (default) or `manual`. See ADR-0016.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_PROFILE",
+        value_parser = parse_profile,
+        global = true,
+        long_help = "Which telemetry wiring `configure` writes.\n\n\
+                     `daemon` (the default) points every installed client at the loopback \
+                     collector daemon and installs it as a service; no client ever holds a \
+                     long-lived OTLP credential. `manual` reproduces today's behaviour exactly: \
+                     direct exporters, the `copilot-push` timer, and a static `--otel-token` \
+                     where a client needs one -- the correct choice on a locked-down build \
+                     agent, in a container, or anywhere a long-running user service is \
+                     unwanted. Switching either way retracts the other profile's keys; a value \
+                     you edited by hand is left alone. See ADR-0016."
+    )]
+    profile: Option<String>,
+
     /// Where VS Code Copilot Chat writes its OTel spool, for `copilot push`
     /// to drain. Default: `copilot-otel.jsonl` under the state directory.
     #[arg(
@@ -341,6 +359,20 @@ impl OauthConfigArgs {
             .map(|value| parse_issuer(&value).map_err(|error| anyhow::anyhow!(error)))
             .transpose()?;
 
+        // Layered like every other field; the compiled default lives on
+        // `Profile` itself (ADR-0016), not here, so this arm is the same
+        // shape as `scopes`/`otel_headers_debounce_ms` above rather than a
+        // one-off. Re-parsed here (not trusted from clap) because a
+        // config-file value never passes through `parse_profile` at all --
+        // the exact reason `otel_endpoint` re-runs `parse_issuer` below.
+        let profile = self
+            .profile
+            .or_else(|| per_user.as_ref().and_then(|file| file.profile.clone()))
+            .or_else(|| machine.as_ref().and_then(|file| file.profile.clone()))
+            .map(|value| value.parse::<crate::profile::Profile>())
+            .transpose()?
+            .unwrap_or_default();
+
         let copilot_spool_path = self
             .copilot_spool_path
             .or_else(|| {
@@ -392,6 +424,7 @@ impl OauthConfigArgs {
             otel_endpoint,
             otel_token,
             gateway_url,
+            profile,
             copilot_spool_path,
             otel_headers_debounce_ms,
             open_browser,
@@ -487,6 +520,10 @@ pub struct OauthConfig {
     pub otel_endpoint: Option<String>,
     pub otel_token: Option<String>,
     pub gateway_url: Option<String>,
+    /// `daemon` (ADR-0016's compiled default) or `manual`. Always present --
+    /// `crate::profile::Profile::default()` is the fifth layer, so callers
+    /// never match on absence the way they do for `otel_endpoint`.
+    pub profile: crate::profile::Profile,
     /// `None` means "use the compiled default under the state directory" --
     /// see `crate::copilot::resolve_spool_path`, which is where the fifth
     /// layer is applied.
@@ -559,6 +596,16 @@ fn parse_issuer(raw: &str) -> Result<String, String> {
 /// given directly to skip a discovery round trip.
 fn parse_exchange_token_endpoint(raw: &str) -> Result<String, String> {
     parse_url("endpoint", raw)
+}
+
+/// `clap` value parser for `--profile`/`GOVERNANCE_AUTH_PROFILE`. Delegates
+/// to [`crate::profile::Profile::from_str`] so clap and a config-file value
+/// (re-parsed in `resolve_with_paths`, which never sees clap) reject exactly
+/// the same set of strings.
+fn parse_profile(raw: &str) -> Result<String, String> {
+    raw.parse::<crate::profile::Profile>()
+        .map(|profile| profile.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -678,6 +725,7 @@ mod tests {
                 otel_endpoint: None,
                 otel_token: None,
                 gateway_url: None,
+                profile: None,
                 copilot_spool_path: None,
                 otel_headers_debounce_ms: None,
                 open_browser: None,
@@ -750,6 +798,66 @@ mod tests {
                 .resolve_with_paths(&per_user, &machine)
                 .expect("resolve");
             assert_eq!(resolved.scopes, "machine-scope");
+        }
+
+        /// `profile`'s own five-layer round trip, collapsed into one test
+        /// per pair rather than the four separate `scopes` tests above --
+        /// same layering call, different field.
+        #[test]
+        fn profile_per_user_file_wins_over_machine_file() {
+            let dir = tempdir();
+            let per_user = write_config(&dir, "per-user.toml", "profile = \"manual\"\n");
+            let machine = write_config(&dir, "machine.toml", "profile = \"daemon\"\n");
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert_eq!(resolved.profile, crate::profile::Profile::Manual);
+        }
+
+        #[test]
+        fn profile_machine_file_wins_over_compiled_default() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(&dir, "machine.toml", "profile = \"manual\"\n");
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert_eq!(resolved.profile, crate::profile::Profile::Manual);
+        }
+
+        /// `Profile::default()` is `Manual` until #268/#272 land (see that
+        /// module's doc) -- pinned here the same way
+        /// `open_browser_compiled_default_is_false` pins its own field below,
+        /// so a change to `Profile::default()` fails a config test, not just
+        /// `profile.rs`'s own unit test.
+        #[test]
+        fn profile_compiled_default_is_manual_when_nothing_else_is_configured() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert_eq!(resolved.profile, crate::profile::Profile::Manual);
+        }
+
+        /// A config-file value bypasses clap's `value_parser` entirely, so
+        /// this is the layer that actually rejects a bad one -- falsified by
+        /// first checking the message names the culprit, mirroring
+        /// `profile::tests::an_unrecognised_value_is_rejected_by_name`.
+        #[test]
+        fn profile_an_invalid_config_file_value_is_rejected_by_name() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = write_config(&dir, "machine.toml", "profile = \"sometimes\"\n");
+
+            let error = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect_err("an unrecognised profile must not silently resolve");
+            assert!(format!("{error:#}").contains("sometimes"));
         }
 
         /// THE regression guard for the `default_value`/`default_value_t`

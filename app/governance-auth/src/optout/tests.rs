@@ -42,6 +42,7 @@ pub(super) fn settings(home: &Path) -> OtelSettings {
         client_id: "cli".to_owned(),
         endpoint: Some("https://otel.example.com".to_owned()),
         copilot_spool: home.join("spool").join("copilot-otel.jsonl"),
+        copilot_drain_available: true,
         token: Some(Redacted::new("ingest-token".to_owned())),
         headers_helper: None,
         headers_helper_debounce_ms: 240_000,

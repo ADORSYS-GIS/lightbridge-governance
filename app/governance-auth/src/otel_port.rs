@@ -13,6 +13,12 @@ use anyhow::{Context, Result};
 /// value. In the window that matters: **below 32768** (outside both OS
 /// ephemeral ranges) and **above 1024** (no root needed). The specific value
 /// is arbitrary; the window is load-bearing (ADR-0015).
+///
+/// No `dead_code` suppression: [`OTEL_LOOPBACK_ENDPOINT`] derives from this
+/// at compile time, and that constant is consumed by `oauth::apply_telemetry`
+/// (#270 AC1) -- which makes this one transitively used too. The suppression
+/// that used to sit here went stale (`unfulfilled_lint_expectations`) the
+/// moment that landed; removed rather than left to warn.
 pub const OTEL_PORT: u16 = 17457;
 
 /// The URL shape clients are configured to post OTLP to. Derived from
@@ -20,13 +26,10 @@ pub const OTEL_PORT: u16 = 17457;
 /// accepts **any** path on this endpoint: Codex posts to its configured
 /// endpoint verbatim, appending no signal path; signal-path normalisation
 /// belongs to the receiver in #268 proper.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "shipped contract for #268's `serve --otel` daemon and #270/#271; remove once a non-test consumer exists"
-    )
-)]
+///
+/// Consumed by `oauth::apply_telemetry` (#270 AC1) -- the `dead_code`
+/// suppression that used to sit here has been removed rather than left
+/// stale, per the reason it originally gave.
 pub const OTEL_LOOPBACK_ENDPOINT: &str = const_format::formatcp!("http://127.0.0.1:{}", OTEL_PORT);
 
 /// Binds the fixed loopback OTEL port, refusing to fall back to an ephemeral

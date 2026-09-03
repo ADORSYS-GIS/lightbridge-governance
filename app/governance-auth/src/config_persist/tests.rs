@@ -37,6 +37,7 @@ fn base() -> OauthConfig {
         otel_endpoint: Some("https://otel.example".to_owned()),
         otel_token: Some("SECRET-DO-NOT-PERSIST".to_owned()),
         gateway_url: Some("https://api.example".to_owned()),
+        profile: crate::profile::Profile::Manual,
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
@@ -60,6 +61,7 @@ fn what_is_written_loads_back_identically() {
     assert_eq!(loaded.client_id.as_deref(), Some("cli"));
     assert_eq!(loaded.scopes.as_deref(), Some("openid profile"));
     assert_eq!(loaded.gateway_url.as_deref(), Some("https://api.example"));
+    assert_eq!(loaded.profile.as_deref(), Some("manual"));
     assert_eq!(loaded.otel_headers_debounce_ms, Some(240_000));
 }
 

@@ -26,6 +26,19 @@
 /// the string form because that is what their host files hold.
 pub const COPILOT_PUSH: [&str; 2] = ["copilot", "push"];
 
+/// The daemon's subcommand, as argv -- the shape ADR-0016 and #268 name
+/// (`governance-auth serve --otel`), spelled here for the same reason
+/// [`COPILOT_PUSH`] is.
+///
+/// ⚠️ Unlike `COPILOT_PUSH`, this is a contract on a command that does not
+/// exist on this branch yet: `serve --otel` is #268's own deliverable ("the
+/// daemon's internals" -- #270 is explicitly out of scope for it), still
+/// unmerged as of this constant's addition.
+/// `every_generated_command_is_a_command_this_binary_has` deliberately does
+/// NOT check this one for exactly that reason -- add it to that test's list
+/// once #268 lands and this stops being aspirational.
+pub const SERVE_OTEL: [&str; 2] = ["serve", "--otel"];
+
 /// The subcommand each generated command line ends with, leading space
 /// included. Exposed separately from the builders below so
 /// [`crate::dashboard`] can ask "does the string in this config file still end
@@ -89,6 +102,23 @@ mod tests {
         assert!(
             crate::cli::tests::accepts(&COPILOT_PUSH),
             "the drain's argv is not a command this binary has"
+        );
+    }
+
+    /// `SERVE_OTEL`'s own tripwire, not just a doc-comment claim: proves the
+    /// carve-out above is still warranted, and fails loudly the moment it
+    /// stops being true. When #268 adds a `Serve` variant, this test starts
+    /// failing -- wire `SERVE_OTEL` into
+    /// `every_generated_command_is_a_command_this_binary_has`, flip
+    /// `Profile::default()` back to `Daemon` (`profile.rs`), and delete this
+    /// test, all in the same commit.
+    #[test]
+    fn serve_otel_is_not_yet_a_real_command() {
+        assert!(
+            !crate::cli::tests::accepts(&SERVE_OTEL),
+            "serve --otel now resolves -- #268 has landed. Wire SERVE_OTEL into \
+             `every_generated_command_is_a_command_this_binary_has`, flip \
+             `Profile::default()` back to `Daemon`, and delete this test."
         );
     }
 }

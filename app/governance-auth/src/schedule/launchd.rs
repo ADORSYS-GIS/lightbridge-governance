@@ -97,7 +97,9 @@ pub fn remove(home: &Path) -> Result<()> {
     let domain = domain(&path)?;
     let booted = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
     fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-    eprintln!("Removed (no collector configured): {}", path.display());
+    // See `systemd::remove`'s comment: this message must not name a single
+    // reason now that #270 gave `Invocation::resolve` a second one.
+    eprintln!("Removed (nothing to schedule): {}", path.display());
     booted
 }
 
