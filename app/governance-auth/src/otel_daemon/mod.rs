@@ -22,6 +22,7 @@
 //! the daemon becomes the default profile.
 
 mod classify;
+mod drain;
 mod forward;
 mod mint;
 mod normalize;
@@ -34,7 +35,7 @@ use anyhow::{Context, Result};
 use axum::{Router, extract::State, http::StatusCode, routing::any};
 use tokio::net::TcpListener;
 
-use crate::{config::OauthConfig, copilot::Signal, otel_port};
+use crate::{config::OauthConfig, otel_port};
 
 /// Shared state for every request the daemon handles.
 #[derive(Clone)]
@@ -91,7 +92,7 @@ async fn handle_request(
     request: axum::extract::Request,
 ) -> StatusCode {
     // Best-effort: drain any retained payloads before handling the new one.
-    drain_retained(&state).await;
+    drain::drain_retained(&state).await;
 
     let incoming = match receive::build(request).await {
         Ok(incoming) => incoming,
@@ -109,7 +110,7 @@ async fn handle_request(
         Ok(minted) => minted,
         Err(error) => {
             tracing::warn!(error = %error, "no session; retaining payload, refusing to forward unauthenticated");
-            retain(&state, signal, body);
+            drain::retain(&state, signal, body);
             return StatusCode::ACCEPTED;
         }
     };
@@ -118,7 +119,7 @@ async fn handle_request(
         Ok(stamped) => stamped,
         Err(error) => {
             tracing::warn!(error = %error, "could not stamp identity; retaining original payload");
-            retain(&state, signal, body);
+            drain::retain(&state, signal, body);
             return StatusCode::ACCEPTED;
         }
     };
@@ -127,62 +128,13 @@ async fn handle_request(
         Ok(forward::Verdict::Accepted) => StatusCode::OK,
         Ok(forward::Verdict::Refused(status)) => {
             tracing::warn!(%status, "collector refused {signal}; retaining payload");
-            retain(&state, signal, stamped);
+            drain::retain(&state, signal, stamped);
             StatusCode::ACCEPTED
         }
         Err(error) => {
             tracing::warn!(error = %error, "collector unreachable; retaining payload");
-            retain(&state, signal, stamped);
+            drain::retain(&state, signal, stamped);
             StatusCode::ACCEPTED
-        }
-    }
-}
-
-/// Retains a payload on the signal it routes on, surfacing a spool-full
-/// (fail-closed) loudly rather than silently dropping. The unavailable branch
-/// is the restrictive branch; a full spool is reported, never papered over.
-fn retain(state: &DaemonState, signal: Signal, payload: Vec<u8>) {
-    let mut spool = state.spool.lock().unwrap_or_else(|p| p.into_inner());
-    if let Err(error) = spool.retain(signal, payload) {
-        tracing::error!(error = %error, pending = spool.pending(), "payload could not be retained because the spool is full; this is a loss beyond the accepted #268 in-memory window");
-    }
-}
-
-/// Best-effort drain of retained payloads. Stops at the first failure so we
-/// do not spin on an unreachable collector.
-async fn drain_retained(state: &DaemonState) {
-    loop {
-        let next = {
-            let mut spool = state.spool.lock().unwrap_or_else(|p| p.into_inner());
-            match spool.drain_one() {
-                Some((signal, payload)) => (signal, payload),
-                None => return,
-            }
-        };
-        let (signal, payload) = next;
-        let minted = match mint::mint(&state.http, &state.config).await {
-            Ok(minted) => minted,
-            Err(_) => {
-                let mut spool = state.spool.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = spool.retain(signal, payload);
-                return;
-            }
-        };
-        let stamped = match normalize::stamp(&payload, &minted.access_token) {
-            Ok(stamped) => stamped,
-            Err(_) => {
-                let mut spool = state.spool.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = spool.retain(signal, payload);
-                return;
-            }
-        };
-        match forward::post(&state.http, &state.config, &minted.bearer, signal, &stamped).await {
-            Ok(forward::Verdict::Accepted) => {}
-            Ok(forward::Verdict::Refused(_)) | Err(_) => {
-                let mut spool = state.spool.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = spool.retain(signal, stamped);
-                return;
-            }
         }
     }
 }
