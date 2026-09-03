@@ -827,12 +827,13 @@ mod tests {
             assert_eq!(resolved.profile, crate::profile::Profile::Manual);
         }
 
-        /// ADR-0016 names `daemon` as the default; pinned here the same way
+        /// `Profile::default()` is `Manual` until #268/#272 land (see that
+        /// module's doc) -- pinned here the same way
         /// `open_browser_compiled_default_is_false` pins its own field below,
         /// so a change to `Profile::default()` fails a config test, not just
         /// `profile.rs`'s own unit test.
         #[test]
-        fn profile_compiled_default_is_daemon_when_nothing_else_is_configured() {
+        fn profile_compiled_default_is_manual_when_nothing_else_is_configured() {
             let dir = tempdir();
             let per_user = absent_path(&dir);
             let machine = absent_path(&dir);
@@ -840,7 +841,7 @@ mod tests {
             let resolved = base_args()
                 .resolve_with_paths(&per_user, &machine)
                 .expect("resolve");
-            assert_eq!(resolved.profile, crate::profile::Profile::Daemon);
+            assert_eq!(resolved.profile, crate::profile::Profile::Manual);
         }
 
         /// A config-file value bypasses clap's `value_parser` entirely, so

@@ -104,4 +104,21 @@ mod tests {
             "the drain's argv is not a command this binary has"
         );
     }
+
+    /// `SERVE_OTEL`'s own tripwire, not just a doc-comment claim: proves the
+    /// carve-out above is still warranted, and fails loudly the moment it
+    /// stops being true. When #268 adds a `Serve` variant, this test starts
+    /// failing -- wire `SERVE_OTEL` into
+    /// `every_generated_command_is_a_command_this_binary_has`, flip
+    /// `Profile::default()` back to `Daemon` (`profile.rs`), and delete this
+    /// test, all in the same commit.
+    #[test]
+    fn serve_otel_is_not_yet_a_real_command() {
+        assert!(
+            !crate::cli::tests::accepts(&SERVE_OTEL),
+            "serve --otel now resolves -- #268 has landed. Wire SERVE_OTEL into \
+             `every_generated_command_is_a_command_this_binary_has`, flip \
+             `Profile::default()` back to `Daemon`, and delete this test."
+        );
+    }
 }

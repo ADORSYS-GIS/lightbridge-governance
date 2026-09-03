@@ -5,11 +5,20 @@
 //! implicit mode a developer discovers by reading which flags they happened
 //! to pass.
 //!
-//! `Daemon` is the compiled default: ADR-0016 adopts the local collector
-//! daemon as the default telemetry path and keeps `Manual` -- today's direct
-//! wiring -- as an explicitly selected, permanently supported profile, never
-//! a deprecation shim. See that ADR's Decision section before changing which
-//! variant [`Profile::default`] returns.
+//! ADR-0016 makes `Daemon` the eventual compiled default. [`Profile::default`]
+//! is `Manual` for now, deliberately diverging from the ADR: the daemon
+//! (`serve --otel`, #268) does not exist on this branch yet, and Copilot's
+//! rewiring onto it (#272) does not either. Defaulting to `Daemon` before
+//! either lands would move every developer who upgrades and re-runs
+//! `configure` without an explicit `--profile` onto wiring this repo cannot
+//! yet serve -- three P0s from one review, confirmed live against a real
+//! machine: the drain that delivers telemetry today is torn down, every
+//! client's OTLP export is redirected to a port nothing listens on, and the
+//! daemon service that's supposed to replace them enters a permanent
+//! `Restart=on-failure` crash loop, all silently.
+//! `cli::invoke::tests::serve_otel_is_not_yet_a_real_command` is the
+//! tripwire: flip this back to `Self::Daemon` in the same commit that makes
+//! it start failing.
 
 use std::{fmt, str::FromStr};
 
@@ -41,11 +50,12 @@ impl Profile {
     }
 }
 
-/// ADR-0016's compiled default. Explicit rather than `#[derive(Default)]` so
-/// the ADR citation sits next to the choice, not implied by variant order.
+/// See this module's doc: `Manual` until #268/#272 land, not `Daemon` yet.
+/// Explicit rather than `#[derive(Default)]` so that citation sits next to
+/// the choice, not implied by variant order.
 impl Default for Profile {
     fn default() -> Self {
-        Self::Daemon
+        Self::Manual
     }
 }
 
@@ -87,8 +97,12 @@ mod tests {
         assert!(format!("{error}").contains("bogus"));
     }
 
+    /// Not `Daemon`, even though that's ADR-0016's eventual default -- see
+    /// this module's doc for why the two are deliberately out of sync right
+    /// now. `cli::invoke::tests::serve_otel_is_not_yet_a_real_command` is
+    /// what flips this back once #268 lands.
     #[test]
-    fn the_compiled_default_is_daemon_per_adr_0016() {
-        assert_eq!(Profile::default(), Profile::Daemon);
+    fn the_compiled_default_is_manual_until_268_and_272_land() {
+        assert_eq!(Profile::default(), Profile::Manual);
     }
 }

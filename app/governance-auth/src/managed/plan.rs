@@ -135,7 +135,16 @@ fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(P
         }
     }
 
-    let vscode: Vec<String> = if telemetry {
+    // `copilot_drain_available`, not `telemetry`: matches
+    // `vscode::configure`'s own gate exactly, for the same reason the
+    // Codex `Authorization` key above is gated on `settings.token.is_some()`
+    // rather than on `telemetry` alone. `telemetry` is true under `daemon`
+    // (the loopback substitute), but nothing drains Copilot's spool there
+    // yet (#272) -- listing these keys as owned on `telemetry` alone would
+    // make a stale `manual`-profile file-exporter config read as "still
+    // ours" forever, so switching to `daemon` would stop writing it but
+    // never retract it.
+    let vscode: Vec<String> = if settings.copilot_drain_available {
         crate::vscode::settings(&settings.copilot_spool)
             .into_iter()
             .map(|(key, _)| key.to_owned())
