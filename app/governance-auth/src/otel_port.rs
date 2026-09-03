@@ -1,21 +1,18 @@
 //! The loopback endpoint `serve --otel` binds and every client posts OTLP to.
 //!
-//! **Contract, not preference**, like [`crate::oauth::callback_port`], and must
-//! not collide with it. Written into every client's config by `configure` and
-//! read once at process start, so changing it later breaks every
-//! already-configured client.
+//! **Contract, not preference**, like [`crate::oauth::callback_port`]: written
+//! into every client's config by `configure` and read once at process start, so
+//! changing it later breaks every already-configured client.
 
 use std::net::TcpListener;
 
 use anyhow::{Context, Result};
 
-/// The loopback port `serve --otel` binds and clients are configured to post
-/// to, chosen just above the ADR-0015 callback block (17452–17456) and clear
-/// of every [`crate::oauth::CALLBACK_PORTS`] value (all five are the login
-/// flow's listeners). Why this window: **below 32768** — outside both OS
-/// ephemeral ranges (Linux 32768+, macOS/IANA 49152+) so the OS cannot hand it
-/// to an unrelated process; **above 1024** — binding needs no root. Past those,
-/// the specific value is arbitrary; the *window* is load-bearing (ADR-0015).
+/// The loopback port `serve --otel` binds, just above the ADR-0015 callback
+/// block (17452–17456) and clear of every [`crate::oauth::CALLBACK_PORTS`]
+/// value. In the window that matters: **below 32768** (outside both OS
+/// ephemeral ranges) and **above 1024** (no root needed). The specific value
+/// is arbitrary; the window is load-bearing (ADR-0015).
 #[cfg_attr(
     not(test),
     expect(
@@ -25,12 +22,11 @@ use anyhow::{Context, Result};
 )]
 pub const OTEL_PORT: u16 = 17457;
 
-/// The URL shape clients are configured to post OTLP to.
-///
-/// The receiver accepts **any** path on this endpoint: Codex posts OTLP to its
-/// configured endpoint verbatim, appending no signal path. Signal-path
-/// normalisation belongs to the receiver in #268 proper; this only pins the
-/// port and the loopback-only shape.
+/// The URL shape clients are configured to post OTLP to. Derived from
+/// [`OTEL_PORT`] so the two cannot drift to different ports. The receiver
+/// accepts **any** path on this endpoint: Codex posts to its configured
+/// endpoint verbatim, appending no signal path; signal-path normalisation
+/// belongs to the receiver in #268 proper.
 #[cfg_attr(
     not(test),
     expect(
@@ -38,7 +34,7 @@ pub const OTEL_PORT: u16 = 17457;
         reason = "shipped contract for #268's `serve --otel` daemon and #270/#271; remove once a non-test consumer exists"
     )
 )]
-pub const OTEL_LOOPBACK_ENDPOINT: &str = "http://127.0.0.1:17457";
+pub const OTEL_LOOPBACK_ENDPOINT: &str = const_format::formatcp!("http://127.0.0.1:{}", OTEL_PORT);
 
 /// Binds the fixed loopback OTEL port, refusing to fall back to an ephemeral
 /// one — a fallback would leave the receiver where no client's telemetry can
@@ -65,8 +61,8 @@ mod tests {
 
     use super::*;
 
-    /// Serializes tests that bind the single fixed port (Rust runs tests in
-    /// parallel; with one port a loser's bind fails and reports "skipped").
+    /// Serializes tests that bind the single fixed port, so a loser does not
+    /// race the winner; the loser fails loudly rather than silently skipping.
     fn port_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -95,8 +91,8 @@ mod tests {
         );
     }
 
-    /// Loopback-only (ADR-0016: never 0.0.0.0 or a lookalike domain), naming the
-    /// fixed port.
+    /// Loopback-only (ADR-0016: never 0.0.0.0 or a lookalike domain), naming
+    /// the fixed port.
     #[test]
     fn endpoint_is_loopback_only_and_names_the_fixed_port() {
         let parsed = url::Url::parse(OTEL_LOOPBACK_ENDPOINT).expect("endpoint parses as a URL");
@@ -108,11 +104,12 @@ mod tests {
     #[test]
     fn bind_refuses_rather_than_falling_back_to_an_ephemeral_port() {
         let _guard = port_lock().lock().unwrap_or_else(|p| p.into_inner());
-        // Hold the port so the bind below must refuse; skip (never abort) if held.
-        let Ok(_held) = TcpListener::bind(("127.0.0.1", OTEL_PORT)) else {
-            eprintln!("skipped: port {OTEL_PORT} already unavailable");
-            return;
-        };
+        // Hold the port so the bind below must refuse. If we cannot hold it,
+        // another process already does — and a fixed port being taken is itself
+        // a violation of the contract. Either way the refusal below MUST hold,
+        // so fail rather than report green having tested nothing.
+        let _held = TcpListener::bind(("127.0.0.1", OTEL_PORT))
+            .expect("cannot hold the OTEL port; another process already binds it");
 
         let error = bind_loopback().expect_err("must refuse when the fixed port is taken");
         let message = format!("{error:#}");
@@ -126,18 +123,12 @@ mod tests {
         );
     }
 
-    /// Drives a real TCP POST to the documented endpoint; the static checks above
-    /// could all stay green while a client could not actually connect.
+    /// Drives a real TCP POST to the documented endpoint; the static checks
+    /// above could all stay green while a client could not actually connect.
     #[test]
     fn a_real_post_to_the_endpoint_reaches_the_bound_listener() {
         let _guard = port_lock().lock().unwrap_or_else(|p| p.into_inner());
-        let listener = match bind_loopback() {
-            Ok(l) => l,
-            Err(_) => {
-                eprintln!("skipped: port {OTEL_PORT} already unavailable");
-                return;
-            }
-        };
+        let listener = bind_loopback().expect("cannot bind the OTEL port; another process does");
 
         let server = std::thread::spawn(move || {
             let (mut stream, _peer) = listener.accept().expect("client must connect");

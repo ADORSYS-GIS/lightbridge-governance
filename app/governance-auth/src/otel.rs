@@ -32,6 +32,16 @@ use std::{
 
 use anyhow::{Context, Result};
 
+// The OTEL contract (fixed loopback port + client URL shape) lives in
+// `otel_port` and is re-exported here so the daemon (#268) and the
+// configure/managed/status consumers (#270/#271) reach it from `crate::otel`
+// without a second copy — see issue #276 AC3. No in-crate consumer exists yet
+// (those land with the consumers), hence the `unused_imports` expectation.
+#[expect(
+    unused_imports,
+    reason = "shipped contract for #268's daemon and #270/#271; remove once a consumer exists"
+)]
+pub use crate::otel_port::{OTEL_LOOPBACK_ENDPOINT, OTEL_PORT};
 use crate::redacted::Redacted;
 
 /// Resolved OTLP export settings, shared by both writers so the two tools
