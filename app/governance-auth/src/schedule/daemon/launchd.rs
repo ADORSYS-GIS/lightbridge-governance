@@ -94,11 +94,10 @@ pub fn survey(home: &Path) -> Schedule {
     // `launchctl print` exits 0 only for a label the domain actually holds;
     // a failure to resolve the domain at all is `None` -- "could not ask",
     // never rendered as "stopped". Same rule as the drain's own survey.
+    // Bounded by `super::output_within` -- see this module's `systemd`
+    // sibling for why.
     let active = domain(&path).ok().and_then(|domain| {
-        std::process::Command::new("launchctl")
-            .args(["print", &format!("{domain}/{DAEMON_LABEL}")])
-            .output()
-            .ok()
+        super::output_within("launchctl", &["print", &format!("{domain}/{DAEMON_LABEL}")])
             .map(|output| output.status.success())
     });
     Schedule {

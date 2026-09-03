@@ -29,6 +29,15 @@ use crate::{
 pub struct Daemon {
     pub(super) schedule: Option<Schedule>,
     pub(super) profile: Profile,
+    /// Whether a collector is configured at all. Without one there is
+    /// nothing for the daemon to forward to, and nothing should have been
+    /// installed -- confirmed live: a fresh install, `daemon` fresh off the
+    /// compiled default and no `--otel-endpoint` chosen yet, is the most
+    /// ordinary state a machine can be in, and without this field it read
+    /// red, "not installed", with a fix command (`configure`) that fails
+    /// with "nothing to configure". Mirrors `Drain`'s own `collector` field
+    /// and reasoning exactly.
+    pub(super) collector: bool,
 }
 
 impl Daemon {
@@ -36,6 +45,7 @@ impl Daemon {
         Self {
             schedule: home.map(schedule::daemon::survey),
             profile: config.profile,
+            collector: config.otel_endpoint.is_some(),
         }
     }
 
@@ -69,6 +79,30 @@ impl Daemon {
                 "not applicable".to_owned(),
                 Colour::None,
                 "manual profile: telemetry is exported directly, not via the daemon".to_owned(),
+            );
+        }
+
+        if !self.collector {
+            // Same leftover-vs-informational split as the profile branch
+            // above, one layer earlier: with `daemon` selected but no
+            // endpoint yet, `schedule::daemon::Invocation::resolve` never
+            // installs anything (its own `endpoint.as_deref()?`
+            // short-circuit) -- the ordinary, benign state, not a failure.
+            if schedule.installed {
+                return (
+                    "installed, no collector".to_owned(),
+                    Colour::Yellow,
+                    format!(
+                        "{} is still installed with no collector configured: re-run \
+                         `governance-auth configure --otel-endpoint <url>`, or remove it by hand",
+                        schedule.path.display()
+                    ),
+                );
+            }
+            return (
+                "not applicable".to_owned(),
+                Colour::None,
+                "no collector configured".to_owned(),
             );
         }
 
