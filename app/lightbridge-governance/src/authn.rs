@@ -17,72 +17,15 @@
 //! `tonic`/`prost`) into the supply chain. `reqwest` is already in this
 //! binary's dependency tree.
 
+#[cfg(test)]
+mod tests;
+mod types;
+
 use std::{collections::HashSet, time::Duration};
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-
-/// Kubernetes TokenReview request body — the minimal fields the API requires.
-#[derive(Debug, Serialize)]
-struct TokenReviewSpec {
-    token: String,
-    audiences: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct TokenReviewRequest {
-    #[serde(rename = "apiVersion")]
-    api_version: &'static str,
-    kind: &'static str,
-    spec: TokenReviewSpec,
-}
-
-/// Kubernetes TokenReview response — only the fields we inspect.
-#[derive(Debug, Deserialize)]
-struct TokenReviewStatus {
-    authenticated: bool,
-    #[serde(default)]
-    user: Option<TokenReviewUser>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenReviewUser {
-    username: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenReviewResponse {
-    status: TokenReviewStatus,
-}
-
-/// Errors from TokenReview verification. Every variant is a rejection — there
-/// is no "partial success". The `Display` implementation is for `tracing`
-/// fields only; it is never rendered into the HTTP response.
-#[derive(Debug)]
-pub enum VerifyError {
-    /// kube-apiserver is unreachable or returned a non-200 status.
-    Unreachable,
-    /// The token was not authenticated (expired, malformed, wrong audience).
-    Rejected,
-    /// The token authenticated but the ServiceAccount is not in the allowlist.
-    #[allow(
-        dead_code,
-        reason = "consumed by Display + tracing, invisible to rustc dead-code analysis"
-    )]
-    NotAllowed(String),
-}
-
-impl std::fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Unreachable => "kube-apiserver_unreachable",
-            Self::Rejected => "token_rejected",
-            Self::NotAllowed(_) => "service_account_not_allowed",
-        })
-    }
-}
-
-impl std::error::Error for VerifyError {}
+pub use types::VerifyError;
+use types::{TokenReviewRequest, TokenReviewResponse, TokenReviewSpec};
 
 /// Verifies Bearer tokens via Kubernetes TokenReview (ADR-0017).
 ///
@@ -176,26 +119,6 @@ impl TokenReviewVerifier {
         })
     }
 
-    /// Creates a test-only verifier that skips the real TokenReview call.
-    ///
-    /// Every `verify()` call succeeds unconditionally. Use only in tests
-    /// that exercise the credential-resolution path without needing to
-    /// stand up a kube-apiserver mock — the DB-backed integration tests
-    /// in `resolve.rs`, for instance.
-    #[cfg(test)]
-    pub(crate) fn always_accept() -> Self {
-        // SAFETY: this is only compiled in #[cfg(test)] — unreachable in
-        // shipping code. The `review_url` and `client` are never used
-        // because `verify` short-circuits before reaching them.
-        Self {
-            client: Client::new(),
-            review_url: String::new(),
-            bearer_token: String::new(),
-            audiences: Vec::new(),
-            allowed_accounts: HashSet::new(),
-        }
-    }
-
     /// Verifies a Bearer token via Kubernetes TokenReview.
     ///
     /// - Sends the token to the kube-apiserver with the configured audiences.
@@ -270,96 +193,5 @@ impl TokenReviewVerifier {
 
         tracing::debug!(username, "tokenreview: authenticated");
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn verify_error_display_matches_expected_tracing_fields() {
-        assert_eq!(
-            VerifyError::Unreachable.to_string(),
-            "kube-apiserver_unreachable"
-        );
-        assert_eq!(VerifyError::Rejected.to_string(), "token_rejected");
-        assert_eq!(
-            VerifyError::NotAllowed("default/my-sa".to_owned()).to_string(),
-            "service_account_not_allowed"
-        );
-    }
-
-    #[test]
-    fn allowed_accounts_is_case_sensitive() {
-        let mut allowed = HashSet::new();
-        allowed.insert("default/Authorino".to_owned());
-
-        assert!(
-            !allowed.contains("default/authorino"),
-            "Kubernetes ServiceAccount names are case-sensitive"
-        );
-    }
-
-    #[test]
-    fn serviceaccount_username_normalizes_to_namespace_name() {
-        // Kubernetes reports `system:serviceaccount:<ns>:<name>`; the
-        // allowlist is `<ns>/<name>`. The normalization must map one to the
-        // other.
-        let username = "system:serviceaccount:ingest-test:caller-sa";
-        let normalized = username
-            .strip_prefix("system:serviceaccount:")
-            .map_or_else(|| username.to_owned(), |s| s.replace(':', "/"));
-        assert_eq!(normalized, "ingest-test/caller-sa");
-    }
-
-    #[test]
-    fn non_serviceaccount_username_is_left_untouched() {
-        // A non-serviceaccount identity (e.g. a user) has no prefix to strip
-        // and must not accidentally match an allowlist entry.
-        let username = "benie.possi@adorsys.com";
-        let normalized = username
-            .strip_prefix("system:serviceaccount:")
-            .map_or_else(|| username.to_owned(), |s| s.replace(':', "/"));
-        assert_eq!(normalized, "benie.possi@adorsys.com");
-    }
-
-    /// Proves that `always_accept` short-circuits before any HTTP call —
-    /// the `review_url` is empty, which would panic on a real request.
-    #[tokio::test]
-    async fn always_accept_skips_the_review_entirely() {
-        let verifier = TokenReviewVerifier::always_accept();
-        // This would fail with a malformed URL if the short-circuit didn't work.
-        assert!(verifier.verify("any-token-at-all").await.is_ok());
-    }
-
-    /// The most important fail-closed test: a verifier pointed at an
-    /// unreachable kube-apiserver MUST return `Unreachable`, not hang or
-    /// succeed. This is the exact shape of trap the platform already paid
-    /// for once (AGENTS.md: the Keycloak-introspection metadata step,
-    /// disabled 2026-07-02 because the ext_authz timeout is shorter than
-    /// the lookup).
-    #[tokio::test]
-    async fn unreachable_apiserver_is_fail_closed() {
-        let verifier = TokenReviewVerifier::new(
-            "https://127.0.0.1:1".to_owned(),
-            vec!["api".to_owned()],
-            HashSet::new(),
-        )
-        .expect("client construction should succeed");
-
-        let start = std::time::Instant::now();
-        let result = verifier.verify("some.jwt.token").await;
-        let elapsed = start.elapsed();
-
-        assert!(result.is_err(), "unreachable apiserver must not succeed");
-        assert!(
-            matches!(result, Err(VerifyError::Unreachable)),
-            "expected Unreachable, got {result:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "must fail within the client timeout (~2s), not hang — took {elapsed:?}"
-        );
     }
 }
