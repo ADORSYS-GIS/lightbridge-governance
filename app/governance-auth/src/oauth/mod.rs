@@ -75,7 +75,7 @@ pub async fn login(
     // strictly worse than an un-instrumented client. Reported loudly instead.
     // `configure` (the subcommand) propagates the same error, because there
     // the developer asked for exactly this and nothing else.
-    if let Err(error) = apply_telemetry(config, &session, optout) {
+    if let Err(error) = apply_telemetry(config, &session, optout, cli::serve_otel_is_supported()) {
         eprintln!("warning: could not configure telemetry: {error:#}");
     }
     Ok(())
@@ -98,6 +98,13 @@ fn apply_telemetry(
     config: &OauthConfig,
     session: &CachedSession,
     optout: ClientOptOut,
+    // Taken as a parameter rather than asked for internally via
+    // `cli::serve_otel_is_supported()` (#280 review round 2 follow-up, same
+    // reasoning as `schedule::daemon::Invocation::resolve`'s own
+    // `serve_otel_supported` parameter): this build's real answer changes the
+    // moment `serve --otel` (#268) ships, and a test asserting the *unsupported*
+    // branch must keep working after that, not just until this binary catches up.
+    serve_otel_supported: bool,
 ) -> Result<()> {
     let telemetry_requested = config.otel_endpoint.is_some();
     let inference_requested = config.gateway_url.is_some();
@@ -142,7 +149,7 @@ fn apply_telemetry(
     // every daemon-profile side effect happens together, or none of them do.
     if telemetry_requested
         && config.profile == crate::profile::Profile::Daemon
-        && !cli::serve_otel_is_supported()
+        && !serve_otel_supported
     {
         bail!(
             "refusing to configure the `daemon` profile: this build of governance-auth does \
@@ -386,7 +393,7 @@ pub(super) async fn refresh_or_fail(
 pub fn configure(config: &OauthConfig, optout: ClientOptOut) -> Result<()> {
     let session = cache::load(&config.issuer, &config.client_id)?
         .context("no cached session for this issuer/client; run `governance-auth login` first")?;
-    apply_telemetry(config, &session, optout)?;
+    apply_telemetry(config, &session, optout, cli::serve_otel_is_supported())?;
     // Persist here as well as on `login`. Writing only on `login` meant an
     // existing install never got a config file: upgrading keeps a valid cached
     // session, so `login` is never run again, so every later command kept
@@ -533,7 +540,7 @@ mod tests {
     /// comment on `login`'s call site).
     #[test]
     fn configure_fails_loudly_when_neither_otel_endpoint_nor_gateway_url_is_set() {
-        let error = apply_telemetry(&config(), &session(), ClientOptOut::default())
+        let error = apply_telemetry(&config(), &session(), ClientOptOut::default(), true)
             .expect_err("neither flag set must be a hard error, not a silent no-op");
         let rendered = format!("{error:#}");
         assert!(
@@ -550,10 +557,11 @@ mod tests {
     /// ANY of `apply_telemetry`'s three daemon-profile side effects, not just
     /// at the last one (`schedule::daemon::apply`, which used to catch this
     /// too late and have its `Err` downgraded to a warning by its caller --
-    /// see the removed call site's old comment). This build has no `serve`
-    /// verb (`crate::cli::serve_otel_is_supported()` is deterministically
-    /// `false` here, not mocked), so a `Daemon`-profile config with an
-    /// endpoint must refuse outright.
+    /// see the removed call site's old comment). `serve_otel_supported` is
+    /// passed as `false` explicitly (not read from `cli::serve_otel_is_supported()`
+    /// -- see `apply_telemetry`'s parameter doc): this test asserts the
+    /// *unsupported* branch, which must keep working once #268 ships and this
+    /// build's own answer flips to `true`, not just until then.
     ///
     /// Hermetic by construction, not just by assertion: the chokepoint bails
     /// before `apply_telemetry` ever reads `$HOME`, so this needs no
@@ -568,7 +576,7 @@ mod tests {
             profile: crate::profile::Profile::Daemon,
             ..config()
         };
-        let error = apply_telemetry(&config, &session(), ClientOptOut::default())
+        let error = apply_telemetry(&config, &session(), ClientOptOut::default(), false)
             .expect_err("daemon profile on a build with no serve verb must refuse, not warn");
         let rendered = format!("{error:#}");
         assert!(
