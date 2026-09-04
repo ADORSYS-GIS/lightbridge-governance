@@ -467,9 +467,10 @@ model ModelPricing {
 // Ingestion is deliberately NOT a schema procedure. The OpenTelemetry
 // Collector pushes OTLP over plain HTTP JSON -- it cannot be taught CBOR, the
 // same constraint that keeps `/internal/v1/resolve` off this router (ADR-0009,
-// and the schema comment on `IngestManifest`). The ingest path is therefore a
-// hand-written `/internal/v1/ingest` route (merged alongside resolve in
-// `main.rs`) that calls `governance_core::ingest::ingest_telemetry`; that
-// function is the single persistence entry point, its raw SQL being the
-// sanctioned escape hatch for a procedure body (ADR-0009, matching
-// `credential::issue`). The tables below are the normalized model it writes.
+// and the schema comment on `IngestManifest`). The former `/internal/v1/ingest`
+// HTTP route was removed (#243) -- no caller ever existed -- but the
+// persistence entry point it called, `governance_core::ingest::ingest_telemetry`,
+// remains the single write path used by the pull connector and the Foundry
+// normalizers; its raw SQL is the sanctioned escape hatch for a procedure body
+// (ADR-0009, matching `credential::issue`). The tables below are the
+// normalized model it writes.

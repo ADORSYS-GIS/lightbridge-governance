@@ -1,14 +1,12 @@
 //! The governance API: the read surface over the registry and both connectors'
-//! normalized data, plus `/internal/v1/resolve` for Authorino, `/internal/v1/ingest`
-//! for OTLP telemetry, and `/metrics` for the ServiceMonitor.
+//! normalized data, plus `/internal/v1/resolve` for Authorino and `/metrics`
+//! for the ServiceMonitor.
 //!
 //! It also OWNS the connector operational metrics (ADR-0007): a CronJob pod
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
 //! and this always-running process derives `governance_connector_*` from them.
 
-mod ingest;
 mod metrics;
-mod rate_limit;
 mod resolve;
 mod router;
 
@@ -39,12 +37,6 @@ struct Args {
     #[arg(long, env = "INTERNAL_RESOLVE_TOKEN")]
     internal_resolve_token: String,
 
-    /// Shared secret the OpenTelemetry Collector presents as
-    /// `X-Internal-Token` on `/internal/v1/ingest` (#30). Never logged --
-    /// only its presence/absence is, via the request outcome.
-    #[arg(long, env = "INTERNAL_INGEST_TOKEN")]
-    internal_ingest_token: String,
-
     /// Upper bound on `/internal/v1/resolve`'s credential lookup, in
     /// milliseconds. Deliberately far below sqlx's own 30s pool default --
     /// this is Authorino's ext_authz hot path, and a dependency's own
@@ -56,8 +48,8 @@ struct Args {
     /// ADR-0007). This *is* the revocation SLA the runbook documents --
     /// `docs/runbooks/revoke-an-integration-token.md` -- so it must match
     /// `config/default.yaml`'s `resolveCache.ttlSeconds` default. Has a
-    /// `default_value_t` deliberately: an env var with no default is how the
-    /// `INTERNAL_INGEST_TOKEN` chart gap became a CrashLoopBackOff (see
+    /// `default_value_t` deliberately: an env var with no default is how
+    /// `INTERNAL_INGEST_TOKEN` (since removed) became a CrashLoopBackOff (see
     /// AGENTS.md); this one must never repeat that.
     #[arg(long, env = "RESOLVE_CACHE_TTL_SECS", default_value_t = 60)]
     resolve_cache_ttl_secs: u64,
@@ -68,15 +60,6 @@ struct Args {
     /// why this also carries a `default_value_t`.
     #[arg(long, env = "RESOLVE_CACHE_MAX_CAPACITY", default_value_t = 10_000)]
     resolve_cache_max_capacity: u64,
-
-    /// Max `/internal/v1/ingest` requests per integration per
-    /// `INGEST_RATE_WINDOW_SECS`. A throttle, not a billing meter.
-    #[arg(long, env = "INGEST_RATE_MAX_PER_WINDOW", default_value_t = 600)]
-    ingest_rate_max_per_window: u64,
-
-    /// Fixed window length for the `/internal/v1/ingest` rate limiter.
-    #[arg(long, env = "INGEST_RATE_WINDOW_SECS", default_value_t = 60)]
-    ingest_rate_window_secs: u64,
 
     /// Single-tenant deployment (ADR-0001). Scopes the `governance_connector_*`
     /// freshness query `/metrics` derives from `ingest_manifests` (ADR-0007) --
@@ -158,22 +141,10 @@ async fn main() -> Result<()> {
     };
     let db = Cratestack::builder(pool.clone()).build();
     let metrics = Arc::new(metrics::Metrics::new());
-    // Cloned before `pool` moves into `ingest_state` below -- `PgPool` is
-    // Arc-backed, so this is a refcount bump, not a new connection pool.
-    let connector_metrics_pool = pool.clone();
     let tenant_id: Arc<str> = Arc::from(args.tenant_id.as_str());
     let connector_metrics_timeout =
         std::time::Duration::from_millis(args.connector_metrics_timeout_ms);
     let org_kpi_timeout = std::time::Duration::from_millis(args.org_kpi_timeout_ms);
-    let ingest_state = ingest::IngestState {
-        pool,
-        internal_token: Arc::from(args.internal_ingest_token.as_str()),
-        rate_limiter: Arc::new(rate_limit::RateLimiter::new(
-            args.ingest_rate_max_per_window,
-            args.ingest_rate_window_secs,
-        )),
-        metrics: metrics.clone(),
-    };
 
     let app = router::build_router(db).merge(
         axum::Router::new()
@@ -182,16 +153,6 @@ async fn main() -> Result<()> {
                 axum::routing::post(resolve::resolve),
             )
             .with_state(resolve_state)
-            .route("/internal/v1/ingest", axum::routing::post(ingest::ingest))
-            // Deliberate body cap for the OTLP export batch: axum's implicit
-            // default is 2 MiB; agent telemetry batches can be larger, so the
-            // limit is raised and made explicit rather than left at an
-            // undocumented default that silently drops oversize payloads with
-            // a 413 (a permanent, non-retried failure for the collector).
-            .layer(axum::extract::DefaultBodyLimit::max(
-                ingest::MAX_OTLP_BODY_BYTES,
-            ))
-            .with_state(ingest_state)
             // Health and metrics are unauthenticated and deliberately outside
             // the registry/resolve auth paths, so an orchestrator can probe a
             // service that is otherwise refusing traffic.
@@ -201,7 +162,7 @@ async fn main() -> Result<()> {
                 "/metrics",
                 axum::routing::get(move || {
                     let metrics = Arc::clone(&metrics);
-                    let pool = connector_metrics_pool.clone();
+                    let pool = pool.clone();
                     let tenant_id = Arc::clone(&tenant_id);
                     async move {
                         // Refresh-on-scrape, bounded by a timeout well under

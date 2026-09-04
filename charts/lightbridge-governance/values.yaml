@@ -597,14 +597,13 @@ networkPolicy:
 # absent -- but the "waits in ContainerCreating until ESO has synced" behaviour
 # depends on that Kubernetes default rather than on an explicit chart setting.
 #
-# NOTE: `dbPasswordProperty`/`internalResolveTokenProperty`/
-# `internalIngestTokenProperty` name properties inside `remoteKey` that this
-# chart assumes but has not verified live against the actual secret store
-# entry (unlike redact-gateway's `saltProperty`, which was) -- confirm they
-# match before relying on this in a real environment. All three are plain
-# random opaque values (e.g. `openssl rand -hex 32`) -- there is no format to
-# derive or compute for any of them; an operator just needs to generate one
-# and write it to the store once.
+# NOTE: `dbPasswordProperty`/`internalResolveTokenProperty` name properties
+# inside `remoteKey` that this chart assumes but has not verified live against
+# the actual secret store entry (unlike redact-gateway's `saltProperty`, which
+# was) -- confirm they match before relying on this in a real environment.
+# Both are plain random opaque values (e.g. `openssl rand -hex 32`) --
+# there is no format to derive or compute for either of them; an operator just
+# needs to generate one and write it to the store once.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
@@ -614,13 +613,6 @@ externalSecret:
   # above for why that would be redundant.
   dbPasswordProperty: governance_db_password
   internalResolveTokenProperty: governance_internal_resolve_token
-  # Shared secret the OpenTelemetry Collector presents on `/internal/v1/ingest`
-  # (#30, RFC-0002). Wired the same way as internalResolveTokenProperty: an
-  # ExternalSecret `data` entry below and a required (never-optional)
-  # secretKeyRef in the `app-template.controllers.api` container env.
-  # Required -- main.rs has no default, so a pod started without it never
-  # comes up (clap errors "required argument missing").
-  internalIngestTokenProperty: governance_internal_ingest_token
   # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
   # users all read). Property names must be created in the remote entries when
@@ -732,11 +724,6 @@ app-template:
                 secretKeyRef:
                   name: lightbridge-governance-env
                   key: governance_internal_resolve_token
-            INTERNAL_INGEST_TOKEN:
-              valueFrom:
-                secretKeyRef:
-                  name: lightbridge-governance-env
-                  key: governance_internal_ingest_token
             # Both have safe defaults in the binary (60s / 10000 entries) --
             # exposed here as ordinary, always-optional values.
             RESOLVE_CACHE_TTL_SECS: "60"
@@ -751,7 +738,8 @@ app-template:
           # clause of the `ingest_manifests` freshness query /metrics derives
           # from (ADR-0007). Drop this envFrom and the pod CrashLoopBackOffs
           # on every start during clap parsing, which is exactly how
-          # INTERNAL_INGEST_TOKEN was broken before it was wired.
+          # INTERNAL_INGEST_TOKEN (since removed) was broken before it was
+          # wired.
           #
           # It cannot be a `{{ .Values.copilot.tenantId }}` literal in this
           # block: app-template does run `tpl` on env values, but in the
