@@ -6,6 +6,7 @@
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
 //! and this always-running process derives `governance_connector_*` from them.
 
+mod authn;
 mod ingest;
 mod metrics;
 mod rate_limit;
@@ -33,11 +34,26 @@ struct Args {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
-    /// Shared secret Authorino's `metadata.http` step presents as
-    /// `X-Internal-Token` on `/internal/v1/resolve` (#11, ADR-0006). Never
-    /// logged -- only its presence/absence is, via the request outcome.
-    #[arg(long, env = "INTERNAL_RESOLVE_TOKEN")]
-    internal_resolve_token: String,
+    /// Base URL of the kube-apiserver, used for TokenReview-based caller
+    /// authentication on `/internal/v1/resolve` (ADR-0017). The
+    /// `/apis/authentication.k8s.io/v1/tokenreviews` path is appended
+    /// internally. Typically `https://kubernetes.default.svc` in-cluster.
+    #[arg(long, env = "KUBE_APISERVER_URL")]
+    kube_apiserver_url: String,
+
+    /// Audience the projected ServiceAccount token must carry to pass
+    /// TokenReview (ADR-0017). Must match the `audience` in the projected
+    /// volume's `serviceAccountToken` source.
+    #[arg(long, env = "TOKEN_REVIEW_AUDIENCE", default_value = "api")]
+    token_review_audience: String,
+
+    /// Comma-separated list of permitted ServiceAccount identities that may
+    /// call `/internal/v1/resolve`, in `namespace/name` format (ADR-0017).
+    /// Authorino's own SA must be in this list. No default: an empty
+    /// allowlist rejects every caller, which is the safe startup failure
+    /// (same pattern as `TENANT_ID`).
+    #[arg(long, env = "ALLOWED_SERVICE_ACCOUNTS", value_parser = parse_allowed_accounts)]
+    allowed_service_accounts: std::collections::HashSet<String>,
 
     /// Shared secret the OpenTelemetry Collector presents as
     /// `X-Internal-Token` on `/internal/v1/ingest` (#30). Never logged --
@@ -137,6 +153,41 @@ fn parse_tenant_id(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
+/// Parses a comma-separated list of `<namespace>/<name>` ServiceAccount
+/// identities. Rejects empty or whitespace-only entries, and entries that
+/// don't contain a `/` separator (the namespace/name boundary).
+fn parse_allowed_accounts(raw: &str) -> Result<std::collections::HashSet<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("ALLOWED_SERVICE_ACCOUNTS is set but empty. It lists the \
+             ServiceAccounts permitted to call /internal/v1/resolve \
+             (ADR-0017). An empty list rejects every caller. Set it to \
+             at least Authorino's SA (e.g. \"authorino/authorino\")."
+            .to_owned());
+    }
+    let mut accounts = std::collections::HashSet::new();
+    for entry in trimmed.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if !entry.contains('/') {
+            return Err(format!(
+                "ALLOWED_SERVICE_ACCOUNTS entry \"{entry}\" is not in \
+                 namespace/name format (e.g. \"authorino/authorino\"). \
+                 Every entry must contain a `/` separator."
+            ));
+        }
+        accounts.insert(entry.to_owned());
+    }
+    if accounts.is_empty() {
+        return Err("ALLOWED_SERVICE_ACCOUNTS contains no valid entries after \
+             trimming. Every entry must be in namespace/name format."
+            .to_owned());
+    }
+    Ok(accounts)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
@@ -146,10 +197,15 @@ async fn main() -> Result<()> {
     tracing::info!(listen_addr = %args.listen_addr, "lightbridge-governance starting");
 
     let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-    let internal_token: Arc<str> = Arc::from(args.internal_resolve_token.as_str());
+    let verifier = authn::TokenReviewVerifier::new(
+        args.kube_apiserver_url,
+        vec![args.token_review_audience],
+        args.allowed_service_accounts,
+    )
+    .map_err(|e| anyhow::anyhow!("TokenReview verifier init failed: {e}"))?;
     let resolve_state = resolve::ResolveState {
         pool: pool.clone(),
-        internal_token: internal_token.clone(),
+        verifier,
         resolve_timeout: std::time::Duration::from_millis(args.resolve_timeout_ms),
         cache: resolve::build_cache(
             std::time::Duration::from_secs(args.resolve_cache_ttl_secs),

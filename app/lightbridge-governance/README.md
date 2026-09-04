@@ -11,7 +11,7 @@ collector records run outcomes in `ingest_manifests` and this always-running pro
 | Route | Payload | Auth | Owner |
 |---|---|---|---|
 | Everything under `schema.cstack`'s generated router | CBOR | `x-auth-id` header, forwarded by the gateway ([`router.rs`](src/router.rs)) | `governance-core` |
-| `POST /internal/v1/resolve` | **JSON** — the one sanctioned exception (ADR-0009); Authorino's `metadata.http` step can't be taught CBOR | Shared secret (`X-Internal-Token`) | [`resolve.rs`](src/resolve.rs) |
+| `POST /internal/v1/resolve` | **JSON** — the one sanctioned exception (ADR-0009); Authorino's `metadata.http` step can't be taught CBOR | Kubernetes TokenReview (ADR-0017) — Authorino presents a projected ServiceAccount token | [`resolve.rs`](src/resolve.rs) / [`authn.rs`](src/authn.rs) |
 | `GET /metrics` | Prometheus text | none | [`metrics.rs`](src/metrics.rs) |
 | `GET /livez`, `GET /readyz` | plain text | none | `main.rs` |
 
@@ -27,18 +27,28 @@ what a DB outage looks like on this endpoint.
 
 ## `/internal/v1/resolve` is fail-closed by design
 
-Every rejection cause — a wrong shared secret, a malformed body, an unknown credential, a
-revoked one, or a database error — returns the identical `401` with an empty body. The
-*reason* is only ever visible in the `tracing` logs at the point of rejection; this is
-deliberate (ADR-0006), not an oversight to fix. See `resolve.rs`'s module doc for the full
-rationale, including why a database error must never resolve to "allow".
+Caller authentication is Kubernetes TokenReview (ADR-0017): Authorino presents a projected
+ServiceAccount token in `Authorization: Bearer`, and this process validates it against the
+kube-apiserver's TokenReview API, then checks the authenticated ServiceAccount against the
+`ALLOWED_SERVICE_ACCOUNTS` allowlist. Every non-happy path — missing token, unreachable
+kube-apiserver, `authenticated: false`, ServiceAccount not in the allowlist, a malformed body,
+an unknown credential, a revoked one, or a database error — returns the identical `401` with
+an empty body. The *reason* is only ever visible in the `tracing` logs at the point of
+rejection; this is deliberate (ADR-0006), not an oversight to fix. See `resolve.rs`'s module
+doc for the full rationale, including why a database error must never resolve to "allow".
+
+Fail-closed is the invariant, not a preference: when the kube-apiserver is unreachable the
+answer is *withhold*, never *allow* (AGENTS.md's first review question). See `authn.rs` for
+the `TokenReviewVerifier` and its sabotage-first tests.
 
 ## Running locally
 
 ```bash
 just up && just migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lightbridge_governance \
-INTERNAL_RESOLVE_TOKEN=dev-token \
+KUBE_APISERVER_URL=https://kubernetes.default.svc \
+TOKEN_REVIEW_AUDIENCE=api \
+ALLOWED_SERVICE_ACCOUNTS=authorino/authorino \
 INTERNAL_INGEST_TOKEN=dev-token \
 TENANT_ID=dev-tenant \
 cargo run --bin lightbridge-governance
@@ -47,9 +57,13 @@ cargo run --bin lightbridge-governance
 `TENANT_ID` has no default (ADR-0001: single-tenant per deployment, and `governance_connector_*`
 scopes its `ingest_manifests` query by it, per the house rule that `tenant_id` belongs in the
 WHERE clause of every query even here) — the process will not start without it, matching
-`INTERNAL_RESOLVE_TOKEN`/`INTERNAL_INGEST_TOKEN`. See `main.rs`'s `Args` struct for the full
-list of `env`-bindable CLI args and their defaults, including `CONNECTOR_METRICS_TIMEOUT_MS`
-(bounds the `governance_connector_*` query, see `metrics.rs`).
+`INTERNAL_INGEST_TOKEN`. `ALLOWED_SERVICE_ACCOUNTS` likewise has no default: an empty allowlist
+rejects every caller, which is the safe startup failure. Locally there is no in-cluster CA or
+SA token, so the `TokenReviewVerifier` falls back to system roots and an empty bearer token —
+the endpoint will fail closed against a real apiserver unless you run in-cluster. See
+`main.rs`'s `Args` struct for the full list of `env`-bindable CLI args and their defaults,
+including `CONNECTOR_METRICS_TIMEOUT_MS` (bounds the `governance_connector_*` query, see
+`metrics.rs`).
 
 ## Deploying
 

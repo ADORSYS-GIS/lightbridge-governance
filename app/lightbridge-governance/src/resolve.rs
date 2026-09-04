@@ -1,16 +1,24 @@
-//! `/internal/v1/resolve` for Authorino (#11, ADR-0006). JSON, not CBOR --
-//! the one sanctioned exception (ADR-0009): Authorino's `metadata.http` step
-//! speaks JSON and cannot be taught CBOR. Not part of the cratestack-generated
-//! router -- a plain hand-written axum route, merged alongside it in
-//! `main.rs`, that calls into `governance_core::credential::resolve` (#10).
+//! `/internal/v1/resolve` for Authorino (#11, ADR-0006, ADR-0017). JSON, not
+//! CBOR -- the one sanctioned exception (ADR-0009): Authorino's `metadata.http`
+//! step speaks JSON and cannot be taught CBOR. Not part of the
+//! cratestack-generated router -- a plain hand-written axum route, merged
+//! alongside it in `main.rs`, that calls into
+//! `governance_core::credential::resolve` (#10).
+//!
+//! Caller authentication: Kubernetes TokenReview (ADR-0017). Authorino
+//! presents a projected ServiceAccount token in `Authorization: Bearer`; this
+//! module extracts it and passes it to [`crate::authn::TokenReviewVerifier`],
+//! which calls the kube-apiserver's TokenReview API. The shared
+//! `X-Internal-Token` secret is gone (with #243 removing the ingest copy,
+//! this was the last one).
 //!
 //! Fail-closed is the whole point (#11's own words: "the single most
-//! important criterion in this story"). Every rejection -- wrong shared
-//! secret, malformed body, unknown credential, revoked credential, or a
-//! database error inside `resolve` -- returns the exact same `401` with an
-//! empty body. There is no response that distinguishes "no such tenant" from
-//! "revoked" from "you posted garbage"; that distinction exists only in the
-//! `tracing` logs at the point of rejection, matching the AC.
+//! important criterion in this story"). Every rejection -- missing token,
+//! TokenReview failure, malformed body, unknown credential, revoked
+//! credential, or a database error inside `resolve` -- returns the exact same
+//! `401` with an empty body. There is no response that distinguishes "no such
+//! tenant" from "revoked" from "you posted garbage"; that distinction exists
+//! only in the `tracing` logs at the point of rejection, matching the AC.
 //!
 //! The cache TTL Authorino applies to this endpoint's response **is** the
 //! revocation SLA -- already decided and documented in ADR-0006 and
@@ -37,10 +45,10 @@
 //!
 //! **What is and is not cached:** only a *definitive* answer from the
 //! database -- i.e. `Ok`, a resolved identity -- is ever inserted. Every
-//! `Err` path (timeout, malformed body, bad shared secret, and the
-//! `CredentialRejected` `governance_core::credential::resolve` returns) is
-//! left uncached. This is deliberately more conservative than "cache
-//! definitive negatives, not errors": `credential::resolve`'s own doc
+//! `Err` path (timeout, malformed body, missing token, TokenReview failure,
+//! and the `CredentialRejected` `governance_core::credential::resolve`
+//! returns) is left uncached. This is deliberately more conservative than
+//! "cache definitive negatives, not errors": `credential::resolve`'s own doc
 //! comment says it folds a genuine database error into the *same*
 //! `CredentialRejected` variant as "unknown" and "revoked" ("callers get a
 //! single opaque rejection regardless of cause"), specifically so the HTTP
@@ -55,10 +63,7 @@
 //! pre-existing behaviour, not a regression, and is bounded by the same
 //! `resolve_timeout` that already protects this path.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use axum::{
     Json,
@@ -71,7 +76,8 @@ use governance_core::credential::ResolvedIdentity;
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
+
+use crate::authn::TokenReviewVerifier;
 
 /// Token -> resolved identity, keyed by [`cache_key`]. Bounded (`max_capacity`)
 /// and time-limited (`time_to_live`) per `config/default.yaml`'s
@@ -103,7 +109,11 @@ fn cache_key(credential: &str) -> String {
 #[derive(Clone)]
 pub struct ResolveState {
     pub pool: PgPool,
-    pub internal_token: Arc<str>,
+    /// Kubernetes TokenReview verifier (ADR-0017). Replaces the shared
+    /// `X-Internal-Token` secret with per-caller identity: each Authorino
+    /// `metadata.http` step presents a projected ServiceAccount token, and
+    /// this verifier validates it via the kube-apiserver.
+    pub verifier: TokenReviewVerifier,
     /// Bounds the credential lookup itself -- sqlx's own default pool
     /// `acquire_timeout` is 30s, which would hang this hot-path endpoint (and
     /// every request behind it in Authorino) for 30 real seconds under a DB
@@ -147,7 +157,11 @@ impl From<ResolvedIdentity> for ResolveResponse {
 /// Never rendered into the HTTP response -- only into a `tracing` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RejectReason {
-    BadSharedSecret,
+    /// No `Authorization: Bearer` header present.
+    MissingToken,
+    /// Kubernetes TokenReview failed (unreachable apiserver, not
+    /// authenticated, or ServiceAccount not in allowlist). ADR-0017.
+    TokenReviewFailed,
     MalformedBody,
     CredentialRejected,
     Timeout,
@@ -156,7 +170,8 @@ enum RejectReason {
 impl std::fmt::Display for RejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::BadSharedSecret => "bad_shared_secret",
+            Self::MissingToken => "missing_token",
+            Self::TokenReviewFailed => "token_review_failed",
             Self::MalformedBody => "malformed_body",
             Self::CredentialRejected => "credential_rejected",
             Self::Timeout => "timeout",
@@ -164,17 +179,12 @@ impl std::fmt::Display for RejectReason {
     }
 }
 
-fn shared_secret_is_valid(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(presented) = headers
-        .get("x-internal-token")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return false;
-    };
-    // Constant-time: this header authenticates Authorino itself, so a timing
-    // side-channel here is the same class of bug the credential module
-    // already guards against for the credential comparison itself.
-    bool::from(presented.as_bytes().ct_eq(expected.as_bytes()))
+/// Extracts the Bearer token from the `Authorization` header. Returns `None`
+/// if the header is missing, is not valid UTF-8, or does not start with
+/// `Bearer ` (case-sensitive, per RFC 6750 §2.1).
+fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let header = headers.get("authorization")?.to_str().ok()?;
+    header.strip_prefix("Bearer ")
 }
 
 async fn handle(
@@ -182,9 +192,13 @@ async fn handle(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<ResolveResponse, RejectReason> {
-    if !shared_secret_is_valid(headers, &state.internal_token) {
-        return Err(RejectReason::BadSharedSecret);
-    }
+    // ADR-0017: extract and verify the Bearer token via Kubernetes
+    // TokenReview. Fail-closed on every path.
+    let bearer_token = extract_bearer_token(headers).ok_or(RejectReason::MissingToken)?;
+    state.verifier.verify(bearer_token).await.map_err(|error| {
+        tracing::info!(%error, "resolve: token review failed");
+        RejectReason::TokenReviewFailed
+    })?;
 
     let request: ResolveRequest =
         serde_json::from_slice(body).map_err(|_| RejectReason::MalformedBody)?;
@@ -237,34 +251,45 @@ mod tests {
 
     use super::*;
 
-    fn headers_with_token(token: &str) -> HeaderMap {
+    fn headers_with_bearer(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("x-internal-token", HeaderValue::from_str(token).unwrap());
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("valid header value"),
+        );
         headers
     }
 
     #[test]
-    fn shared_secret_check_accepts_the_correct_token() {
-        assert!(shared_secret_is_valid(
-            &headers_with_token("correct-horse-battery-staple"),
-            "correct-horse-battery-staple"
-        ));
+    fn extract_bearer_token_returns_the_token_from_a_valid_header() {
+        let headers = headers_with_bearer("my-jwt-token");
+        assert_eq!(extract_bearer_token(&headers), Some("my-jwt-token"));
     }
 
     #[test]
-    fn shared_secret_check_rejects_a_wrong_token() {
-        assert!(!shared_secret_is_valid(
-            &headers_with_token("wrong"),
-            "correct-horse-battery-staple"
-        ));
+    fn extract_bearer_token_rejects_a_missing_header() {
+        assert_eq!(extract_bearer_token(&HeaderMap::new()), None);
     }
 
     #[test]
-    fn shared_secret_check_rejects_a_missing_header() {
-        assert!(!shared_secret_is_valid(
-            &HeaderMap::new(),
-            "correct-horse-battery-staple"
-        ));
+    fn extract_bearer_token_rejects_a_non_bearer_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_rejects_a_lowercase_bearer_prefix() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("bearer some-token"),
+        );
+        // RFC 6750 §2.1 says "Bearer" is case-sensitive
+        assert_eq!(extract_bearer_token(&headers), None);
     }
 
     /// The resolve decision table (#11's own required "Unit" test), against
@@ -276,25 +301,56 @@ mod tests {
             pool: cratestack::sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgres://x:x@127.0.0.1:1/does-not-matter")
                 .expect("lazy pool construction never actually connects"),
-            internal_token: Arc::from("the-real-token"),
+            verifier: TokenReviewVerifier::new(
+                "https://127.0.0.1:1".to_owned(),
+                vec!["api".to_owned()],
+                std::collections::HashSet::new(),
+            )
+            .expect("client construction should succeed"),
             resolve_timeout: Duration::from_millis(200),
             cache: build_cache(Duration::from_secs(60), 10_000),
         }
     }
 
+    /// ADR-0017, AC 3: no credential → refused. The bearer token is missing
+    /// from the Authorization header entirely.
     #[tokio::test]
-    async fn handle_rejects_a_wrong_shared_secret_before_touching_the_body_or_db() {
+    async fn handle_rejects_a_missing_authorization_header() {
         let state = unreachable_state();
-        let result = handle(&state, &headers_with_token("wrong-token"), b"not even json").await;
-        assert_eq!(result, Err(RejectReason::BadSharedSecret));
+        let result = handle(&state, &HeaderMap::new(), b"not even json").await;
+        assert_eq!(result, Err(RejectReason::MissingToken));
     }
 
+    /// ADR-0017, AC 3: wrong audience / unreachable apiserver → refused.
+    /// This is the fail-closed invariant: a dependency being down must never
+    /// become a bypass. The verifier points at an unreachable kube-apiserver
+    /// (127.0.0.1:1), so the reqwest call fails before any response is
+    /// received.
     #[tokio::test]
-    async fn handle_rejects_a_malformed_body() {
+    async fn handle_rejects_when_kube_apiserver_is_unreachable() {
         let state = unreachable_state();
         let result = handle(
             &state,
-            &headers_with_token("the-real-token"),
+            &headers_with_bearer("some.jwt.token"),
+            b"not even json",
+        )
+        .await;
+        assert_eq!(result, Err(RejectReason::TokenReviewFailed));
+    }
+
+    /// ADR-0017, AC 3: a token from a non-allowed identity → refused.
+    /// Uses `always_accept` to bypass TokenReview, then checks that body
+    /// parsing still works. The real allowlist check happens in the verifier;
+    /// this test proves the handle path reaches it.
+    #[tokio::test]
+    async fn handle_rejects_a_malformed_body() {
+        let state = ResolveState {
+            verifier: TokenReviewVerifier::always_accept(),
+            ..unreachable_state()
+        };
+        let result = handle(
+            &state,
+            &headers_with_bearer("valid-token"),
             b"not json at all",
         )
         .await;
@@ -315,11 +371,14 @@ mod tests {
         // `handle`, this test genuinely took ~30s (sqlx's default pool
         // `acquire_timeout`) -- measured directly, not assumed, when this
         // test first ran against the unbounded `resolve` call.
-        let state = unreachable_state();
+        let state = ResolveState {
+            verifier: TokenReviewVerifier::always_accept(),
+            ..unreachable_state()
+        };
         let body = serde_json::to_vec(&serde_json::json!({"credential": "gov_whatever"})).unwrap();
 
         let start = Instant::now();
-        let result = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        let result = handle(&state, &headers_with_bearer("valid-token"), &body).await;
         let elapsed = start.elapsed();
 
         assert_eq!(result, Err(RejectReason::Timeout));
@@ -347,7 +406,10 @@ mod tests {
     /// timing.
     #[tokio::test]
     async fn a_cache_hit_is_served_without_ever_touching_the_db() {
-        let state = unreachable_state();
+        let state = ResolveState {
+            verifier: TokenReviewVerifier::always_accept(),
+            ..unreachable_state()
+        };
         let credential = "gov_cache-hit-test";
         let identity = sample_identity();
         state
@@ -356,7 +418,7 @@ mod tests {
             .await;
 
         let body = serde_json::to_vec(&serde_json::json!({"credential": credential})).unwrap();
-        let result = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        let result = handle(&state, &headers_with_bearer("valid-token"), &body).await;
 
         assert_eq!(result, Ok(ResolveResponse::from(identity)));
     }
@@ -369,11 +431,14 @@ mod tests {
     /// near-instantly, which is what a poisoned cache entry would look like.
     #[tokio::test]
     async fn a_db_timeout_is_never_cached_so_a_second_lookup_still_attempts_the_db() {
-        let state = unreachable_state();
+        let state = ResolveState {
+            verifier: TokenReviewVerifier::always_accept(),
+            ..unreachable_state()
+        };
         let credential = "gov_never-cached";
         let body = serde_json::to_vec(&serde_json::json!({"credential": credential})).unwrap();
 
-        let first = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        let first = handle(&state, &headers_with_bearer("valid-token"), &body).await;
         assert_eq!(first, Err(RejectReason::Timeout));
         assert!(
             state.cache.get(&cache_key(credential)).await.is_none(),
@@ -381,7 +446,7 @@ mod tests {
         );
 
         let start = Instant::now();
-        let second = handle(&state, &headers_with_token("the-real-token"), &body).await;
+        let second = handle(&state, &headers_with_bearer("valid-token"), &body).await;
         let elapsed = start.elapsed();
 
         assert_eq!(second, Err(RejectReason::Timeout));
@@ -453,17 +518,17 @@ mod tests {
         governance_core::migrate::run(&pool).await.expect("migrate");
         Some(ResolveState {
             pool,
-            internal_token: Arc::from("the-real-token"),
+            verifier: TokenReviewVerifier::always_accept(),
             resolve_timeout: Duration::from_secs(2),
             cache,
         })
     }
 
     /// #11's other required "Integration" tests: valid resolve, revoked
-    /// resolve -- through the *full* `handle()` path (shared-secret check,
-    /// JSON parsing, `governance_core::credential::resolve`, response
-    /// mapping), not just the credential module in isolation (already
-    /// covered by #10's own tests).
+    /// resolve -- through the *full* `handle()` path (TokenReview
+    /// authentication, JSON parsing, `governance_core::credential::resolve`,
+    /// response mapping), not just the credential module in isolation
+    /// (already covered by #10's own tests).
     ///
     /// Extended, not left as-is, now that `handle` caches positive answers:
     /// the pre-cache version of this test called `handle` twice against the
@@ -545,7 +610,7 @@ mod tests {
 
         let body = serde_json::to_vec(&serde_json::json!({"credential": issued.secret})).unwrap();
 
-        let resolved = handle(&state, &headers_with_token("the-real-token"), &body)
+        let resolved = handle(&state, &headers_with_bearer("valid-token"), &body)
             .await
             .expect("a freshly issued credential must resolve");
         assert_eq!(resolved.tenant_id, tenant_id);
@@ -575,7 +640,7 @@ mod tests {
         // entry keeps resolving the now-revoked credential -- this is the
         // "not instantly" a still-warm entry buys, bounded by the TTL.
         let after_revoke_same_state =
-            handle(&state, &headers_with_token("the-real-token"), &body).await;
+            handle(&state, &headers_with_bearer("valid-token"), &body).await;
         assert_eq!(
             after_revoke_same_state,
             Ok(resolved),
@@ -593,7 +658,7 @@ mod tests {
             ..state.clone()
         };
         let after_revoke_cold_cache =
-            handle(&fresh_state, &headers_with_token("the-real-token"), &body).await;
+            handle(&fresh_state, &headers_with_bearer("valid-token"), &body).await;
         assert_eq!(
             after_revoke_cold_cache,
             Err(RejectReason::CredentialRejected),

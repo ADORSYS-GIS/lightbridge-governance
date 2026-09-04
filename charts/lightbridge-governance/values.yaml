@@ -4,6 +4,18 @@
 # ignoreMissingValueFiles silently falls back to these defaults.
 name: lightbridge-governance
 
+# RBAC for TokenReview-based caller authentication on /internal/v1/resolve
+# (ADR-0017). When enabled, creates a ClusterRole granting `create` on
+# `tokenreviews.authentication.k8s.io` and binds it to the governance pod's
+# ServiceAccount.
+rbac:
+  enabled: true
+
+# Comma-separated list of permitted ServiceAccount identities that may call
+# `/internal/v1/resolve` (ADR-0017). Authorino's own SA must be in this list.
+# Each entry is in `namespace/name` format.
+allowedServiceAccounts: "authorino/authorino"
+
 # ADR-0057: deployment-specific (the CNPG cluster's Service DNS name, the
 # database name) -- empty here, supplied per-environment in ai-helm-values.
 # Only the PASSWORD is a secret (externalSecret.dbPasswordProperty, below);
@@ -597,14 +609,12 @@ networkPolicy:
 # absent -- but the "waits in ContainerCreating until ESO has synced" behaviour
 # depends on that Kubernetes default rather than on an explicit chart setting.
 #
-# NOTE: `dbPasswordProperty`/`internalResolveTokenProperty`/
-# `internalIngestTokenProperty` name properties inside `remoteKey` that this
-# chart assumes but has not verified live against the actual secret store
-# entry (unlike redact-gateway's `saltProperty`, which was) -- confirm they
-# match before relying on this in a real environment. All three are plain
-# random opaque values (e.g. `openssl rand -hex 32`) -- there is no format to
-# derive or compute for any of them; an operator just needs to generate one
-# and write it to the store once.
+# NOTE: `dbPasswordProperty`/`internalIngestTokenProperty` name properties
+# inside `remoteKey` that this chart assumes but has not verified live against
+# the actual secret store entry (unlike redact-gateway's `saltProperty`,
+# which was) -- confirm they match before relying on this in a real
+# environment. The resolve-token property (`governance_internal_resolve_token`)
+# was removed in ADR-0017; TokenReview replaces the shared secret.
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
@@ -613,11 +623,10 @@ externalSecret:
   # NOT a full connection string -- see the comment on .Values.databaseUrl
   # above for why that would be redundant.
   dbPasswordProperty: governance_db_password
-  internalResolveTokenProperty: governance_internal_resolve_token
   # Shared secret the OpenTelemetry Collector presents on `/internal/v1/ingest`
-  # (#30, RFC-0002). Wired the same way as internalResolveTokenProperty: an
-  # ExternalSecret `data` entry below and a required (never-optional)
-  # secretKeyRef in the `app-template.controllers.api` container env.
+  # (#30, RFC-0002). Wired as an ExternalSecret `data` entry below and a
+  # required (never-optional) secretKeyRef in the
+  # `app-template.controllers.api` container env.
   # Required -- main.rs has no default, so a pod started without it never
   # comes up (clap errors "required argument missing").
   internalIngestTokenProperty: governance_internal_ingest_token
@@ -665,8 +674,10 @@ app-template:
 
   # Shared between both controllers below (identical before the migration).
   defaultPodOptions:
-    # No Kubernetes API access needed, for either the API or the collector.
-    automountServiceAccountToken: false
+    # ADR-0017: the API pod needs its own ServiceAccount token projected for
+    # TokenReview-based authentication. copilot-sync keeps this off via a
+    # per-controller override -- it does not call kube-apiserver.
+    automountServiceAccountToken: true
     # Preserves the pre-migration behaviour: neither template set this before,
     # so Kubernetes' own default (true) applied. app-template defaults it to
     # false; set it back explicitly so nothing about the pod's environment
@@ -694,6 +705,21 @@ app-template:
       pod:
         labels:
           app: lightbridge-governance
+        # ADR-0017: project the pod's own ServiceAccount token so the
+        # TokenReviewVerifier can present it to Authorino. The `api` pod
+        # needs Kubernetes API access; copilot-sync keeps automount off
+        # via its per-controller override.
+        volumes:
+          - name: kube-api-access
+            projected:
+              defaultMode: 0444
+              sources:
+                - serviceAccountToken:
+                    path: token
+                    # kube-apiserver minimum is 10 minutes; 3607s (~1 hour)
+                    # keeps the token fresh without excessive re-validation.
+                    expirationSeconds: 3607
+                    audience: "api"
       containers:
         main:
           image:
@@ -727,11 +753,14 @@ app-template:
             DATABASE_URL:
               value: "{{ .Values.global.databaseUrl }}"
               dependsOn: DB_PASSWORD
-            INTERNAL_RESOLVE_TOKEN:
-              valueFrom:
-                secretKeyRef:
-                  name: lightbridge-governance-env
-                  key: governance_internal_resolve_token
+            # ADR-0017: TokenReview-based caller authentication replaces the
+            # shared X-Internal-Token. KUBE_APISERVER_URL is the in-cluster
+            # API endpoint; TOKEN_REVIEW_AUDIENCE must match the projected
+            # volume's serviceAccountToken audience; ALLOWED_SERVICE_ACCOUNTS
+            # lists the ServiceAccounts permitted to call /internal/v1/resolve.
+            KUBE_APISERVER_URL: "https://kubernetes.default.svc"
+            TOKEN_REVIEW_AUDIENCE: "api"
+            ALLOWED_SERVICE_ACCOUNTS: "{{ .Values.allowedServiceAccounts }}"
             INTERNAL_INGEST_TOKEN:
               valueFrom:
                 secretKeyRef:
@@ -794,6 +823,12 @@ app-template:
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { cpu: 500m, memory: 256Mi }
+          # ADR-0017: mount the projected SA token at the standard K8s path.
+          # The TokenReviewVerifier reads it from the well-known location.
+          volumeMounts:
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -805,6 +840,9 @@ app-template:
       labels:
         app: lightbridge-governance
       pod:
+        # copilot-sync does not call kube-apiserver -- keep automount off
+        # so the CronJob pods carry no SA token (ADR-0017).
+        automountServiceAccountToken: false
         labels:
           app: lightbridge-governance
           # Distinct from the API Deployment so the egress CNP can select the
@@ -899,6 +937,8 @@ app-template:
       labels:
         app: lightbridge-governance
       pod:
+        # copilot-verify does not call kube-apiserver (ADR-0017).
+        automountServiceAccountToken: false
         labels:
           app: lightbridge-governance
           # Own component label so the egress CNP and the collector's

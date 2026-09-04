@@ -93,10 +93,8 @@ sha2 = "0.11"
 getrandom = "0.4"
 base64 = "0.23"
 hex = "0.4"
-# Constant-time comparison for /internal/v1/resolve's shared-secret check
-# (#11) -- already a transitive dependency (sha2/rustls pull it in), so this
-# adds zero new crates to the supply chain, same as #10's sha2/getrandom/
-# base64/hex swap.
+# ⚠️ To be removed by #243 when the ingest endpoint is deleted. Present only
+# because ingest.rs still uses constant-time comparison.
 subtle = "2"
 # governance-auth only: parsing/building the authorization and loopback-
 # callback URLs by hand invites the exact query-string bugs a URL parser
