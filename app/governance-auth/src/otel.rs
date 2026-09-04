@@ -949,6 +949,16 @@ mod tests {
     /// `TelemetryWiring::token` deleted, and it failed on the `manual ->
     /// daemon` assertion below for the predicted reason (the header
     /// survived) before being restored.
+    ///
+    /// ⚠️ **Scope** (#280 review, P2-4): this proves retraction for a key
+    /// this binary *currently owns and has not been hand-edited* -- exactly
+    /// `managed`'s digest rule, by design. A key never written by this
+    /// binary, written by an older version before this record existed, or
+    /// edited by the developer is left alone on purpose (the test below
+    /// proves that half too). "Switching profiles retracts the other
+    /// profile's keys" holds for the keys this binary manages; it is not a
+    /// claim about every credential that could exist in a config file by
+    /// some other means.
     #[test]
     fn switching_profiles_retracts_the_other_profiles_keys_but_not_a_hand_edit() {
         let home = tempdir();

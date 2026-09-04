@@ -24,8 +24,10 @@ fn config(profile: Profile, otel_endpoint: Option<&str>) -> OauthConfig {
 
 #[test]
 fn daemon_profile_with_a_collector_resolves_to_an_invocation() {
-    let invocation = Invocation::resolve(&config(Profile::Daemon, Some("https://otel.example")))
-        .expect("daemon profile with a collector must resolve");
+    let invocation =
+        Invocation::resolve(&config(Profile::Daemon, Some("https://otel.example")), true)
+            .expect("supported, so this must not refuse")
+            .expect("daemon profile with a collector must resolve");
     assert!(invocation.args.contains(&"--otel-endpoint".to_owned()));
     assert!(invocation.args.contains(&"https://otel.example".to_owned()));
     assert!(
@@ -40,7 +42,10 @@ fn daemon_profile_with_a_collector_resolves_to_an_invocation() {
 /// this being `None`.
 #[test]
 fn manual_profile_resolves_to_nothing_even_with_a_collector_configured() {
-    assert!(Invocation::resolve(&config(Profile::Manual, Some("https://otel.example"))).is_none());
+    let resolved =
+        Invocation::resolve(&config(Profile::Manual, Some("https://otel.example")), true)
+            .expect("manual never refuses");
+    assert!(resolved.is_none());
 }
 
 /// The same "nothing to point at" rule the drain's own `Invocation::resolve`
@@ -49,7 +54,37 @@ fn manual_profile_resolves_to_nothing_even_with_a_collector_configured() {
 /// than not installing one.
 #[test]
 fn daemon_profile_with_no_collector_resolves_to_nothing() {
-    assert!(Invocation::resolve(&config(Profile::Daemon, None)).is_none());
+    let resolved = Invocation::resolve(&config(Profile::Daemon, None), true)
+        .expect("nothing to point at never refuses -- there is nothing to install either way");
+    assert!(resolved.is_none());
+}
+
+/// #280 review, P1-1: the exact bug this check exists to prevent -- a
+/// `daemon` profile with a collector configured, on a build that does not
+/// have `serve --otel` yet, must refuse rather than install a service that
+/// can only crash-loop.
+#[test]
+fn daemon_profile_refuses_when_serve_otel_is_not_supported() {
+    let error = Invocation::resolve(
+        &config(Profile::Daemon, Some("https://otel.example")),
+        false,
+    )
+    .expect_err("must refuse, not install a crash-looping service");
+    let message = format!("{error:#}");
+    assert!(message.contains("#268"), "names the reason: {message}");
+}
+
+/// The refusal is specific to `daemon` needing to install something --
+/// `manual` never resolves to an invocation regardless, so there is nothing
+/// for the missing command to block.
+#[test]
+fn manual_profile_never_refuses_even_when_serve_otel_is_not_supported() {
+    let resolved = Invocation::resolve(
+        &config(Profile::Manual, Some("https://otel.example")),
+        false,
+    )
+    .expect("manual installs nothing, so an unsupported serve --otel is irrelevant to it");
+    assert!(resolved.is_none());
 }
 
 /// Every word `token`/`otel headers` need to mint a fresh bearer (#268 AC3)
@@ -58,8 +93,10 @@ fn daemon_profile_with_no_collector_resolves_to_nothing() {
 /// argv.
 #[test]
 fn the_invocation_carries_issuer_and_client_id_for_token_minting() {
-    let invocation = Invocation::resolve(&config(Profile::Daemon, Some("https://otel.example")))
-        .expect("resolve");
+    let invocation =
+        Invocation::resolve(&config(Profile::Daemon, Some("https://otel.example")), true)
+            .expect("supported")
+            .expect("resolve");
     let position = |flag: &str| invocation.args.iter().position(|word| word == flag);
     let issuer_at = position("--issuer").expect("--issuer present");
     let client_id_at = position("--client-id").expect("--client-id present");

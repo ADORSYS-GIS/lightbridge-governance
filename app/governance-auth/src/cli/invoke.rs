@@ -39,6 +39,24 @@ pub const COPILOT_PUSH: [&str; 2] = ["copilot", "push"];
 /// once #268 lands and this stops being aspirational.
 pub const SERVE_OTEL: [&str; 2] = ["serve", "--otel"];
 
+/// Whether this build's own binary actually parses [`SERVE_OTEL`] --
+/// checked through clap's own parser, not a string comparison, so it can
+/// never drift from what the CLI really accepts. `cli::tests::accepts`
+/// cannot express this the way it can [`COPILOT_PUSH`]: `serve` is a
+/// flag-carrying verb, not a nested subcommand (see this module's parent's
+/// doc), so this asks clap directly instead of walking the subcommand tree.
+///
+/// ⚠️ Unlike `cli::tests::accepts`, this compiles into the **shipped**
+/// binary, not only test builds: a caller that must refuse to install a
+/// service running [`SERVE_OTEL`] before #268 lands (#280 review, P1-1 --
+/// `configure --profile daemon` installed a `Restart=on-failure` unit whose
+/// `ExecStart` was a command that did not exist, a silent, permanent crash
+/// loop) needs the answer at runtime, not only in `cargo test`.
+pub fn serve_otel_is_supported() -> bool {
+    use clap::Parser;
+    super::Cli::try_parse_from(["governance-auth", "serve", "--otel"]).is_ok()
+}
+
 /// The subcommand each generated command line ends with, leading space
 /// included. Exposed separately from the builders below so
 /// [`crate::dashboard`] can ask "does the string in this config file still end
@@ -111,9 +129,18 @@ mod tests {
     /// failing -- wire `SERVE_OTEL` into
     /// `every_generated_command_is_a_command_this_binary_has`, flip
     /// `Profile::default()` back to `Daemon` (`profile.rs`), and delete this
-    /// test, all in the same commit.
+    /// test, all in the same commit. [`serve_otel_is_supported`] must agree
+    /// with `cli::tests::accepts` here (#280 review, P1-1): it is the
+    /// production-reachable check `schedule::daemon` refuses `--profile
+    /// daemon` on while this holds, and the two must never answer
+    /// differently.
     #[test]
     fn serve_otel_is_not_yet_a_real_command() {
+        assert!(
+            !serve_otel_is_supported(),
+            "serve_otel_is_supported() disagrees with cli::tests::accepts() -- see this test's \
+             own doc"
+        );
         assert!(
             !crate::cli::tests::accepts(&SERVE_OTEL),
             "serve --otel now resolves -- #268 has landed. Wire SERVE_OTEL into \

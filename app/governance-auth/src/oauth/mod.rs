@@ -485,7 +485,13 @@ mod tests {
             otel_endpoint: None,
             otel_token: None,
             gateway_url: None,
-            profile: crate::profile::Profile::Daemon,
+            // Matches the shipped compiled default (#280 review, P2-3): this
+            // fixture does not exercise profile-dependent behaviour either
+            // way (the assertion below is about the "neither flag set"
+            // error, not about `daemon` vs. `manual`), so there is no reason
+            // for it to disagree with what a real `configure` actually
+            // defaults to.
+            profile: crate::profile::Profile::Manual,
             copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,
