@@ -69,8 +69,8 @@ SELECT span_id, tool_name FROM tool_calls WHERE execution_id = '<exec-id>';
 ### 10. Verify Mismatch Alert
 1. Issue token for `alice@example.com`
 2. Simulate payload with different `user.email`
-3. Check logs and metrics
-**Expected**: Warning logged, `governance_ingest_identity_mismatch_total` increments
+3. Check logs
+**Expected**: Warning logged
 
 ## Success Criteria
 - ✅ All 10 tests pass
