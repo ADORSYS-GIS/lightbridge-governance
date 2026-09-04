@@ -26,6 +26,37 @@
 /// the string form because that is what their host files hold.
 pub const COPILOT_PUSH: [&str; 2] = ["copilot", "push"];
 
+/// The daemon's subcommand, as argv -- the shape ADR-0016 and #268 name
+/// (`governance-auth serve --otel`), spelled here for the same reason
+/// [`COPILOT_PUSH`] is.
+///
+/// ⚠️ Unlike `COPILOT_PUSH`, this is a contract on a command that does not
+/// exist on this branch yet: `serve --otel` is #268's own deliverable ("the
+/// daemon's internals" -- #270 is explicitly out of scope for it), still
+/// unmerged as of this constant's addition.
+/// `every_generated_command_is_a_command_this_binary_has` deliberately does
+/// NOT check this one for exactly that reason -- add it to that test's list
+/// once #268 lands and this stops being aspirational.
+pub const SERVE_OTEL: [&str; 2] = ["serve", "--otel"];
+
+/// Whether this build's own binary actually parses [`SERVE_OTEL`] --
+/// checked through clap's own parser, not a string comparison, so it can
+/// never drift from what the CLI really accepts. `cli::tests::accepts`
+/// cannot express this the way it can [`COPILOT_PUSH`]: `serve` is a
+/// flag-carrying verb, not a nested subcommand (see this module's parent's
+/// doc), so this asks clap directly instead of walking the subcommand tree.
+///
+/// ⚠️ Unlike `cli::tests::accepts`, this compiles into the **shipped**
+/// binary, not only test builds: a caller that must refuse to install a
+/// service running [`SERVE_OTEL`] before #268 lands (#280 review, P1-1 --
+/// `configure --profile daemon` installed a `Restart=on-failure` unit whose
+/// `ExecStart` was a command that did not exist, a silent, permanent crash
+/// loop) needs the answer at runtime, not only in `cargo test`.
+pub fn serve_otel_is_supported() -> bool {
+    use clap::Parser;
+    super::Cli::try_parse_from(["governance-auth", "serve", "--otel"]).is_ok()
+}
+
 /// The subcommand each generated command line ends with, leading space
 /// included. Exposed separately from the builders below so
 /// [`crate::dashboard`] can ask "does the string in this config file still end
@@ -69,7 +100,13 @@ mod tests {
     /// exist, spelled the way the tree spells them. A rename that updates the
     /// enum and not this module writes a config file whose command fails on
     /// every invocation -- silently, because nothing reads a credential
-    /// helper's stderr.
+    /// helper's stderr. `SERVE_OTEL` is checked separately, in
+    /// `serve_otel_is_supported_now_that_268_has_landed` below: `accepts`
+    /// walks subcommand names only, and `SERVE_OTEL`'s second word is a flag
+    /// (`--otel`), not a subcommand, so it can never usefully appear in this
+    /// table -- `accepts(&["serve", "--otel"])` would report `false`
+    /// regardless of whether the `Serve` variant exists, for the wrong
+    /// reason (an unrecognised subcommand name) rather than the right one.
     #[test]
     fn every_generated_command_is_a_command_this_binary_has() {
         for rendered in [
@@ -89,6 +126,37 @@ mod tests {
         assert!(
             crate::cli::tests::accepts(&COPILOT_PUSH),
             "the drain's argv is not a command this binary has"
+        );
+    }
+
+    /// #268 has landed: `serve --otel` is now a real command, so
+    /// [`serve_otel_is_supported`] now answers `true`, not `false` -- this
+    /// replaces the old `serve_otel_is_not_yet_a_real_command` tripwire, which
+    /// asserted the opposite and started failing the moment this build gained
+    /// the `Serve` variant, per its own doc's instructions. The full parse
+    /// [`serve_otel_is_supported`] runs (subcommand AND `--otel` flag) is the
+    /// production-reachable check `schedule::daemon` and
+    /// `oauth::apply_telemetry` both gate `daemon`-profile installs on --
+    /// there is no separate `cli::tests::accepts`-based cross-check to keep
+    /// in sync here, unlike `SERVE_OTEL`'s neighbours above: `accepts` cannot
+    /// express "and this flag parses", only subcommand-path membership (see
+    /// the comment on `every_generated_command_is_a_command_this_binary_has`).
+    ///
+    /// `Profile::default()` (`profile.rs`) does NOT flip to `Daemon` in this
+    /// same commit, despite the old tripwire's original plan: the module
+    /// doc's precondition was always #268 **and** #272 (Copilot's exporter
+    /// rewired onto the daemon), and #272 has not landed. Flipping now would
+    /// reintroduce the exact regression the round-1 #280 review found --
+    /// Copilot's drain timer torn down with nothing yet forwarding its spool.
+    /// [`crate::profile`]'s own doc names the still-open precondition.
+    #[test]
+    fn serve_otel_is_supported_now_that_268_has_landed() {
+        assert!(
+            serve_otel_is_supported(),
+            "serve --otel does not resolve -- #268 was reverted, or this binary lost the Serve \
+             variant. schedule::daemon and oauth::apply_telemetry both gate `daemon`-profile \
+             installs on this answer; a silent flip back to `false` would refuse `--profile \
+             daemon` on a build that should now support it, with no compiler error to catch it."
         );
     }
 }

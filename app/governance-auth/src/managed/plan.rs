@@ -120,11 +120,31 @@ fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(P
         for kind in ["exporter", "metrics_exporter"] {
             codex.push(format!("otel.{kind}.otlp-http.endpoint"));
             codex.push(format!("otel.{kind}.otlp-http.protocol"));
-            codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+            // Matches `configure_codex`'s own condition exactly -- unlike
+            // `endpoint`/`protocol`, this key is NOT written every run.
+            // Listing it unconditionally on `telemetry` alone (#270 AC4's
+            // own verification found this) makes it a false "still owned"
+            // whenever `--otel-token` is unset after a run that HAD one:
+            // the writer leaves the stale header untouched (merge
+            // semantics), `plan` reads it back and records it as ours
+            // again, and `retract_stale` never sees it as stale -- a
+            // credential that should have been removed lingers forever.
+            if settings.token.is_some() {
+                codex.push(format!("otel.{kind}.otlp-http.headers.Authorization"));
+            }
         }
     }
 
-    let vscode: Vec<String> = if telemetry {
+    // `copilot_drain_available`, not `telemetry`: matches
+    // `vscode::configure`'s own gate exactly, for the same reason the
+    // Codex `Authorization` key above is gated on `settings.token.is_some()`
+    // rather than on `telemetry` alone. `telemetry` is true under `daemon`
+    // (the loopback substitute), but nothing drains Copilot's spool there
+    // yet (#272) -- listing these keys as owned on `telemetry` alone would
+    // make a stale `manual`-profile file-exporter config read as "still
+    // ours" forever, so switching to `daemon` would stop writing it but
+    // never retract it.
+    let vscode: Vec<String> = if settings.copilot_drain_available {
         crate::vscode::settings(&settings.copilot_spool)
             .into_iter()
             .map(|(key, _)| key.to_owned())

@@ -147,7 +147,12 @@ fn timer_unit() -> String {
 /// Mode is left to the umask, unlike `otel::write_atomically`'s 0600 -- these
 /// files carry no credential, only flags, and a 0600 unit is a surprising
 /// thing to find in a systemd tree.
-fn write(path: &Path, body: &str) -> Result<()> {
+///
+/// `pub(super)`, like [`tmp_path`] below it: [`super::daemon::systemd`] reuses
+/// this rather than keeping its own copy (#280 review round 2) -- the copy it
+/// used to keep had regressed the naked-`with_extension` fix [`tmp_path`]'s
+/// own doc explains.
+pub(super) fn write(path: &Path, body: &str) -> Result<()> {
     let tmp = tmp_path(path);
     fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path)

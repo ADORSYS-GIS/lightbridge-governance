@@ -13,6 +13,7 @@ mod discovery;
 mod exchange;
 mod pkce;
 mod refresh;
+mod telemetry_wiring;
 mod token_endpoint;
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +30,7 @@ use anyhow::{Context, Result, bail};
 pub use callback_port::CALLBACK_PORTS;
 pub use discovery::OidcMetadata;
 pub use refresh::run as refresh;
+use telemetry_wiring::TelemetryWiring;
 
 use crate::{
     cache::{self, CachedSession, FileLock},
@@ -73,7 +75,7 @@ pub async fn login(
     // strictly worse than an un-instrumented client. Reported loudly instead.
     // `configure` (the subcommand) propagates the same error, because there
     // the developer asked for exactly this and nothing else.
-    if let Err(error) = apply_telemetry(config, &session, optout) {
+    if let Err(error) = apply_telemetry(config, &session, optout, cli::serve_otel_is_supported()) {
         eprintln!("warning: could not configure telemetry: {error:#}");
     }
     Ok(())
@@ -96,6 +98,13 @@ fn apply_telemetry(
     config: &OauthConfig,
     session: &CachedSession,
     optout: ClientOptOut,
+    // Taken as a parameter rather than asked for internally via
+    // `cli::serve_otel_is_supported()` (#280 review round 2 follow-up, same
+    // reasoning as `schedule::daemon::Invocation::resolve`'s own
+    // `serve_otel_supported` parameter): this build's real answer changes the
+    // moment `serve --otel` (#268) ships, and a test asserting the *unsupported*
+    // branch must keep working after that, not just until this binary catches up.
+    serve_otel_supported: bool,
 ) -> Result<()> {
     let telemetry_requested = config.otel_endpoint.is_some();
     let inference_requested = config.gateway_url.is_some();
@@ -126,6 +135,31 @@ fn apply_telemetry(
         );
     }
 
+    // The one chokepoint every `daemon`-profile decision below assumes has
+    // already been made (#280 review round 2): `TelemetryWiring::resolve`
+    // redirects every client to the loopback endpoint, and
+    // `optout.apply_schedule` tears down the Copilot drain timer, purely on
+    // `config.profile == Daemon` -- neither re-checks whether this build can
+    // actually serve that endpoint. Before this check, `schedule::daemon::apply`
+    // caught the unsupported case, but only at the very end and only for the
+    // daemon *service* -- by then the drain was already removed and every
+    // client config already rewritten, and its `Err` was caught and downgraded
+    // to an `eprintln!` warning (`configure` still exited `0`). Refusing here,
+    // before any of those three writes happen, makes the refusal atomic: either
+    // every daemon-profile side effect happens together, or none of them do.
+    if telemetry_requested
+        && config.profile == crate::profile::Profile::Daemon
+        && !serve_otel_supported
+    {
+        bail!(
+            "refusing to configure the `daemon` profile: this build of governance-auth does \
+             not have `serve --otel` yet (issue #268). Configuring it anyway would point every \
+             client at a loopback receiver nothing can serve and remove the Copilot drain \
+             timer that is shipping telemetry today. Upgrade to a build that has #268, or run \
+             `configure --profile manual` instead."
+        );
+    }
+
     let home = std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
@@ -135,23 +169,32 @@ fn apply_telemetry(
     let mut resource_attributes = otel::identity_attributes(session.access_token.expose());
     resource_attributes.insert("service.namespace".to_owned(), "ai-cli".to_owned());
 
+    let wiring = TelemetryWiring::resolve(config);
+
     let settings = otel::OtelSettings {
         issuer: config.issuer.clone(),
         client_id: config.client_id.clone(),
-        endpoint: config.otel_endpoint.clone(),
+        endpoint: wiring.endpoint,
         // One resolution for both halves of the Copilot path: what VS Code is
         // told to write and what `copilot push` drains. See
         // `crate::copilot::resolve_spool_path`.
         copilot_spool: crate::copilot::resolve_spool_path(config)?,
-        token: config.otel_token.clone().map(Redacted::new),
+        copilot_drain_available: wiring.copilot_drain_available,
+        // `None` under `daemon` regardless of `--otel-token`: loopback needs
+        // no client credential (see `TelemetryWiring::resolve`), and writing
+        // one anyway would be exactly the long-lived secret ADR-0016 exists
+        // to remove.
+        token: wiring.token,
         resource_attributes,
         // Point Claude Code at this very binary for fresh headers. `None`
-        // when telemetry wasn't requested: writing a helper for a collector
-        // that isn't configured would give Claude Code a working refresh
-        // loop pointed at nothing. The spelling is `crate::cli::invoke`'s, so
-        // renaming the command updates this file without anyone remembering
-        // to.
-        headers_helper: telemetry_requested
+        // when telemetry wasn't requested, OR under `daemon`: there is no
+        // credential to refresh when the client sends none at all (see
+        // `token` above). Writing a helper for a collector that isn't
+        // configured -- or a header nothing reads -- would give Claude Code
+        // a working refresh loop pointed at nothing. The spelling is
+        // `crate::cli::invoke`'s, so renaming the command updates this file
+        // without anyone remembering to.
+        headers_helper: (telemetry_requested && wiring.wants_headers_helper)
             .then(|| cli::otel_headers_command(&config.issuer, &config.client_id)),
         headers_helper_debounce_ms: config.otel_headers_debounce_ms,
         // Built unconditionally -- harmless when inference wiring isn't
@@ -170,8 +213,16 @@ fn apply_telemetry(
     let written = otel::configure_all(&home, &settings, optout);
     // `telemetry_requested &&` because a gateway-only run writes `config.toml`
     // for the provider block alone, which needs no OTLP token at all.
+    // `report(outcomes)` is called whenever `telemetry_requested` is true --
+    // unconditionally on profile -- so what got written is still printed
+    // under `daemon`; only the *warning this feeds* is additionally gated
+    // `&& wiring.wants_headers_helper` below (true only under `manual`),
+    // since `daemon` needs no static token at all (see `settings.token`'s
+    // comment above).
     let needs_static_token = match &written {
-        Ok(outcomes) => telemetry_requested && otel::Outcome::report(outcomes),
+        Ok(outcomes) => {
+            telemetry_requested && otel::Outcome::report(outcomes) && wiring.wants_headers_helper
+        }
         Err(_) => false,
     };
     optout.report_if_every_client_declined();
@@ -185,6 +236,16 @@ fn apply_telemetry(
     // `--no-vscode` reaches the timer -- and why leaving it alone is neither
     // installing nor removing it -- is `crate::optout`'s module doc.
     optout.apply_schedule(&home, config);
+
+    // The daemon service (ADR-0016, #270). Unlike the line above, this is
+    // not part of `ClientOptOut`: it is shared infrastructure every client's
+    // telemetry passes through under the `daemon` profile, not one client's
+    // concern. `schedule::daemon::apply` already resolves to a no-op removal
+    // under `manual` or with no collector configured, so this call is
+    // unconditional; non-fatal for the same reason the line above is.
+    if let Err(error) = crate::schedule::daemon::apply(&home, config) {
+        eprintln!("warning: could not update the daemon service: {error:#}");
+    }
 
     // Codex reads a static `Authorization` string once at start and has no
     // hook to refresh it, so this warning is about exactly one client now.
@@ -332,7 +393,7 @@ pub(super) async fn refresh_or_fail(
 pub fn configure(config: &OauthConfig, optout: ClientOptOut) -> Result<()> {
     let session = cache::load(&config.issuer, &config.client_id)?
         .context("no cached session for this issuer/client; run `governance-auth login` first")?;
-    apply_telemetry(config, &session, optout)?;
+    apply_telemetry(config, &session, optout, cli::serve_otel_is_supported())?;
     // Persist here as well as on `login`. Writing only on `login` meant an
     // existing install never got a config file: upgrading keeps a valid cached
     // session, so `login` is never run again, so every later command kept
@@ -456,6 +517,14 @@ mod tests {
             otel_endpoint: None,
             otel_token: None,
             gateway_url: None,
+            // Matches the shipped compiled default (#280 review, P2-3): this
+            // fixture does not exercise profile-dependent behaviour either
+            // way (the assertion below is about the "neither flag set"
+            // error, not about `daemon` vs. `manual`), so there is no reason
+            // for it to disagree with what a real `configure` actually
+            // defaults to.
+            profile: crate::profile::Profile::Manual,
+            profile_explicit: Some(crate::profile::Profile::Manual),
             copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,
@@ -472,7 +541,7 @@ mod tests {
     /// comment on `login`'s call site).
     #[test]
     fn configure_fails_loudly_when_neither_otel_endpoint_nor_gateway_url_is_set() {
-        let error = apply_telemetry(&config(), &session(), ClientOptOut::default())
+        let error = apply_telemetry(&config(), &session(), ClientOptOut::default(), true)
             .expect_err("neither flag set must be a hard error, not a silent no-op");
         let rendered = format!("{error:#}");
         assert!(
@@ -482,6 +551,42 @@ mod tests {
         assert!(
             rendered.contains("--gateway-url"),
             "must name the gateway flag so the developer knows what to supply, got: {rendered}"
+        );
+    }
+
+    /// #280 review round 2: the `daemon`-profile refusal must happen before
+    /// ANY of `apply_telemetry`'s three daemon-profile side effects, not just
+    /// at the last one (`schedule::daemon::apply`, which used to catch this
+    /// too late and have its `Err` downgraded to a warning by its caller --
+    /// see the removed call site's old comment). `serve_otel_supported` is
+    /// passed as `false` explicitly (not read from `cli::serve_otel_is_supported()`
+    /// -- see `apply_telemetry`'s parameter doc): this test asserts the
+    /// *unsupported* branch, which must keep working once #268 ships and this
+    /// build's own answer flips to `true`, not just until then.
+    ///
+    /// Hermetic by construction, not just by assertion: the chokepoint bails
+    /// before `apply_telemetry` ever reads `$HOME`, so this needs no
+    /// filesystem fixture -- if the reorder ever regressed and let the
+    /// function reach the `$HOME` lookup first, this test would fail on a
+    /// missing/unwritable home directory rather than on the assertion below,
+    /// which is itself a second, independent tripwire for the same bug.
+    #[test]
+    fn configure_refuses_the_daemon_profile_atomically_when_serve_otel_is_unsupported() {
+        let config = OauthConfig {
+            otel_endpoint: Some("https://otel.example".to_owned()),
+            profile: crate::profile::Profile::Daemon,
+            ..config()
+        };
+        let error = apply_telemetry(&config, &session(), ClientOptOut::default(), false)
+            .expect_err("daemon profile on a build with no serve verb must refuse, not warn");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("serve --otel"),
+            "must name the missing capability, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("--profile manual"),
+            "must name the escape hatch, got: {rendered}"
         );
     }
 }

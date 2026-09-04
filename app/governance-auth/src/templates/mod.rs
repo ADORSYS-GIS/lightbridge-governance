@@ -31,6 +31,8 @@
 
 use minijinja::{Environment, Value, context};
 
+pub mod daemon;
+
 const SHELL_ENV_SH: &str = include_str!("shell_env.sh.jinja");
 const SHELL_ENV_FISH: &str = include_str!("shell_env.fish.jinja");
 const CODEX_BANNER: &str = include_str!("codex_provider_banner.toml.jinja");
@@ -114,6 +116,10 @@ fn fish_quote(value: String) -> String {
     format!("'{}'", value.replace('\\', r"\\").replace('\'', r"\'"))
 }
 
+/// Private, not `pub(super)`: [`daemon`] is a *descendant* of this module
+/// (`templates::daemon`), and Rust visibility already reaches downward, so
+/// this plain `fn` is callable from there without being opened up to
+/// anything outside this module's own tree.
 fn render(template_name: &str, source: &str, ctx: Value) -> Result<String, minijinja::Error> {
     let mut env = environment();
     env.add_template(template_name, source)?;
