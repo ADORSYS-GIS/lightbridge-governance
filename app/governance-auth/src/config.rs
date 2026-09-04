@@ -367,13 +367,13 @@ impl OauthConfigArgs {
         // one-off. Re-parsed here (not trusted from clap) because a
         // config-file value never passes through `parse_profile` at all --
         // the exact reason `otel_endpoint` re-runs `parse_issuer` below.
-        let profile = self
+        let profile_explicit = self
             .profile
             .or_else(|| per_user.as_ref().and_then(|file| file.profile.clone()))
             .or_else(|| machine.as_ref().and_then(|file| file.profile.clone()))
             .map(|value| value.parse::<crate::profile::Profile>())
-            .transpose()?
-            .unwrap_or_default();
+            .transpose()?;
+        let profile = profile_explicit.unwrap_or_default();
 
         let copilot_spool_path = self
             .copilot_spool_path
@@ -427,6 +427,7 @@ impl OauthConfigArgs {
             otel_token,
             gateway_url,
             profile,
+            profile_explicit,
             copilot_spool_path,
             otel_headers_debounce_ms,
             open_browser,
@@ -526,6 +527,19 @@ pub struct OauthConfig {
     /// `crate::profile::Profile::default()` is the fifth layer, so callers
     /// never match on absence the way they do for `otel_endpoint`.
     pub profile: crate::profile::Profile,
+    /// The same five-layer resolution as [`Self::profile`], but stopped
+    /// *before* the fifth layer's `unwrap_or_default()` -- `None` means
+    /// nothing (flag, env var, either config file) ever named a profile, as
+    /// opposed to `Some` naming one that happens to equal the compiled
+    /// default. Exists purely for [`crate::config_persist::remember`] (#280
+    /// review): persisting [`Self::profile`] unconditionally would bake
+    /// today's compiled default into every developer's config file the
+    /// first time they ever ran `login`/`configure`, permanently pinning
+    /// them to it even after a future build changes what the default is --
+    /// see that function's own doc for the mechanism. No other consumer
+    /// should read this field; every behavioural decision belongs on
+    /// [`Self::profile`].
+    pub profile_explicit: Option<crate::profile::Profile>,
     /// `None` means "use the compiled default under the state directory" --
     /// see `crate::copilot::resolve_spool_path`, which is where the fifth
     /// layer is applied.

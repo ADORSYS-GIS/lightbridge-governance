@@ -38,6 +38,10 @@ fn base() -> OauthConfig {
         otel_token: Some("SECRET-DO-NOT-PERSIST".to_owned()),
         gateway_url: Some("https://api.example".to_owned()),
         profile: crate::profile::Profile::Manual,
+        // `Some`: this fixture represents a developer who explicitly chose
+        // `manual` (matches `profile` above). `profile_was_not_explicit`
+        // below covers the `None` case this field exists for.
+        profile_explicit: Some(crate::profile::Profile::Manual),
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
@@ -129,6 +133,47 @@ fn clears_a_key_that_is_no_longer_set() {
     remember(&without, &path).expect("without gateway");
     let text = fs::read_to_string(&path).expect("read");
     assert!(!text.contains("gateway_url"), "stale key survived: {text}");
+}
+
+/// #280 review: nothing ever naming a profile must not bake today's compiled
+/// default into the file. If it did, a developer who ran `login`/`configure`
+/// today under `Profile::default() == Manual` would silently stay pinned to
+/// `manual` forever, even after a future build's compiled default changes --
+/// only a fresh install with no config file yet would pick up a new default.
+#[test]
+fn does_not_persist_a_profile_nothing_ever_named() {
+    let dir = tempdir();
+    let path = dir.path().join("config.toml");
+    let mut unnamed = base();
+    unnamed.profile_explicit = None;
+    remember(&unnamed, &path).expect("write");
+
+    // Not a raw-text `contains("profile")` check: `scopes = "openid
+    // profile"` (this fixture's own scopes string) contains that substring
+    // too, so it would false-positive on a byte that has nothing to do with
+    // the `profile` key. The loaded value below is the unambiguous check.
+    let loaded = crate::config_file::load(&path)
+        .expect("the file this module wrote must be loadable")
+        .expect("present");
+    assert_eq!(
+        loaded.profile, None,
+        "a later resolve must still fall through to the live compiled default"
+    );
+}
+
+/// The mirror of the test above: a profile something DID name (even from a
+/// lower layer, not necessarily this run's own flag) is written, same as
+/// every other durable field.
+#[test]
+fn persists_a_profile_something_named() {
+    let dir = tempdir();
+    let path = dir.path().join("config.toml");
+    remember(&base(), &path).expect("write");
+
+    let loaded = crate::config_file::load(&path)
+        .expect("the file this module wrote must be loadable")
+        .expect("present");
+    assert_eq!(loaded.profile.as_deref(), Some("manual"));
 }
 
 #[cfg(unix)]

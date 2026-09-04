@@ -44,11 +44,9 @@ pub(super) struct TelemetryWiring {
 
 impl TelemetryWiring {
     /// `config.profile == Daemon` is read as-is, with no `serve_otel_is_supported()`
-    /// re-check here (#280 review round 2) -- `apply_telemetry`'s chokepoint
-    /// already refuses the whole call before this runs when `Daemon` is
-    /// selected on a build that can't serve it, so by the time `resolve` sees
-    /// `Daemon` it is always genuinely supported. Re-checking here too would
-    /// just be dead code the chokepoint has already made unreachable.
+    /// re-check (#280 review round 2) -- `apply_telemetry`'s chokepoint
+    /// already refuses the call before this runs on a build that can't
+    /// serve `Daemon`, so re-checking here would be dead code.
     pub fn resolve(config: &OauthConfig) -> Self {
         let is_daemon = config.profile == crate::profile::Profile::Daemon;
         let endpoint = config.otel_endpoint.as_ref().map(|real| {
@@ -84,6 +82,7 @@ mod tests {
             otel_token: None,
             gateway_url: None,
             profile: crate::profile::Profile::Daemon,
+            profile_explicit: Some(crate::profile::Profile::Daemon),
             copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,

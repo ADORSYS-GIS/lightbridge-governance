@@ -69,10 +69,23 @@ pub fn remember(config: &OauthConfig, path: &Path) -> Result<()> {
     set_or_clear(&mut doc, "audience", config.audience.as_deref());
     set_or_clear(&mut doc, "otel_endpoint", config.otel_endpoint.as_deref());
     set_or_clear(&mut doc, "gateway_url", config.gateway_url.as_deref());
-    // Always present (`Profile::default()` is the fifth layer, ADR-0016), so
-    // this writes on every `configure`, never clears -- unlike the `Option`
-    // fields around it, there is no "unset" state to represent.
-    set(&mut doc, "profile", value(config.profile.as_str()));
+    // `config.profile_explicit`, NOT `config.profile` (#280 review): the
+    // latter is `profile_explicit.unwrap_or_default()`, so writing it
+    // unconditionally would persist today's compiled default into every
+    // developer's config the first time they ever ran `login`/`configure`
+    // without an explicit `--profile` -- permanently pinning them to it,
+    // silently, even after a future build changes what the default is. A
+    // developer who never named a profile keeps reading the live compiled
+    // default on every run; one who did (this run, or a layer below it --
+    // `profile_explicit` is already the merged five-layer answer, so
+    // re-writing an unchanged value from a lower layer is the same harmless
+    // no-op `set_or_clear` already performs for `otel_endpoint`) has that
+    // choice reaffirmed. See `OauthConfig::profile_explicit`'s own doc.
+    set_or_clear(
+        &mut doc,
+        "profile",
+        config.profile_explicit.map(|profile| profile.as_str()),
+    );
     // Persisted like any other durable path. `None` clears it, which is what
     // returns `copilot push` to the state-directory default rather than
     // leaving a path the developer stopped passing silently in force.

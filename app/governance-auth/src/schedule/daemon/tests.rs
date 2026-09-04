@@ -15,6 +15,7 @@ fn config(profile: Profile, otel_endpoint: Option<&str>) -> OauthConfig {
         otel_token: None,
         gateway_url: None,
         profile,
+        profile_explicit: Some(profile),
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,

@@ -26,6 +26,7 @@ fn config() -> OauthConfig {
         // `manual` -- not the fixture's `daemon` value elsewhere -- because
         // this whole module's `Invocation` is `manual`-only now (#270 AC5).
         profile: crate::profile::Profile::Manual,
+        profile_explicit: Some(crate::profile::Profile::Manual),
         copilot_spool_path: Some("/state/copilot-otel.jsonl".to_owned()),
         otel_headers_debounce_ms: 240_000,
         open_browser: false,

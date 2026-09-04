@@ -524,6 +524,7 @@ mod tests {
             // for it to disagree with what a real `configure` actually
             // defaults to.
             profile: crate::profile::Profile::Manual,
+            profile_explicit: Some(crate::profile::Profile::Manual),
             copilot_spool_path: None,
             otel_headers_debounce_ms: 240_000,
             open_browser: false,
