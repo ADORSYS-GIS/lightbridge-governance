@@ -87,6 +87,12 @@ mod tests;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+// The OTLP/HTTP push vocabulary (`Signal`, `Verdict`, `endpoint`,
+// `is_permanent`) is shared with the `serve --otel` daemon
+// (`crate::otel_daemon::forward`) so the daemon and the drain cannot drift on
+// what an endpoint looks like or which statuses are permanent.
+pub(crate) use push::is_permanent;
+pub use push::{Signal, Verdict, endpoint};
 pub use status::SpoolStatus;
 
 use crate::{config::OauthConfig, freshness::Freshness, oauth};

@@ -68,6 +68,32 @@ pub enum Command {
     },
     /// Remove the cached session, revoking the refresh token first.
     Logout,
+    /// Run the telemetry daemon: receive OTLP on loopback, forward it
+    /// authenticated.
+    ///
+    /// `--otel`, not a nested `serve otel` subcommand: ADR-0016 and #268's
+    /// own ticket name this verb `governance-auth serve --otel`, and every
+    /// consumer built against that shape before this landed -- the daemon
+    /// service's own `ExecStart` (#270) and `cli::invoke::SERVE_OTEL`, the
+    /// one place this binary's command spellings live. A future signal
+    /// source is a sibling flag on this same verb, not a new subcommand, for
+    /// the same reason `Configure`'s `--no-claude`/`--no-codex`/`--no-vscode`
+    /// are flags: the global config flags (`--issuer`, `--client-id`, ...)
+    /// reach a flat verb the same way they reach every other one, with no
+    /// extra nesting level to carry them through.
+    Serve {
+        /// Receive OTLP on loopback and forward it to the governed
+        /// collector.
+        ///
+        /// Listens on the fixed loopback port (ADR-0016), accepts OTLP/HTTP
+        /// on any path, mints a fresh bearer per forward through the same
+        /// `oauth` path `token` uses, and never hands a credential to a
+        /// client. Fails closed: a refused mint or an unreachable collector
+        /// means the bytes are retained in memory, never forwarded
+        /// unauthenticated and never dropped.
+        #[arg(long)]
+        otel: bool,
+    },
     /// OTLP export helpers.
     Otel {
         #[command(subcommand)]

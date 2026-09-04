@@ -23,3 +23,9 @@ pub mod interrupt;
 pub mod mock_collector;
 #[allow(dead_code)]
 pub mod mock_idp;
+#[allow(dead_code)]
+pub mod otel_payload;
+#[allow(dead_code)]
+pub mod raw_collector;
+#[allow(dead_code)]
+pub mod serve_otel;

@@ -38,6 +38,7 @@ fn the_tree_is_the_documented_one() {
         &["status"],
         &["configure"],
         &["logout"],
+        &["serve"],
         &["otel", "headers"],
         &["copilot", "push"],
         &["self", "update"],
@@ -127,4 +128,23 @@ fn configuration_flags_reach_a_nested_leaf_from_either_side() {
             "`{rendered}` must parse; global flags have to reach a nested leaf"
         );
     }
+}
+
+/// `serve` is a flag-carrying verb, not a scope with a `serve otel`
+/// subcommand -- `find_subcommand`-based `accepts` (used above) cannot
+/// express a flag, so this is the test that actually proves
+/// `governance-auth serve --otel` is the real, parseable spelling ADR-0016
+/// and #268's own ticket name, matching `cli::invoke::SERVE_OTEL` exactly.
+#[test]
+fn serve_otel_is_the_real_spelling_not_a_nested_subcommand() {
+    assert!(
+        Cli::try_parse_from(["governance-auth", "serve", "--otel"]).is_ok(),
+        "`serve --otel` must parse"
+    );
+    assert!(
+        Cli::try_parse_from(["governance-auth", "serve", "otel"]).is_err(),
+        "`serve otel` (the old subcommand shape) must NOT parse -- if it does, something \
+         reintroduced the shape every consumer (the daemon service's ExecStart, \
+         cli::invoke::SERVE_OTEL) was built against `--otel` instead of"
+    );
 }

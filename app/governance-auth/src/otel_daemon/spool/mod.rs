@@ -1,0 +1,118 @@
+//! The in-memory spool: retains payloads on a refused mint or an unreachable
+//! collector, never drops.
+//!
+//! ## Why in-memory, and why that is acceptable here
+//!
+//! #268 explicitly allows an in-memory buffer "provided the story says so
+//! plainly and #S2 lands before the profile is switched on by default." State
+//! it plainly: **on process exit the buffer is lost.** That is accepted for
+//! #268 only because durability (#S2) is a separate story that must land
+//! before the daemon becomes the default profile.
+//!
+//! ## Cap, not growth
+//!
+//! [`CAPACITY`] bounds total retained bytes, mirroring [`crate::copilot`]'s
+//! `MAX_READ` per sweep times two — headroom for a burst without the #230
+//! unbounded-growth failure. At capacity, [`Spool::retain`] **refuses** rather
+//! than dropping the oldest: the unavailable branch is the restrictive branch
+//! (ADR/AGENTS.md), so a full spool costs latency, never data.
+//!
+//! ## Why each entry carries its `Signal`
+//!
+//! A retry must re-poster to the same path the original forward used. For a
+//! non-JSON (protobuf) body the URL path is the only thing that names the signal
+//! ([`super::classify`] falls back to it), and a retained payload has no path of
+//! its own once it sits in the spool — so the signal is captured at retain time
+//! and stored alongside the bytes.
+
+use std::collections::VecDeque;
+
+use anyhow::{Result, bail};
+
+use crate::copilot::Signal;
+
+/// Total bytes the in-memory spool will retain. 16 MiB — twice
+/// [`crate::copilot::spool::MAX_READ`], so a wake's worth of both signals fits
+/// with room for a burst, without unbounded growth.
+pub const CAPACITY: usize = 16 * 1024 * 1024;
+
+/// A bounded FIFO of `(signal, payload)` pairs.
+#[derive(Default)]
+pub struct Spool {
+    buffer: VecDeque<(Signal, Vec<u8>)>,
+    total_bytes: usize,
+}
+
+impl Spool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Retains a payload and the signal it was routed on, refusing (not
+    /// silently dropping) when at capacity.
+    ///
+    /// The refusal is returned to the caller so it can be surfaced loudly —
+    /// never swallowed into "accepted" with no record. Within the daemon this
+    /// already counted as a loss report; the caller decides what to do with
+    /// the `Err`.
+    pub fn retain(&mut self, signal: Signal, payload: Vec<u8>) -> Result<()> {
+        let len = payload.len();
+        if self.total_bytes.saturating_add(len) > CAPACITY {
+            bail!(
+                "daemon spool full ({total} of {CAPACITY} bytes retained); the collector may be \
+                 unreachable — retry later",
+                total = self.total_bytes,
+            );
+        }
+        self.buffer.push_back((signal, payload));
+        self.total_bytes = self.total_bytes.saturating_add(len);
+        Ok(())
+    }
+
+    /// Pops the oldest retained `(signal, payload)`, for a retry. `None` when
+    /// empty.
+    pub fn drain_one(&mut self) -> Option<(Signal, Vec<u8>)> {
+        let (signal, payload) = self.buffer.pop_front()?;
+        self.total_bytes = self.total_bytes.saturating_sub(payload.len());
+        Some((signal, payload))
+    }
+
+    /// Puts a payload back at the FRONT, restoring FIFO order after a
+    /// [`Self::drain_one`] that could not be delivered (#290 review, P2-4).
+    /// `retain` appends to the back and is for a payload never offered
+    /// before; reusing it here moved the oldest record to the newest
+    /// position on every failed retry. Ignores capacity: a payload this
+    /// spool already held once cannot grow the total.
+    pub fn requeue_front(&mut self, signal: Signal, payload: Vec<u8>) {
+        self.total_bytes = self.total_bytes.saturating_add(payload.len());
+        self.buffer.push_front((signal, payload));
+    }
+
+    /// Total bytes currently retained.
+    pub fn pending(&self) -> usize {
+        self.total_bytes
+    }
+
+    /// Whether anything is retained -- a cheap check before minting, so the
+    /// common empty-spool case does not pay for a credential round trip it
+    /// will not use (#290 review round 2).
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Number of payloads currently retained. Used by tests now and by the
+    /// #S4 health/status story later.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Spool observability for #S4 (daemon health/status); used in tests today"
+        )
+    )]
+    pub fn pending_count(&self) -> usize {
+        self.buffer.len()
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -31,11 +31,14 @@ hex.workspace = true
 url.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The HTTP receiver for the `serve --otel` daemon (#268). Already a pinned
+# workspace dependency (the server binaries use it); reusing it here adds no
+# new crate to the supply chain and keeps daemon and test mocks on one stack.
+axum.workspace = true
 
 [dev-dependencies]
 # Test-only mock OIDC server. Already a pinned workspace dependency (the
 # server binaries use it); reusing it here as a dev-dependency adds no new
 # crate to the supply chain and keeps the mock strictly under tests/, never
 # reachable from src/.
-axum = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
