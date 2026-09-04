@@ -6,19 +6,27 @@
 //! to pass.
 //!
 //! ADR-0016 makes `Daemon` the eventual compiled default. [`Profile::default`]
-//! is `Manual` for now, deliberately diverging from the ADR: the daemon
-//! (`serve --otel`, #268) does not exist on this branch yet, and Copilot's
-//! rewiring onto it (#272) does not either. Defaulting to `Daemon` before
-//! either lands would move every developer who upgrades and re-runs
-//! `configure` without an explicit `--profile` onto wiring this repo cannot
-//! yet serve -- three P0s from one review, confirmed live against a real
-//! machine: the drain that delivers telemetry today is torn down, every
+//! is `Manual` for now, deliberately diverging from the ADR, pending BOTH of:
+//! the daemon itself (`serve --otel`, #268 -- landed) and Copilot's rewiring
+//! onto it (#272 -- not yet). Defaulting to `Daemon` before both land would
+//! move every developer who upgrades and re-runs `configure` without an
+//! explicit `--profile` onto wiring this repo cannot yet fully serve -- three
+//! P0s from one review, confirmed live against a real machine, if flipped
+//! before #268: the drain that delivers telemetry today is torn down, every
 //! client's OTLP export is redirected to a port nothing listens on, and the
 //! daemon service that's supposed to replace them enters a permanent
-//! `Restart=on-failure` crash loop, all silently.
-//! `cli::invoke::tests::serve_otel_is_not_yet_a_real_command` is the
-//! tripwire: flip this back to `Self::Daemon` in the same commit that makes
-//! it start failing.
+//! `Restart=on-failure` crash loop, all silently. #268 landing alone removes
+//! only the crash-loop third of that: with no #272, `daemon` still tears down
+//! the working Copilot drain and installs a service with no path to the
+//! Copilot spool, growing it forever with nothing to consume it (#280 review,
+//! the `schedule/daemon/mod.rs` finding). `oauth::apply_telemetry`'s
+//! chokepoint (#280 review round 2) refuses `daemon` outright when #268 is
+//! missing; nothing yet gates on #272 the same way, so the default staying
+//! `Manual` is still load-bearing on its own, not just belt-and-suspenders.
+//! There is no CLI-introspectable tripwire for "#272 has landed" the way
+//! [`crate::cli::invoke::serve_otel_is_supported`] answers "#268 has landed"
+//! -- flipping this back to `Self::Daemon` is a decision to make explicitly
+//! once #272 merges, not an automatic one.
 
 use std::{fmt, str::FromStr};
 

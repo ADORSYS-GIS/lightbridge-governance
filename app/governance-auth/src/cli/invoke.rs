@@ -100,7 +100,13 @@ mod tests {
     /// exist, spelled the way the tree spells them. A rename that updates the
     /// enum and not this module writes a config file whose command fails on
     /// every invocation -- silently, because nothing reads a credential
-    /// helper's stderr.
+    /// helper's stderr. `SERVE_OTEL` is checked separately, in
+    /// `serve_otel_is_supported_now_that_268_has_landed` below: `accepts`
+    /// walks subcommand names only, and `SERVE_OTEL`'s second word is a flag
+    /// (`--otel`), not a subcommand, so it can never usefully appear in this
+    /// table -- `accepts(&["serve", "--otel"])` would report `false`
+    /// regardless of whether the `Serve` variant exists, for the wrong
+    /// reason (an unrecognised subcommand name) rather than the right one.
     #[test]
     fn every_generated_command_is_a_command_this_binary_has() {
         for rendered in [
@@ -123,29 +129,34 @@ mod tests {
         );
     }
 
-    /// `SERVE_OTEL`'s own tripwire, not just a doc-comment claim: proves the
-    /// carve-out above is still warranted, and fails loudly the moment it
-    /// stops being true. When #268 adds a `Serve` variant, this test starts
-    /// failing -- wire `SERVE_OTEL` into
-    /// `every_generated_command_is_a_command_this_binary_has`, flip
-    /// `Profile::default()` back to `Daemon` (`profile.rs`), and delete this
-    /// test, all in the same commit. [`serve_otel_is_supported`] must agree
-    /// with `cli::tests::accepts` here (#280 review, P1-1): it is the
-    /// production-reachable check `schedule::daemon` refuses `--profile
-    /// daemon` on while this holds, and the two must never answer
-    /// differently.
+    /// #268 has landed: `serve --otel` is now a real command, so
+    /// [`serve_otel_is_supported`] now answers `true`, not `false` -- this
+    /// replaces the old `serve_otel_is_not_yet_a_real_command` tripwire, which
+    /// asserted the opposite and started failing the moment this build gained
+    /// the `Serve` variant, per its own doc's instructions. The full parse
+    /// [`serve_otel_is_supported`] runs (subcommand AND `--otel` flag) is the
+    /// production-reachable check `schedule::daemon` and
+    /// `oauth::apply_telemetry` both gate `daemon`-profile installs on --
+    /// there is no separate `cli::tests::accepts`-based cross-check to keep
+    /// in sync here, unlike `SERVE_OTEL`'s neighbours above: `accepts` cannot
+    /// express "and this flag parses", only subcommand-path membership (see
+    /// the comment on `every_generated_command_is_a_command_this_binary_has`).
+    ///
+    /// `Profile::default()` (`profile.rs`) does NOT flip to `Daemon` in this
+    /// same commit, despite the old tripwire's original plan: the module
+    /// doc's precondition was always #268 **and** #272 (Copilot's exporter
+    /// rewired onto the daemon), and #272 has not landed. Flipping now would
+    /// reintroduce the exact regression the round-1 #280 review found --
+    /// Copilot's drain timer torn down with nothing yet forwarding its spool.
+    /// [`crate::profile`]'s own doc names the still-open precondition.
     #[test]
-    fn serve_otel_is_not_yet_a_real_command() {
+    fn serve_otel_is_supported_now_that_268_has_landed() {
         assert!(
-            !serve_otel_is_supported(),
-            "serve_otel_is_supported() disagrees with cli::tests::accepts() -- see this test's \
-             own doc"
-        );
-        assert!(
-            !crate::cli::tests::accepts(&SERVE_OTEL),
-            "serve --otel now resolves -- #268 has landed. Wire SERVE_OTEL into \
-             `every_generated_command_is_a_command_this_binary_has`, flip \
-             `Profile::default()` back to `Daemon`, and delete this test."
+            serve_otel_is_supported(),
+            "serve --otel does not resolve -- #268 was reverted, or this binary lost the Serve \
+             variant. schedule::daemon and oauth::apply_telemetry both gate `daemon`-profile \
+             installs on this answer; a silent flip back to `false` would refuse `--profile \
+             daemon` on a build that should now support it, with no compiler error to catch it."
         );
     }
 }
