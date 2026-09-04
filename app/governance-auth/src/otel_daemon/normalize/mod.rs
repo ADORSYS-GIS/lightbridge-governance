@@ -31,6 +31,24 @@
 //! before persisting, the forgery this module closes for JSON remains open
 //! for protobuf. Closing that needs a protobuf OTLP decoder, which is out of
 //! scope here; flagged rather than silently accepted.
+//!
+//! ## The idempotency key (#269/#291 review, P1-4)
+//!
+//! `otel_daemon::drain::advance::advance_one` durably advances the spool's checkpoint
+//! *after* the collector has already accepted a retried record -- a kill in
+//! that narrow window re-offers the same bytes next attempt, a duplicate
+//! export rather than a loss (see `spool`'s own module doc, "at-least-once,
+//! not exactly-once"). This daemon cannot itself deduplicate that -- it does
+//! not own the ingest table -- but it can carry the key that lets the ingest
+//! side do so: [`stamp`]'s `idempotency_key` parameter, when `Some` (only the
+//! drain's retry path has one; a live pass-through's first attempt does not,
+//! since nothing has a stable key until it has been read back out of the
+//! spool at least once), is stamped as [`RETRY_KEY_ATTRIBUTE`] alongside the
+//! identity attributes, through the exact same strip-then-set path -- a
+//! client-supplied value under that key is stripped unconditionally too, for
+//! the same reason a forged identity is: an attacker naming a real record's
+//! key would let them collide a dedup key on purpose, griefing a delivery
+//! that was never actually a duplicate.
 
 use std::collections::BTreeMap;
 
@@ -55,6 +73,13 @@ const FORGEABLE_IDENTITY_KEYS: [&str; 6] = [
     "azp",
 ];
 
+/// The resource attribute [`stamp`]'s `idempotency_key` parameter is written
+/// under. Stripped from client-supplied attributes unconditionally, exactly
+/// like [`FORGEABLE_IDENTITY_KEYS`] -- see the module doc's "idempotency
+/// key" section for why a forged one is a griefing vector, not a harmless
+/// no-op.
+const RETRY_KEY_ATTRIBUTE: &str = "governance.retry_key";
+
 /// Stamps identity attributes into an OTLP JSON payload, returning the
 /// re-serialized bytes. Client-supplied values for [`FORGEABLE_IDENTITY_KEYS`]
 /// are stripped first, unconditionally -- see the module doc.
@@ -77,12 +102,21 @@ const FORGEABLE_IDENTITY_KEYS: [&str; 6] = [
 /// unhandled format into data loss, and it is **not** an authentication
 /// refusal — the bearer was already minted before this runs (A4). See the
 /// module doc's ⚠️ for what this means for protobuf forgery.
+///
+/// `idempotency_key`: `Some` only on a drain retry, where
+/// [`crate::otel_daemon::spool::Pending::key`] already exists -- see the
+/// module doc's "idempotency key" section. Stamped as
+/// [`RETRY_KEY_ATTRIBUTE`], through the same strip-then-set path as identity.
 pub fn stamp(
     parsed: Option<Value>,
     body: &[u8],
     access_token: &Redacted<String>,
+    idempotency_key: Option<&str>,
 ) -> Result<Vec<u8>> {
-    let attributes = otel::identity_attributes(access_token.expose());
+    let mut attributes = otel::identity_attributes(access_token.expose());
+    if let Some(key) = idempotency_key {
+        attributes.insert(RETRY_KEY_ATTRIBUTE.to_owned(), key.to_owned());
+    }
 
     let Some(mut value) = parsed else {
         // Not JSON (e.g. OTLP protobuf): forward the original unchanged, unstamped.
@@ -128,7 +162,7 @@ fn stamp_resource(resource: &mut Value, attributes: &BTreeMap<String, String>) -
             .as_object()
             .and_then(|object| object.get("key"))
             .and_then(Value::as_str);
-        !key.is_some_and(|key| FORGEABLE_IDENTITY_KEYS.contains(&key))
+        !key.is_some_and(|key| FORGEABLE_IDENTITY_KEYS.contains(&key) || key == RETRY_KEY_ATTRIBUTE)
     });
     let mut changed = attrs.len() != before;
 

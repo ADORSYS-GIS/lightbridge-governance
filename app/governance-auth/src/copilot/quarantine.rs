@@ -77,21 +77,35 @@ impl Quarantine {
         hex::encode(digest).chars().take(32).collect()
     }
 
-    /// Records one wake's refusal of `key` and answers whether the record has
-    /// now been refused on enough separate wakes to be given up on.
+    /// Records one attempt's refusal of `key` and answers whether the record
+    /// has now been refused on enough *separate* attempts to be given up on.
+    ///
+    /// An attempt counts only once at least `min_separation_secs` has passed
+    /// since the last one that counted -- otherwise it is folded into the
+    /// same evidence rather than treated as independent (#269/#291 review
+    /// round 2, P2). Copilot's own drain wakes ~5 minutes apart, already far
+    /// past any reasonable separation, so it passes `0` here: every call
+    /// counts, exactly as before this parameter existed. `otel_daemon`'s much
+    /// tighter retry cadence is the reason the parameter exists at all -- see
+    /// `otel_daemon::spool::commit::MIN_SEPARATION_SECONDS`.
     ///
     /// ⚠️ That is *necessary*, not sufficient. The caller must also have shown
     /// that the collector accepts anything at all -- see
     /// [`super::export::isolate`] -- or a collector misconfigured to refuse
     /// everything would be answered by discarding the spool one record per
     /// wake.
-    pub fn refused(&mut self, key: &str, now: u64) -> bool {
-        let entry = self.entries.entry(key.to_owned()).or_insert(Entry {
+    pub fn refused(&mut self, key: &str, now: u64, min_separation_secs: u64) -> bool {
+        let entry = self.entries.entry(key.to_owned()).or_insert_with(|| Entry {
             refusals: 0,
-            last_seen_unix: now,
+            // Guarantees the very first refusal always counts, regardless of
+            // `min_separation_secs`: there is no earlier attempt yet for it
+            // to be judged too close to.
+            last_seen_unix: now.saturating_sub(min_separation_secs),
         });
-        entry.refusals = entry.refusals.saturating_add(1);
-        entry.last_seen_unix = now;
+        if now.saturating_sub(entry.last_seen_unix) >= min_separation_secs {
+            entry.refusals = entry.refusals.saturating_add(1);
+            entry.last_seen_unix = now;
+        }
         entry.refusals >= REFUSALS_BEFORE_DISCARD
     }
 

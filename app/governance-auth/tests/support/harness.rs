@@ -334,6 +334,26 @@ impl Harness {
         base.join("governance-auth")
     }
 
+    /// The durable spool checkpoint's `discarded_total`, read directly from
+    /// the state directory -- there is no `status` surface for it (that is
+    /// #271's dashboard, not the daemon's own doc), so tests read what the
+    /// daemon itself persisted. `Ok(0)` on no checkpoint yet, the honest
+    /// starting state.
+    pub fn otel_daemon_discarded_total(&self) -> Result<u64> {
+        let path = self.state_dir().join("otel-daemon-checkpoint.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                Ok(value
+                    .get("discarded_total")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn session_file_name(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.issuer.as_bytes());

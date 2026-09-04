@@ -1,5 +1,9 @@
-//! Tests for identity-attribute stamping, including the #290 review's P1-1 fix.
-//! Split out of `mod.rs` purely for the LoC ceiling.
+//! Tests for identity-attribute stamping, including the #290 review's P1-1
+//! fix. Split out of `mod.rs` purely for the LoC ceiling; the retry-key
+//! stamping/stripping tests (#269/#291 review round 2, P2) live in
+//! [`retry_key`], split further for the same reason.
+
+mod retry_key;
 
 use super::*;
 
@@ -9,10 +13,11 @@ fn token() -> Redacted<String> {
     Redacted::new(format!("header.{payload}.signature"))
 }
 
-/// Parses `body` once and calls `stamp` -- matches the new (caller parses
-/// once) signature without rewriting every call site below.
+/// Parses `body` once and calls `stamp` with no idempotency key -- matches
+/// the (caller parses once, live-pass-through has no key yet) signature
+/// without rewriting every call site below.
 fn stamp_body(body: &[u8], token: &Redacted<String>) -> Result<Vec<u8>> {
-    stamp(serde_json::from_slice(body).ok(), body, token)
+    stamp(serde_json::from_slice(body).ok(), body, token, None)
 }
 
 #[test]

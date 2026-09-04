@@ -38,10 +38,15 @@ use axum::http::{HeaderMap, header};
 
 use crate::otel_port::TRUSTED_HOSTS;
 
-/// The maximum request body the receiver will read. Mirrors [`super::spool`]'s
-/// [`super::spool::CAPACITY`]; a larger request is refused with 413 rather than
-/// buffered into memory and then refused at the spool.
-pub const MAX_BODY_SIZE: usize = super::spool::CAPACITY;
+/// The maximum request body the receiver will read. Mirrors
+/// [`super::spool::MAX_RETAINABLE_PAYLOAD`], **not** [`super::spool::CAPACITY`]
+/// directly (#269/#291 review, P2-5): a body sized to `CAPACITY` itself
+/// base64-encodes larger than `CAPACITY` once it reaches the spool, and
+/// larger still than `copilot::spool::MAX_READ` -- either way it could never
+/// actually be retained, on any spool, empty or not. A larger request is
+/// refused with 413 rather than buffered into memory and then refused at the
+/// spool regardless.
+pub const MAX_BODY_SIZE: usize = super::spool::MAX_RETAINABLE_PAYLOAD;
 
 /// What the receiver parsed out of the raw request.
 pub struct Incoming {

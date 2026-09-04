@@ -73,11 +73,11 @@ mod metrics;
 mod otlp;
 mod pass;
 mod points;
-mod private_file;
+pub(crate) mod private_file;
 mod push;
-mod quarantine;
+pub(crate) mod quarantine;
 mod record;
-mod spool;
+pub(crate) mod spool;
 mod status;
 mod sweep;
 
