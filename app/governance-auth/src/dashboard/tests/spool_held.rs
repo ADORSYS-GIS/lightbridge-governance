@@ -47,9 +47,12 @@ fn the_held_row_reaches_the_rendered_table() {
         "https://auth.example",
         "cli",
         &session(true, true),
-        &otel(None, false),
-        &held(None),
-        &unsurveyed_drain(),
+        &Surveys {
+            telemetry: &otel(None, false),
+            daemon: &unsurveyed_daemon(),
+            spool: &held(None),
+            drain: &unsurveyed_drain(),
+        },
         &[],
     );
     assert!(out.contains("held, waiting for a later record"), "{out}");

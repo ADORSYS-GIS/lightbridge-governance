@@ -104,3 +104,31 @@ fn the_invocation_carries_issuer_and_client_id_for_token_minting() {
     assert_eq!(invocation.args[issuer_at + 1], "https://issuer.example");
     assert_eq!(invocation.args[client_id_at + 1], "cli");
 }
+
+#[test]
+fn output_within_returns_promptly_for_a_command_that_finishes() {
+    let output = output_within("true", &[]).expect("a real, fast command must succeed");
+    assert!(output.status.success());
+}
+
+/// Confirmed live, not just plausible: `status` making a SECOND unbounded
+/// shell-out (the first is the Copilot drain's own survey) meant a hung
+/// `systemctl`/`launchctl` -- seen in practice when the session bus is gone
+/// -- hung `status` outright rather than showing a stale row. `sleep 30`
+/// stands in for that hang; the child is left running (this binary denies
+/// `unsafe_code`, so there is no bounded way to kill it), but this function
+/// must not wait for it.
+#[test]
+fn output_within_gives_up_on_a_command_that_outlives_the_timeout() {
+    let start = std::time::Instant::now();
+    let result = output_within("sleep", &["30"]);
+    assert!(
+        result.is_none(),
+        "a command that outlives the timeout must report `None`, not a stale result"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "must give up at ASK_TIMEOUT (2s), not wait out the full 30s command: took {:?}",
+        start.elapsed()
+    );
+}

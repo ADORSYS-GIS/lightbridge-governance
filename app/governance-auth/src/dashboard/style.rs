@@ -76,6 +76,30 @@ impl Colour {
     }
 }
 
+/// Minimal ANSI stripper, test-only: enough to assert on the plain text
+/// under whatever [`Colour::apply`] wrapped it in. Lives beside `Colour`
+/// itself rather than in `tests.rs` (which was pushed over the 200-line
+/// ceiling by #271's daemon row) -- a strip-what-apply-applies pair belongs
+/// together regardless of the line count.
+#[cfg(test)]
+pub(super) fn strip_ansi(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // Skip to the terminating `m` of the escape sequence.
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// `~`-relative where possible: the full path is noise in a summary and the
 /// home prefix repeats on every row.
 ///

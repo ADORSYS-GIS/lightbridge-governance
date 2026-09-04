@@ -127,17 +127,55 @@ pub fn apply(home: &Path, config: &OauthConfig) -> Result<()> {
     }
 }
 
-/// What `dashboard::Daemon` will report (#271) -- reuses [`super::Schedule`]
+/// What `dashboard::Daemon` reports (#271) -- reuses [`super::Schedule`]
 /// rather than a parallel type, since the three-valued shape it promises is
 /// identical for either unit.
-#[expect(
-    dead_code,
-    reason = "wired in by #271 (status); no caller yet on this branch"
-)]
 pub fn survey(home: &Path) -> super::Schedule {
     if super::macos() {
         launchd::survey(home)
     } else {
         systemd::survey(home)
     }
+}
+
+/// The command that starts a daemon service which is installed but not
+/// running, for this platform. Mirrors [`super::start_command`] exactly,
+/// substituting this module's own unit/label -- lives here rather than in
+/// `dashboard` so that module has no reason to branch on the operating
+/// system.
+pub fn start_command() -> String {
+    if super::macos() {
+        format!("launchctl kickstart -k gui/$(id -u)/{DAEMON_LABEL}")
+    } else {
+        format!("systemctl --user enable --now {DAEMON_UNIT}.service")
+    }
+}
+
+/// How long `survey` waits for the platform scheduler to answer before
+/// giving up and reporting `None` -- "could not ask" -- instead. `status`
+/// now shells out to ask twice per run (the Copilot drain's survey, then
+/// this one), and `std::process::Command::output()` has no built-in bound:
+/// a hung `systemctl`/`launchctl` (seen in practice when the session bus is
+/// gone) must not hang `status` itself, just this one row.
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`std::process::Command::output`], but bounded by [`ASK_TIMEOUT`] rather
+/// than unbounded. The wait runs on its own thread so the timeout can be
+/// enforced with a channel `recv_timeout` rather than polling; on timeout
+/// the child is not killed (this binary denies `unsafe_code`, so there is
+/// no `kill(2)` without shelling out to a second, equally unbounded process
+/// to do it) -- it is simply not waited on any further, so this function
+/// returns promptly either way, which is the property that matters here.
+pub(super) fn output_within(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let child = std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    rx.recv_timeout(ASK_TIMEOUT).ok()?.ok()
 }
