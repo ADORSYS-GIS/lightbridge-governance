@@ -172,6 +172,33 @@ spec:
     - name: otlp-http
       port: 4318
       protocol: TCP
+{{- if $otel.s3.enabled }}
+  # The awss3 exporter reads AWS credentials from the standard chain; these env
+  # vars point it at the same ExternalSecret material copilot.s3 uses
+  # (externalSecret.s3AccessKeyProperty / s3SecretKeyProperty). Required (never
+  # optional) so a pod that beats ESO waits in ContainerCreating rather than
+  # archiving nothing / failing auth forever -- same rule as every other
+  # secretKeyRef env in this chart.
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: {{ $root.Values.name }}-env
+          key: {{ $root.Values.externalSecret.s3AccessKeyProperty }}
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: {{ $root.Values.name }}-env
+          key: {{ $root.Values.externalSecret.s3SecretKeyProperty }}
+  # The awss3 exporter stages each upload in a temp file before PUT; the
+  # collector runs readOnlyRootFilesystem, so give it a writable /tmp.
+  volumes:
+    - name: tmp
+      emptyDir: {}
+  volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+{{- end }}
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -260,6 +287,38 @@ values field, not a literal, so do not invent a new one per collector.
         endpoint: {{ $otel.alloyEndpoint | quote }}
         tls:
           insecure: true
+{{- if $otel.s3.enabled }}
+      # Raw OTLP archive leg (lightbridge-authz #692 / #589): a third exporter,
+      # parallel to -- not behind -- the Alloy leg, writing verbatim OTLP to
+      # S3-compatible object storage so a field can later be promoted to a
+      # column with historical backfill. Independent queue/retry from Alloy: a
+      # blocked S3 sink alarms but never blocks the governed/observability path
+      # (D10). The per-source prefix comes from the `governance.source` resource
+      # attribute stamped by the resource processor, so the key layout is
+      # <basePrefix>/<source>/<yyyy>/<mm>/<dd>/... (a cheap prefix read for a
+      # one-source/window promotion backfill).
+      awss3:
+        s3uploader:
+          region: {{ $otel.s3.region | quote }}
+          s3_bucket: {{ $otel.s3.bucket | quote }}
+          s3_base_prefix: {{ $otel.s3.basePrefix | quote }}
+          s3_prefix: {{ $otel.sourceAttribute | quote }}
+          s3_partition_format: {{ $otel.s3.partitionFormat | quote }}
+          s3_partition_timezone: {{ $otel.s3.partitionTimezone | quote }}
+          s3_force_path_style: {{ $otel.s3.forcePathStyle }}
+          endpoint: {{ $otel.s3.endpoint | quote }}
+        resource_attrs_to_s3:
+          s3_prefix: "governance.source"
+        marshaler: {{ $otel.s3.format | quote }}
+        compression: {{ $otel.s3.compression | quote }}
+        sending_queue:
+          enabled: true
+          num_consumers: {{ $otel.s3.numConsumers }}
+          queue_size: {{ $otel.s3.queueSize }}
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 5m
+{{- end }}
 
     service:
       extensions: [oidc]
@@ -274,15 +333,15 @@ wants the same three pipelines and gets them from this same body.
         traces:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
-          exporters: [otlp/alloy]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
-          exporters: [otlp/alloy]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         logs:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
-          exporters: [otlp/alloy]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
 {{- end -}}
 
 {{- /*
