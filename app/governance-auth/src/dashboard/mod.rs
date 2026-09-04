@@ -51,17 +51,34 @@ pub fn plain(session: &Session) -> String {
     )
 }
 
+/// The four per-source surveys `render` turns into rows, grouped into one
+/// argument rather than four separate ones: they always travel together
+/// (one caller, `status`, and one shape of fixture in tests), and a fifth
+/// row added here (this struct exists because a fifth positional argument
+/// is what tripped `clippy::too_many_arguments`) belongs in this struct, not
+/// in `render`'s own signature again.
+pub struct Surveys<'a> {
+    pub telemetry: &'a Telemetry,
+    pub daemon: &'a Daemon,
+    pub spool: &'a Spool,
+    pub drain: &'a Drain,
+}
+
 /// The table, for a human. Returns a `String` rather than printing so it can be
 /// asserted on without a terminal.
 pub fn render(
     issuer: &str,
     client_id: &str,
     session: &Session,
-    telemetry: &Telemetry,
-    spool: &Spool,
-    drain: &Drain,
+    surveys: &Surveys<'_>,
     targets: &[Target],
 ) -> String {
+    let Surveys {
+        telemetry,
+        daemon,
+        spool,
+        drain,
+    } = surveys;
     let (state, colour) = match (session.cached, session.fresh) {
         (false, _) => ("no cached session".to_owned(), Colour::Red),
         (true, true) => (format!("fresh, {}", ago(session.expires_in)), Colour::Green),
@@ -95,7 +112,13 @@ pub fn render(
     let (value, colour, note) = telemetry.row(session);
     rows.push(("telemetry".to_owned(), value, colour, note));
 
-    // Directly under telemetry: the Copilot drain is the one export path whose
+    // Directly under telemetry: under `daemon` this is the row that answers
+    // "is anything actually forwarding what was just configured?" -- see
+    // `daemon`'s module doc for why a dead daemon is worse than a dead drain.
+    let (value, colour, note) = daemon.row();
+    rows.push(("daemon".to_owned(), value, colour, note));
+
+    // Directly under that: the Copilot drain is the one export path whose
     // schedule this binary does not own, so it is the one that can silently
     // stop. See `spool`'s module doc.
     let (value, colour, note) = spool.row();
@@ -106,45 +129,7 @@ pub fn render(
     let (value, colour, note) = drain.row();
     rows.push(("copilot drain".to_owned(), value, colour, note));
 
-    if targets.is_empty() {
-        rows.push((
-            "configured".to_owned(),
-            "nothing yet".to_owned(),
-            Colour::Yellow,
-            // ⚠️ Must name a command that RUNS. This said
-            // "run `governance-auth configure`", and bare `configure` exits
-            // with "nothing to configure: supply --otel-endpoint and/or
-            // --gateway-url" -- so the dashboard sent a first-time user
-            // straight into an error. Reported from a real install.
-            //
-            // The flags were fixed then; the COMMAND still wasn't. `configure`
-            // also refuses without a cached session ("no cached session for
-            // this issuer/client; run `governance-auth login` first"), which is
-            // precisely the state this row appears in on a first run. Same
-            // session-aware choice as the telemetry row above.
-            format!(
-                "{} --gateway-url <url> --otel-endpoint <url>",
-                if session.cached { "configure" } else { "login" }
-            ),
-        ));
-    } else {
-        for target in targets {
-            let (note, colour) = if target.edited == 0 {
-                (String::new(), Colour::Green)
-            } else {
-                (
-                    format!("{} changed by you, left alone", target.edited),
-                    Colour::Yellow,
-                )
-            };
-            rows.push((
-                target.path.clone(),
-                format!("{} keys managed", target.managed),
-                colour,
-                note,
-            ));
-        }
-    }
+    targets::rows(&mut rows, targets, session);
 
     // ⚠️ Pad on the PLAIN text, then colour. Styling first embeds ANSI escapes
     // that `str::len` counts as characters, so every coloured row would be
@@ -184,12 +169,14 @@ pub fn render(
 #[cfg(test)]
 mod tests;
 
+mod daemon;
 mod drain;
 mod spool;
 mod status;
 mod style;
 mod targets;
 mod telemetry;
+pub use daemon::Daemon;
 pub use drain::Drain;
 pub use spool::Spool;
 pub use status::status;

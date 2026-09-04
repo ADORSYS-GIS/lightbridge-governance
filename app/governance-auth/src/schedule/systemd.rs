@@ -88,7 +88,12 @@ pub fn remove(home: &Path) -> Result<()> {
     let stopped = run("systemctl", &["--user", "disable", "--now", &timer_unit()]);
     for path in paths {
         fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        eprintln!("Removed (no collector configured): {}", path.display());
+        // Not "(no collector configured)": #270 gave `Invocation::resolve`
+        // a second reason to return `None` (the `daemon` profile), and a
+        // developer switching profiles with a real `--otel-endpoint` set
+        // would read that claim as flatly wrong. Neutral wording covers
+        // both without guessing which one applies here.
+        eprintln!("Removed (nothing to schedule): {}", path.display());
     }
     let _ = run("systemctl", &["--user", "daemon-reload"]);
     stopped

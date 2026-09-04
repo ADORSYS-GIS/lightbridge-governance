@@ -79,20 +79,14 @@ pub fn remove(home: &Path) -> Result<()> {
     stopped
 }
 
-#[expect(
-    dead_code,
-    reason = "wired in by #271 (status); no caller yet on this branch"
-)]
 pub fn survey(home: &Path) -> Schedule {
     let path = service_path(home);
     let installed = path.is_file();
     // Reuses `systemd::classify` -- the same three-valued read `status`
     // (#271) already needs, not a second copy of it. See this module's
-    // parent's doc.
-    let active = std::process::Command::new("systemctl")
-        .args(["--user", "is-active", &service_unit()])
-        .output()
-        .ok()
+    // parent's doc. Bounded by `super::output_within` -- a hung
+    // `systemctl` must not hang `status` itself.
+    let active = super::output_within("systemctl", &["--user", "is-active", &service_unit()])
         .and_then(|output| classify(&String::from_utf8_lossy(&output.stdout)));
     Schedule {
         path,
