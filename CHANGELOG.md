@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.3.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.1...v2.3.0) (2026-09-04)
+
+
+### Features
+
+* **governance-auth:** configure --profile daemon|manual ([#280](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/280)) ([0969eae](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0969eaebc5de32f7daccfab569e0f6f6547d61bd))
+* **governance-auth:** pin OTEL loopback port and client URL (contract) ([c66e4fd](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c66e4fd8f7f4cbae541fe54e136772144e10ec69))
+* **governance-auth:** serve otel loopback collector daemon (issue [#268](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/268)) ([#290](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/290)) ([2d2c155](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2d2c155c3a5dbe08854ff19b4619eea127c6e409))
+* **governance-auth:** status carries a daemon row ([#271](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/271)) ([#295](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/295)) ([f22a107](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/f22a107d220e2f284de00e56270135602b01b084))
+
+
+### Bug Fixes
+
+* **governance-auth:** address otel_port review - fail-closed, drop baseline, derive URL. ([0b00525](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0b00525605843c511da09b9ffd75721084e23a19))
+* **governance-auth:** telemetry row is daemon-profile-blind (found in live E2E) ([#296](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/296)) ([6e8f863](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6e8f863615f6dc6e4aa208f05d900904c338c350))
+
 ## [2.2.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.0...v2.2.1) (2026-09-02)
 
 
