@@ -1,0 +1,32 @@
+{{- if .Values.rbac.enabled }}
+# TokenReview RBAC for /internal/v1/resolve caller authentication (ADR-0017).
+# The governance pod needs `create` on `tokenreviews` so the
+# TokenReviewVerifier can validate Bearer tokens presented by Authorino's
+# `metadata.http` step. Scoped to `tokenreviews` only -- narrower than
+# `system:auth-delegator`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.name }}-token-review
+  labels:
+    app: {{ .Values.name }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.name }}-token-review
+  labels:
+    app: {{ .Values.name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.name }}-token-review
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

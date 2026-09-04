@@ -24,6 +24,7 @@ the alternatives it beat** -- not a design document, and not a task list.
 | [0014](./0014-usage-telemetry-consolidates-into-the-authz-usage-store.md) | Usage telemetry consolidates into the authz usage store — this repo keeps the collectors, not the tables | Accepted | 2026-08-31 |
 | [0015](./0015-pin-the-loopback-callback-to-a-registered-port-block.md) | Pin the loopback callback to a registered port block until RFC 8252 §7.3 lands upstream | Accepted | 2026-08-31 |
 | [0016](./0016-a-local-collector-daemon-replaces-per-client-credentials.md) | A local collector daemon replaces per-client OTLP credentials — with a `manual` profile that keeps today's direct wiring | Accepted | 2026-09-02 |
+| [0017](./0017-replace-shared-secret-with-kubernetes-token-review.md) | Replace shared-secret `X-Internal-Token` on `/internal/v1/resolve` with Kubernetes TokenReview | Proposed | 2026-09-04 |
 
 ⚠️ **Number collision**: `0010` is used by two ADRs. Both are listed above so
 neither is invisible, but the number needs resolving — renumbering changes

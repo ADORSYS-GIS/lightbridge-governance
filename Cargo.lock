@@ -2506,6 +2506,7 @@ dependencies = [
  "mimalloc",
  "moka",
  "prometheus",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",

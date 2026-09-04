@@ -32,16 +32,21 @@ helm template charts/lightbridge-governance --set externalSecret.enabled=false
 
 ## The `ExternalSecret` property names are an assumption, not a verified fact
 
-`externalSecret.dbPasswordProperty` (`governance_db_password`),
-`externalSecret.internalResolveTokenProperty` (`governance_internal_resolve_token`) and
+`externalSecret.dbPasswordProperty` (`governance_db_password`) and
 `externalSecret.internalIngestTokenProperty` (`governance_internal_ingest_token`) are this
 chart's best guess at what these properties are named inside the shared
 `ai/camer/digital/prod/env` secret store entry. Unlike `redact-gateway`'s `saltProperty`
 (verified against the live entry when that chart was written), these have **not** been
 confirmed against the real store. Check before relying on this in a real environment.
 
-All three are plain random opaque values (`openssl rand -hex 32` or similar) — there is
-nothing to compute or derive for any of them.
+Both are plain random opaque values (`openssl rand -hex 32` or similar) — there is
+nothing to compute or derive for either of them.
+
+The resolve endpoint no longer uses a shared secret (ADR-0017): caller authentication is
+Kubernetes TokenReview, so there is no `internalResolveTokenProperty` anymore. The
+`ALLOWED_SERVICE_ACCOUNTS` value (which ServiceAccounts may call `/internal/v1/resolve`) is
+a plain, non-secret value set per-environment in `ai-helm-values`, not an ExternalSecret
+property.
 
 ## `DATABASE_URL` is assembled from parts, not a single opaque secret
 

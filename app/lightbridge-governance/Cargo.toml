@@ -26,10 +26,13 @@ hex.workspace = true
 mimalloc.workspace = true
 moka.workspace = true
 prometheus.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# ⚠️ To be removed by #243 when the ingest endpoint is deleted. Present only
+# because ingest.rs still uses constant-time comparison.
 subtle.workspace = true
 cratestack.workspace = true
 cratestack-axum.workspace = true
