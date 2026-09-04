@@ -48,7 +48,7 @@ fn a_declined_client_keeps_the_keys_an_earlier_run_wrote() {
     configure_all(home.path(), &settings, NO_VSCODE).expect("second run, VS Code opted out");
 
     let after = vscode_settings(home.path());
-    for (key, _) in vscode::settings(&settings.copilot_spool) {
+    for (key, _) in vscode::entries(&settings) {
         assert_eq!(
             after.get(key),
             before.get(key),
