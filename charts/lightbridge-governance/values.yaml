@@ -457,10 +457,19 @@ aiCliOtel:
   # with historical backfill. Independent queue/retry from Alloy: a blocked S3
   # sink alarms but never blocks the governed/observability path (D10).
   s3:
-    # Off by default: archiving raw telemetry (which carries identity
-    # attributes) is an explicit act, and its retention/access control (D9)
-    # must be decided before it is turned on.
-    enabled: false
+    # Enabled in prod. D9 decisions (the gate for turning this on):
+    #   - Access control: this is the SHARED cluster bucket (also LibreChat,
+    #     CNPG backups, copilot raw archive) and the creds are the shared
+    #     backup creds. Raw OTLP carries identity attributes, so anyone who can
+    #     read this bucket / these creds can read raw telemetry. Accepted for
+    #     now because the same creds already gate the copilot raw archive; a
+    #     dedicated telemetry bucket is the escape hatch if that ever changes.
+    #   - Retention: no bucket lifecycle rule yet. Apply one on the
+    #     `raw/otlp/` prefix (recommended: 90 days) before treating the archive
+    #     as anything but a short-window backfill source. The archive is
+    #     best-effort (D10): a blocked S3 sink drops after the queue fills and
+    #     never blocks the Alloy/observability path.
+    enabled: true
     # Shared Hetzner Object Storage -- same material as copilot.s3 and the CNPG
     # backups. Creds come from the lightbridge-governance-env ExternalSecret
     # (externalSecret.s3AccessKeyProperty / s3SecretKeyProperty).
@@ -580,8 +589,11 @@ opencodeOtel:
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
   # Raw OTLP archive leg -- same shape as aiCliOtel.s3 (shared collector body).
+  # Enabled in prod; the D9 access-control and retention decisions are recorded
+  # on aiCliOtel.s3 and apply identically here (same shared bucket, same creds,
+  # same `raw/otlp/` prefix family).
   s3:
-    enabled: false
+    enabled: true
     bucket: ssegning-k8s-state
     endpoint: https://nbg1.your-objectstorage.com
     region: us-east-1
