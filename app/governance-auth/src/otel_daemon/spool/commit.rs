@@ -14,21 +14,46 @@ use super::{DurableSpool, Pending, checkpoint};
 /// guaranteed to cross the threshold in one record.
 pub(super) const RECLAIM_ABOVE: u64 = 1024 * 1024;
 
+/// The minimum wall-clock gap between two refusals of the same record that
+/// count as genuinely *separate* evidence (#269/#291 review round 2, P2).
+/// `Quarantine::refused`'s "separate wakes" reasoning assumes attempts are
+/// time-decorrelated -- true of Copilot's own ~5-minute wake, but this
+/// daemon's `pump` retries every 5 seconds (`drain::PUMP_INTERVAL`), and
+/// `drain_retained` can retry again on every admitted request besides. Two
+/// refusals landing inside the same brief flaky window (a WAF or proxy blip)
+/// used to satisfy condition 1 almost immediately. 60 seconds is well above
+/// one `pump` interval -- a deterministically bad payload still clears it on
+/// the next tick past the gap, but a transient blip has to span a full
+/// minute to fool it, which the measured half-400-gateway case this rule
+/// guards against does not.
+///
+/// `pub(super)`: `spool::tests` needs it to space out synthetic timestamps in
+/// a test that does not wait on real wall-clock time.
+pub(super) const MIN_SEPARATION_SECONDS: u64 = 60;
+
 impl DurableSpool {
     /// Durably advances past a delivered record.
     pub fn advance(&mut self, pending: &Pending) -> Result<()> {
         self.commit_past(pending.boundary, 0)
     }
 
-    /// Records one more separate refusal of `pending` and answers whether it
+    /// Records one more attempt's refusal of `pending` and answers whether it
     /// has now been refused on enough separate attempts to be *eligible* for
     /// discard -- eligible, not discarded: [`super::super::drain`]'s caller
     /// still owes the second condition (has the collector been shown to
     /// accept something else) before acting on `true`. Never itself discards
     /// -- see [`Self::discard_confirmed`].
-    pub fn record_refusal(&mut self, pending: &Pending) -> Result<bool> {
-        let now = checkpoint::now_unix()?;
-        let eligible = self.checkpoint.quarantine.refused(&pending.key, now);
+    ///
+    /// `now` is taken explicitly, not read internally -- unlike
+    /// [`Self::advance`]/[`Self::discard_confirmed`], which have nothing to
+    /// gate on time -- so a test can pin two attempts at a deterministic gap
+    /// apart rather than depending on real wall-clock elapsing between two
+    /// calls (see [`MIN_SEPARATION_SECONDS`]).
+    pub fn record_refusal(&mut self, pending: &Pending, now: u64) -> Result<bool> {
+        let eligible =
+            self.checkpoint
+                .quarantine
+                .refused(&pending.key, now, MIN_SEPARATION_SECONDS);
         checkpoint::store(&self.checkpoint_path, &self.checkpoint)?;
         Ok(eligible)
     }

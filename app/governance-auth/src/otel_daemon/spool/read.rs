@@ -55,9 +55,28 @@ impl DurableSpool {
         }
     }
 
+    /// Whether nothing is pending at the checkpoint offset -- routed through
+    /// the same identity-aware read [`Self::next`] uses, not a raw
+    /// `size <= offset` compare (#269/#291 review round 2, P1). That matters
+    /// because a crash between [`super::commit`]'s `try_reclaim` truncating
+    /// the file and its checkpoint reset landing leaves disk state
+    /// `{checkpoint: offset=N (stale, large), file: truncated to 0}` -- a
+    /// plain size compare reads `size <= N` as "caught up" forever, even once
+    /// new records are appended starting from byte 0, wedging the drain
+    /// permanently (the agent keeps getting `202`, nothing is ever offered to
+    /// the collector). [`Self::peek_at`] already detects exactly this as
+    /// [`Peeked::Restarted`], which this reads as "not empty" -- `next` then
+    /// adopts the restart on the very next call, self-healing.
+    pub(super) fn is_caught_up(&self) -> Result<bool> {
+        Ok(matches!(
+            self.peek_at(self.checkpoint.offset)?.0,
+            Peeked::Empty
+        ))
+    }
+
     /// The record right after `after` -- **not** the checkpoint offset -- used
     /// purely to answer "has the collector been shown to accept something
-    /// else" before [`super::super::drain::advance_one`] discards a record
+    /// else" before [`super::super::drain::advance::advance_one`] discards a record
     /// quarantine alone would give up on (#269/#291 review, P1-3). Read-only:
     /// unlike [`Self::next`], never restarts a rotated tail or skips an
     /// undecodable line on the caller's behalf -- a probe that mutated state

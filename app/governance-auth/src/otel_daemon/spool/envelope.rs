@@ -47,6 +47,19 @@ pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>)> {
 /// see the parent module doc's "torn write" paragraph for the one thing this
 /// does not guarantee.
 ///
+/// Also `fsync`s the parent directory (#269/#291 review round 2, P2):
+/// `file.sync_all()` alone durably bears out the line's *bytes*, but says
+/// nothing about the directory entry that makes the file itself findable
+/// after a crash. On the very first retain (or the first one after
+/// [`super::commit`]'s `try_reclaim` truncates the file), that entry is
+/// freshly created -- an unsynced creation can vanish across a power loss
+/// exactly as an unsynced rename can (see [`crate::durable_state`]'s module
+/// doc), which would silently take every retained line with it even though
+/// the client was already told `202`. Unconditional on every append rather
+/// than only the first, since telling "created" apart from "reused" here
+/// would cost its own `stat` for no real saving -- one extra `fsync` on an
+/// already-`fsync`ing, low-frequency path is cheap.
+///
 /// ⚠️ **`fsync`, unlike [`crate::copilot::journal`]'s deliberate no-`fsync`
 /// policy for the same `O_APPEND` shape.** That module's doc gives its
 /// reason: the record survives in the page cache across everything except a
@@ -64,7 +77,8 @@ pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>)> {
 pub(super) fn append_line(path: &Path, line: &str) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    if let Some(dir) = path.parent() {
+    let dir = path.parent();
+    if let Some(dir) = dir {
         crate::copilot::private_file::create_dir(dir)?;
     }
     let mut file = OpenOptions::new()
@@ -75,12 +89,14 @@ pub(super) fn append_line(path: &Path, line: &str) -> Result<()> {
         .with_context(|| format!("opening {} to append", path.display()))?;
     writeln!(file, "{line}").with_context(|| format!("appending to {}", path.display()))?;
     file.sync_all()
-        .with_context(|| format!("syncing {} to disk", path.display()))
+        .with_context(|| format!("syncing {} to disk", path.display()))?;
+    sync_parent(dir)
 }
 
 #[cfg(not(unix))]
 pub(super) fn append_line(path: &Path, line: &str) -> Result<()> {
-    if let Some(dir) = path.parent() {
+    let dir = path.parent();
+    if let Some(dir) = dir {
         crate::copilot::private_file::create_dir(dir)?;
     }
     let mut file = OpenOptions::new()
@@ -90,7 +106,19 @@ pub(super) fn append_line(path: &Path, line: &str) -> Result<()> {
         .with_context(|| format!("opening {} to append", path.display()))?;
     writeln!(file, "{line}").with_context(|| format!("appending to {}", path.display()))?;
     file.sync_all()
-        .with_context(|| format!("syncing {} to disk", path.display()))
+        .with_context(|| format!("syncing {} to disk", path.display()))?;
+    sync_parent(dir)
+}
+
+/// `fsync`s `dir`, if there is one -- see [`append_line`]'s doc. No parent
+/// (a bare relative filename) is not an error: nothing here ever constructs
+/// a spool path that way, but failing loudly on a hypothetical would be
+/// stricter than the check already guarding [`crate::copilot::private_file
+/// ::create_dir`] above.
+fn sync_parent(dir: Option<&Path>) -> Result<()> {
+    let Some(dir) = dir else { return Ok(()) };
+    crate::durable_state::sync_dir(dir)
+        .with_context(|| format!("syncing {} after appending into it", dir.display()))
 }
 
 #[cfg(test)]

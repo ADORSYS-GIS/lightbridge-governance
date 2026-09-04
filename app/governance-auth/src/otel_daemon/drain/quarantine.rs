@@ -44,7 +44,7 @@
 //! refuses everything now.
 
 use super::{Outcome, with_spool};
-use crate::otel_daemon::{DaemonState, forward, mint, normalize, spool::Pending};
+use crate::otel_daemon::{DaemonState, checkpoint, forward, mint, normalize, spool::Pending};
 
 /// Handles a `Verdict::Refused` outcome for `pending`: records the refusal,
 /// and -- only once it is both eligible AND confirmed, per the module doc --
@@ -54,9 +54,16 @@ pub(super) async fn handle(
     pending: Pending,
     status: axum::http::StatusCode,
 ) -> Outcome {
+    let now = match checkpoint::now_unix() {
+        Ok(now) => now,
+        Err(error) => {
+            tracing::error!(error = %error, "could not read the system clock to record a refusal");
+            return Outcome::Stopped;
+        }
+    };
     let eligible = match with_spool(state, {
         let pending = pending.clone();
-        move |spool| spool.record_refusal(&pending)
+        move |spool| spool.record_refusal(&pending, now)
     })
     .await
     {

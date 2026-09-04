@@ -109,17 +109,24 @@ fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// `fsync` on the directory descriptor itself -- the only way to make a
-/// rename's directory-entry update durable, distinct from `fsync`ing either
-/// file involved. Windows has no equivalent (`File::open` on a directory
-/// fails there), and NTFS's own metadata journal already makes a rename
-/// crash-safe without this step, so the no-op is correct, not a gap.
+/// directory-entry change (a rename, or a fresh file's own creation) durable,
+/// distinct from `fsync`ing any file involved. Windows has no equivalent
+/// (`File::open` on a directory fails there), and NTFS's own metadata journal
+/// already makes both crash-safe without this step, so the no-op is correct,
+/// not a gap.
+///
+/// `pub(crate)`: `otel_daemon::spool::envelope` reuses this directly for the
+/// same reason this module exists for the checkpoint -- fsyncing a spool
+/// line's own bytes says nothing about whether the file that holds them
+/// still exists after a crash (#269/#291 review round 2, P2's "spool file
+/// creation never fsyncs its directory entry").
 #[cfg(unix)]
-fn sync_dir(dir: &Path) -> Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> Result<()> {
     fs::File::open(dir)?.sync_all().map_err(Into::into)
 }
 
 #[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> Result<()> {
+pub(crate) fn sync_dir(_dir: &Path) -> Result<()> {
     Ok(())
 }
 

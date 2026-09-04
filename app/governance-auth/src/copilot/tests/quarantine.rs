@@ -10,6 +10,10 @@ use super::super::quarantine::{Quarantine, REFUSALS_BEFORE_DISCARD};
 const NOW: u64 = 1_788_191_916;
 const A_WEEK: u64 = 7 * 24 * 60 * 60;
 
+// `0` on every call below: this drain's own wakes are already ~5 minutes
+// apart, so every one is a genuinely separate attempt -- see
+// `Quarantine::refused`'s doc for who the parameter is actually for.
+
 fn key(text: &str) -> String {
     Quarantine::key(text)
 }
@@ -19,7 +23,7 @@ fn key(text: &str) -> String {
 fn one_refusal_is_never_enough() {
     let mut quarantine = Quarantine::default();
     assert!(
-        !quarantine.refused(&key("a record"), NOW),
+        !quarantine.refused(&key("a record"), NOW, 0),
         "a record refused once must be held, not given up on -- a gateway answering 400 for its \
          own reasons is indistinguishable from a bad payload on a single wake"
     );
@@ -30,9 +34,12 @@ fn the_threshold_is_reached_by_repeated_refusals_of_the_same_record() {
     let mut quarantine = Quarantine::default();
     let key = key("a record");
     for round in 1..REFUSALS_BEFORE_DISCARD {
-        assert!(!quarantine.refused(&key, NOW), "round {round}");
+        assert!(!quarantine.refused(&key, NOW, 0), "round {round}");
     }
-    assert!(quarantine.refused(&key, NOW), "the last round must decide");
+    assert!(
+        quarantine.refused(&key, NOW, 0),
+        "the last round must decide"
+    );
 }
 
 /// Two different records are two different pieces of evidence. Without a
@@ -43,7 +50,7 @@ fn refusals_of_different_records_do_not_accumulate_against_each_other() {
     let mut quarantine = Quarantine::default();
     for index in 0..10 {
         assert!(
-            !quarantine.refused(&key(&format!("record {index}")), NOW),
+            !quarantine.refused(&key(&format!("record {index}")), NOW, 0),
             "record {index} has only ever been refused once"
         );
     }
@@ -56,12 +63,12 @@ fn refusals_of_different_records_do_not_accumulate_against_each_other() {
 fn an_entry_nobody_refused_again_expires_rather_than_counting_for_ever() {
     let mut quarantine = Quarantine::default();
     let key = key("a record");
-    assert!(!quarantine.refused(&key, NOW));
+    assert!(!quarantine.refused(&key, NOW, 0));
 
     quarantine.prune(NOW + A_WEEK + 1);
 
     assert!(
-        !quarantine.refused(&key, NOW + A_WEEK + 1),
+        !quarantine.refused(&key, NOW + A_WEEK + 1, 0),
         "the stale refusal must have been forgotten, so this counts as the first one again"
     );
 }
@@ -74,11 +81,11 @@ fn a_discarded_record_leaves_no_entry_behind() {
     let mut quarantine = Quarantine::default();
     let key = key("a record");
     for _ in 0..REFUSALS_BEFORE_DISCARD {
-        quarantine.refused(&key, NOW);
+        quarantine.refused(&key, NOW, 0);
     }
     quarantine.forget(&key);
     assert!(
-        !quarantine.refused(&key, NOW),
+        !quarantine.refused(&key, NOW, 0),
         "with the entry gone this is a first refusal again"
     );
 }

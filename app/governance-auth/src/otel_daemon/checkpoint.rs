@@ -63,7 +63,7 @@ pub struct Checkpoint {
     /// across [`crate::copilot::quarantine::REFUSALS_BEFORE_DISCARD`]
     /// separate attempts AND after the collector was shown to accept
     /// something else in the same episode -- see
-    /// [`super::drain::advance_one`]'s doc for that second condition. Never
+    /// [`super::drain::advance::advance_one`]'s doc for that second condition. Never
     /// bytes lost to an outage: an unreachable collector leaves the offset
     /// exactly where it was, and the same bytes are retried, not counted
     /// here.

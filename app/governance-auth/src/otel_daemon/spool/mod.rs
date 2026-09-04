@@ -49,7 +49,7 @@
 //!
 //! ## At-least-once, not exactly-once
 //!
-//! [`super::drain::advance_one`] advances the checkpoint *after* the
+//! [`super::drain::advance::advance_one`] advances the checkpoint *after* the
 //! collector accepts the POST. A kill in the window between the `200` and
 //! the checkpoint's rename lands means the same bytes are offered again next
 //! attempt -- a duplicate export, not a loss, and deliberate: nothing durable
@@ -162,15 +162,11 @@ impl DurableSpool {
 
     /// Whether nothing is left pending -- the peek-before-mint check
     /// `drain_retained` uses so an empty spool costs no credential work.
+    /// Identity-aware ([`Self::is_caught_up`]), not a raw `size <= offset`
+    /// compare -- see that method's doc for the post-crash wedge a plain
+    /// compare used to cause (#269/#291 review round 2, P1).
     pub fn is_empty(&self) -> Result<bool> {
-        let size = match std::fs::metadata(&self.spool_path) {
-            Ok(metadata) => metadata.len(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-            Err(error) => {
-                return Err(error).with_context(|| format!("sizing {}", self.spool_path.display()));
-            }
-        };
-        Ok(size <= self.checkpoint.offset)
+        self.is_caught_up()
     }
 
     /// Durably retains `payload` for a later retry, refusing (not silently

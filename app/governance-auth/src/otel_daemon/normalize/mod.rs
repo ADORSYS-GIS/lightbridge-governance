@@ -34,7 +34,7 @@
 //!
 //! ## The idempotency key (#269/#291 review, P1-4)
 //!
-//! `otel_daemon::drain::advance_one` durably advances the spool's checkpoint
+//! `otel_daemon::drain::advance::advance_one` durably advances the spool's checkpoint
 //! *after* the collector has already accepted a retried record -- a kill in
 //! that narrow window re-offers the same bytes next attempt, a duplicate
 //! export rather than a loss (see `spool`'s own module doc, "at-least-once,

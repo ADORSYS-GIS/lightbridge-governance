@@ -1,11 +1,13 @@
 //! `DurableSpool`, exercised end to end. Quarantine/probe-discard tests
-//! live in [`quarantine`], split out for the LoC gate.
+//! live in [`quarantine`]; reclaim and `is_empty` tests live in [`reclaim`]
+//! -- both split out for the LoC gate.
 
 mod quarantine;
+mod reclaim;
 
 use std::path::PathBuf;
 
-use super::{DurableSpool, commit::RECLAIM_ABOVE};
+use super::DurableSpool;
 use crate::copilot::Signal;
 
 struct TempDir(PathBuf);
@@ -159,42 +161,4 @@ fn a_corrupt_line_is_skipped_and_counted_not_fatal() {
         .expect("next must skip the garbage, not fail")
         .expect("the good record must still be reached");
     assert_eq!(pending.payload, b"good");
-}
-
-#[test]
-fn a_fully_delivered_spool_over_the_reclaim_threshold_is_truncated() {
-    let dir = TempDir::new("reclaim");
-    let spool_path = dir.0.join("spool.reclaim");
-    let checkpoint_path = dir.0.join("checkpoint.reclaim.json");
-    let mut spool = DurableSpool::at(spool_path.clone(), checkpoint_path).expect("open");
-
-    // One record safely over RECLAIM_ABOVE, so the very first advance already
-    // meets the reclaim precondition (size == offset).
-    let big = vec![b'x'; usize::try_from(RECLAIM_ABOVE).unwrap_or(usize::MAX) + 1024];
-    spool.retain(Signal::Logs, big).expect("retain");
-    let pending = spool.next().expect("next").expect("pending");
-    spool.advance(&pending).expect("advance");
-
-    let size = std::fs::metadata(&spool_path).expect("stat").len();
-    assert_eq!(
-        size, 0,
-        "a fully-delivered spool over the threshold must be reclaimed"
-    );
-}
-
-#[test]
-fn is_empty_reflects_pending_bytes_not_file_existence() {
-    let dir = TempDir::new("is-empty");
-    let mut spool = dir.spool("a");
-    assert!(spool.is_empty().expect("no file yet"), "no file at all");
-
-    spool.retain(Signal::Logs, b"one".to_vec()).expect("retain");
-    assert!(!spool.is_empty().expect("check"), "one record pending");
-
-    let pending = spool.next().expect("next").expect("pending");
-    spool.advance(&pending).expect("advance");
-    assert!(
-        spool.is_empty().expect("check"),
-        "delivered, nothing left pending"
-    );
 }

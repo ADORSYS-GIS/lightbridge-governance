@@ -4,35 +4,50 @@
 //!
 //! ## Why two drivers, not one
 //!
-//! Draining only when a request arrives recovers instantly while traffic is
-//! flowing, but AC2 (an unreachable collector delivers once it returns) does
-//! not say "once another request happens to land" -- and AC1 (kill for an
-//! hour, restart, lose nothing) is about a *restart*, which may see no
-//! traffic before the next developer session. [`pump`] makes delivery happen
-//! on its own. Both drivers call the same [`advance_one`], so they cannot
+//! Draining only on a request recovers instantly while traffic flows, but
+//! AC2 (an unreachable collector delivers once it returns) does not say
+//! "once another request happens to land", and AC1 (kill for an hour,
+//! restart, lose nothing) is about a *restart*, which may see no traffic
+//! before the next developer session. [`pump`] makes delivery happen on its
+//! own. Both drivers call the same [`advance::advance_one`], so they cannot
 //! drift on what counts as progress, a permanent refusal, or a stop.
 //!
 //! ## Every spool operation runs off the async runtime (P2-7)
 //!
 //! [`spool::DurableSpool`]'s methods are all synchronous file I/O -- a read,
-//! an `O_APPEND` write, a `fsync`, a tmp-then-rename. None of that yields, so
-//! running it inline on a tokio worker thread blocks whatever else that
-//! thread was scheduled to run for however long the filesystem takes.
-//! [`with_spool`] is the one seam every spool access in this module goes
-//! through, off that thread.
+//! an `O_APPEND` write, an `fsync`, a tmp-then-rename -- none of which
+//! yields, so running one inline on a tokio worker thread blocks whatever
+//! else that thread was scheduled to run for however long the filesystem
+//! takes. [`with_spool`] is the one seam every spool access in this module
+//! goes through, off that thread.
+//!
+//! ## A request-triggered pass is bounded (#269/#291 review round 2, P2)
+//!
+//! [`drain_retained`] used to loop until the spool was empty or stalled --
+//! fine for [`pump`], which owns no client, but [`super::handle_request`]
+//! calls it before answering one: a full 16 MiB backlog at ~3 KiB/record is
+//! ~5,000 mint+POST round trips, all inside a request nothing asked to wait
+//! that long. [`DRAIN_BUDGET_PER_PASS`] caps one call's work; `pump`'s own
+//! timer keeps calling this regardless, so a capped pass does not stall a
+//! large backlog -- it spreads draining it across several ticks instead of
+//! blocking one caller with all of it.
 
+mod advance;
 mod quarantine;
 
 use std::time::Duration;
 
-use super::{DaemonState, forward, mint, normalize, spool};
-use crate::copilot::Verdict;
+use super::{DaemonState, spool};
 
 /// How often [`pump`] retries on its own, independent of client traffic.
 /// Short enough that a backlog clears within seconds of the collector coming
 /// back; long enough not to hammer one still down. Opportunistic draining
 /// already covers the case where traffic *is* flowing.
 const PUMP_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Most records one call to [`drain_retained`] advances before returning,
+/// even when more remain -- see the module doc's P2 section.
+const DRAIN_BUDGET_PER_PASS: usize = 32;
 
 /// One attempt's outcome, for the two loops below to decide whether to keep
 /// going.
@@ -86,94 +101,14 @@ pub(super) async fn retain(
     }
 }
 
-/// One mint -> stamp -> forward, against whatever the spool has at the front.
-async fn advance_one(state: &DaemonState) -> Outcome {
-    let pending = match with_spool(state, spool::DurableSpool::next).await {
-        Ok(Some(pending)) => pending,
-        Ok(None) => return Outcome::Empty,
-        Err(error) => {
-            tracing::error!(error = %error, "could not read the durable spool; stopping this pass");
-            return Outcome::Stopped;
-        }
-    };
-
-    let minted = match mint::mint(&state.http, &state.config).await {
-        Ok(minted) => minted,
-        Err(error) => {
-            tracing::warn!(error = %error, "no session; leaving the retained payload pending");
-            return Outcome::Stopped;
-        }
-    };
-    // Parsed once, threaded through `stamp` and `forward::post` -- each used
-    // to re-parse the same bytes independently, repeating on every retry.
-    let parsed: Option<serde_json::Value> = serde_json::from_slice(&pending.payload).ok();
-    let is_json = parsed.is_some();
-    // `Some(&pending.key)`: a retry has the stable key ingest can dedupe on.
-    let stamped = match normalize::stamp(
-        parsed,
-        &pending.payload,
-        &minted.access_token,
-        Some(&pending.key),
-    ) {
-        Ok(stamped) => stamped,
-        Err(error) => {
-            tracing::warn!(error = %error, "could not re-stamp a retained payload; leaving it pending");
-            return Outcome::Stopped;
-        }
-    };
-
-    match forward::post(
-        &state.http,
-        &state.config,
-        &minted.bearer,
-        pending.signal,
-        &stamped,
-        is_json,
-    )
-    .await
-    {
-        Ok(Verdict::Accepted) => {
-            let advanced = with_spool(state, {
-                let pending = pending.clone();
-                move |spool| spool.advance(&pending)
-            })
-            .await;
-            match advanced {
-                Ok(()) => Outcome::Advanced,
-                Err(error) => {
-                    // Not a loss: the collector already has this record --
-                    // see `spool`'s "at-least-once" doc. `Stopped`, not
-                    // `Advanced`: the offset did not move, so `Advanced`
-                    // would spin the caller's loop against whatever is
-                    // failing the write instead of waiting for `pump`.
-                    tracing::error!(
-                        error = %error,
-                        "delivered a retained payload but could not durably advance past it -- \
-                         it will be re-delivered next attempt, a duplicate export rather than a \
-                         loss"
-                    );
-                    Outcome::Stopped
-                }
-            }
-        }
-        Ok(Verdict::Refused(status)) => quarantine::handle(state, pending, status).await,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "collector unreachable while draining the durable spool; leaving it pending"
-            );
-            Outcome::Stopped
-        }
-    }
-}
-
 /// Best-effort: runs at the top of every accepted request, advancing as far
-/// as it can right now. Stops at the first `Empty` or `Stopped` so a request
-/// is never held up spinning on an unreachable collector. Peeks
-/// [`spool::DurableSpool::is_empty`] first, so the common case -- nothing
-/// pending -- costs a blocking-pool round trip to check a size, not a mint.
+/// as [`DRAIN_BUDGET_PER_PASS`] allows. Stops early at the first `Empty` or
+/// `Stopped` so a request is never held up spinning on an unreachable
+/// collector. Peeks [`spool::DurableSpool::is_empty`] first, so the common
+/// case -- nothing pending -- costs a blocking-pool round trip to check a
+/// size, not a mint.
 pub(super) async fn drain_retained(state: &DaemonState) {
-    loop {
+    for _ in 0..DRAIN_BUDGET_PER_PASS {
         match with_spool(state, |spool| spool.is_empty()).await {
             Ok(true) => return,
             Ok(false) => {}
@@ -182,7 +117,7 @@ pub(super) async fn drain_retained(state: &DaemonState) {
                 return;
             }
         }
-        match advance_one(state).await {
+        match advance::advance_one(state).await {
             Outcome::Advanced => {}
             Outcome::Empty | Outcome::Stopped => return,
         }

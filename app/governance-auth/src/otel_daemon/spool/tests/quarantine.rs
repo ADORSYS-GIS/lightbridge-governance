@@ -1,7 +1,13 @@
 //! `DurableSpool`'s quarantine/probe-discard mechanics (#269/#291 review,
-//! P1-3). Split from [`super`] purely for the LoC gate.
+//! P1-3), plus the minimum-separation gate on what counts as a *separate*
+//! refusal (#269/#291 review round 2, P2). Split from [`super`] purely for
+//! the LoC gate.
 
-use super::{Signal, TempDir};
+use super::{super::commit::MIN_SEPARATION_SECONDS, Signal, TempDir};
+
+/// An arbitrary anchor timestamp -- these tests never touch real wall-clock
+/// time, only offsets from this.
+const NOW: u64 = 1_800_000_000;
 
 #[test]
 fn a_record_refused_once_is_retried_not_discarded() {
@@ -12,7 +18,9 @@ fn a_record_refused_once_is_retried_not_discarded() {
         .expect("retain");
 
     let pending = spool.next().expect("next").expect("pending");
-    let eligible = spool.record_refusal(&pending).expect("record the refusal");
+    let eligible = spool
+        .record_refusal(&pending, NOW)
+        .expect("record the refusal");
     assert!(!eligible, "one refusal is never enough on its own");
 
     let still_pending = spool
@@ -20,6 +28,28 @@ fn a_record_refused_once_is_retried_not_discarded() {
         .expect("next")
         .expect("the same record must still be offered");
     assert_eq!(still_pending.payload, b"maybe");
+}
+
+/// #269/#291 review round 2, P2: two refusals close enough together are the
+/// same flaky window, not independent evidence -- five seconds apart, as two
+/// `pump` ticks would be, must not reach eligibility. Without the fix, this
+/// would report eligible on the second call exactly like a genuinely
+/// separated pair does.
+#[test]
+fn two_refusals_a_pump_interval_apart_do_not_reach_eligibility() {
+    let dir = TempDir::new("quarantine-too-close");
+    let mut spool = dir.spool("a");
+    spool
+        .retain(Signal::Logs, b"flaky".to_vec())
+        .expect("retain");
+
+    let first = spool.next().expect("next").expect("pending");
+    assert!(!spool.record_refusal(&first, NOW).expect("refusal 1"));
+    let second = spool.next().expect("next").expect("still pending");
+    assert!(
+        !spool.record_refusal(&second, NOW + 5).expect("refusal 2"),
+        "a refusal only 5 seconds later is the same flaky window, not separate evidence"
+    );
 }
 
 /// #269/#291 review, P1-3: two separate refusals alone must NOT discard --
@@ -41,11 +71,13 @@ fn a_record_refused_twice_with_nothing_after_it_stays_held() {
         .expect("retain");
 
     let first = spool.next().expect("next").expect("pending");
-    assert!(!spool.record_refusal(&first).expect("refusal 1"));
+    assert!(!spool.record_refusal(&first, NOW).expect("refusal 1"));
     let second = spool.next().expect("next").expect("still pending");
     assert!(
-        spool.record_refusal(&second).expect("refusal 2"),
-        "a second separate refusal makes it eligible"
+        spool
+            .record_refusal(&second, NOW + MIN_SEPARATION_SECONDS)
+            .expect("refusal 2"),
+        "a second refusal a full separation gap later makes it eligible"
     );
 
     assert!(
@@ -62,7 +94,7 @@ fn a_record_refused_twice_with_nothing_after_it_stays_held() {
 }
 
 /// The confirming half of P1-3: once a probe past the stuck record is itself
-/// proven -- offered on its own, decoded, and (in `drain::advance_one`,
+/// proven -- offered on its own, decoded, and (in `drain::advance::advance_one`,
 /// exercised at a higher level in `tests/serve_otel_durability.rs`) accepted
 /// by the collector -- `discard_confirmed` commits through it in one write,
 /// discarding the stuck record and delivering the probe together.
@@ -78,12 +110,14 @@ fn a_record_refused_twice_with_a_confirmed_probe_is_discarded() {
         .expect("retain probe");
 
     let stuck = spool.next().expect("next").expect("stuck pending");
-    assert!(!spool.record_refusal(&stuck).expect("refusal 1"));
+    assert!(!spool.record_refusal(&stuck, NOW).expect("refusal 1"));
     // `next` still returns the same (still-pending) stuck record on a second
     // read, since nothing has advanced past it yet.
     let stuck_again = spool.next().expect("next").expect("still stuck");
     assert!(
-        spool.record_refusal(&stuck_again).expect("refusal 2"),
+        spool
+            .record_refusal(&stuck_again, NOW + MIN_SEPARATION_SECONDS)
+            .expect("refusal 2"),
         "eligible now"
     );
 

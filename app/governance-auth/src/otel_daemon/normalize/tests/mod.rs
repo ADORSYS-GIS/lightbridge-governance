@@ -1,5 +1,9 @@
-//! Tests for identity-attribute stamping, including the #290 review's P1-1 fix.
-//! Split out of `mod.rs` purely for the LoC ceiling.
+//! Tests for identity-attribute stamping, including the #290 review's P1-1
+//! fix. Split out of `mod.rs` purely for the LoC ceiling; the retry-key
+//! stamping/stripping tests (#269/#291 review round 2, P2) live in
+//! [`retry_key`], split further for the same reason.
+
+mod retry_key;
 
 use super::*;
 
