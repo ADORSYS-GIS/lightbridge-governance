@@ -62,13 +62,36 @@ pub(super) fn retain(state: &DaemonState, signal: Signal, payload: Vec<u8>) -> b
 /// failure so we do not spin on an unreachable collector; a permanent
 /// refusal is discarded and draining continues (P2-6, above).
 pub(super) async fn drain_retained(state: &DaemonState) {
+    // Peeked before minting (#290 review round 2): this runs on every
+    // request, and the overwhelmingly common case is an empty spool -- a
+    // cheap lock-and-read here saves a full credential-mint round trip (and,
+    // under load, avoids concurrent requests racing to refresh the same
+    // session -- see `freshness.rs`'s own doc on single-use refresh-token
+    // reuse detection) for a pass that has nothing to do anyway.
+    if state
+        .spool
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_empty()
+    {
+        return;
+    }
+
     // One mint for the whole pass -- see the module doc's P2-5. A failed
     // mint here means no record in the backlog is authenticatable right now
     // regardless of which one it is, so there is nothing a per-record retry
     // would gain.
     let minted = match mint::mint(&state.http, &state.config).await {
         Ok(minted) => minted,
-        Err(_) => return,
+        Err(error) => {
+            // Every other refusal path in this module logs; this one used to
+            // be the exception (#290 review round 2) -- an operator watching
+            // for why a backlog never drains during an IdP outage saw only
+            // the forward-path failures, never the drain's own mint
+            // attempts.
+            tracing::warn!(error = %error, "could not mint a bearer to drain the retained spool");
+            return;
+        }
     };
 
     loop {
@@ -80,7 +103,13 @@ pub(super) async fn drain_retained(state: &DaemonState) {
             }
         };
 
-        let stamped = match normalize::stamp(&payload, &minted.access_token) {
+        // One parse for this attempt, shared by `stamp` and the content-type
+        // decision below (#290 review round 2) -- the spool only ever holds
+        // raw bytes, so a retry cannot avoid paying for its own parse the
+        // way a single request's classify/normalize/forward now can.
+        let parsed: Option<serde_json::Value> = serde_json::from_slice(&payload).ok();
+        let is_json = parsed.is_some();
+        let stamped = match normalize::stamp(parsed, &payload, &minted.access_token) {
             Ok(stamped) => stamped,
             Err(error) => {
                 tracing::warn!(error = %error, "could not re-stamp a retained payload; requeuing it");
@@ -90,7 +119,16 @@ pub(super) async fn drain_retained(state: &DaemonState) {
             }
         };
 
-        match forward::post(&state.http, &state.config, &minted.bearer, signal, &stamped).await {
+        match forward::post(
+            &state.http,
+            &state.config,
+            &minted.bearer,
+            signal,
+            &stamped,
+            is_json,
+        )
+        .await
+        {
             Ok(forward::Verdict::Accepted) => {}
             Ok(forward::Verdict::Refused(status)) => {
                 tracing::error!(

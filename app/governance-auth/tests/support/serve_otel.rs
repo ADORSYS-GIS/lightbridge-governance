@@ -112,6 +112,28 @@ impl Daemon {
         Ok(response.status())
     }
 
+    /// POSTs with an explicit `Host` header, for proving the admission check
+    /// actually gates what runs before it (#290 review round 2). `reqwest`'s
+    /// explicit `.header(HOST, ...)` replaces the one it would otherwise
+    /// derive from the URL, so this genuinely exercises an untrusted-Host
+    /// request rather than the daemon's own address.
+    pub async fn post_with_host(
+        &self,
+        path: &str,
+        host: &str,
+        body: &Value,
+    ) -> Result<reqwest::StatusCode> {
+        let response = reqwest::Client::new()
+            .post(format!("{DAEMON_ENDPOINT}{path}"))
+            .header(reqwest::header::HOST, host)
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .with_context(|| format!("POSTing to {DAEMON_ENDPOINT}{path} with Host: {host}"))?;
+        Ok(response.status())
+    }
+
     /// POSTs an arbitrary (e.g. OTLP protobuf) body and its content-type, for
     /// the "a non-JSON body is forwarded, not withheld" case.
     pub async fn post_bytes(

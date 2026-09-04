@@ -59,20 +59,32 @@ const FORGEABLE_IDENTITY_KEYS: [&str; 6] = [
 /// re-serialized bytes. Client-supplied values for [`FORGEABLE_IDENTITY_KEYS`]
 /// are stripped first, unconditionally -- see the module doc.
 ///
+/// `parsed` is the body already parsed once by the caller (`None` when it is
+/// not JSON) -- taken rather than re-parsing `body` here, because this used
+/// to be the second of three `serde_json::from_slice` calls over the same
+/// bytes in one request (`classify`, here, `forward`'s content-type sniff),
+/// repeating on every drain retry too (#290 review round 2). `body` is kept
+/// alongside it purely as the fallback to return unchanged.
+///
 /// On no extractable identity (an opaque or non-JWT token), no attributes of
 /// ours are added, but a forged one already present is still stripped.
 ///
-/// On a body that is **not JSON** (e.g. OTLP protobuf), the original bytes are
-/// passed through **unchanged rather than an error**, so a real client's default
-/// wire format is still forwarded. Identity stamping is a best-effort label, not
-/// an admission gate: withholding a valid payload merely because we cannot parse
-/// it to add attributes turns an unhandled format into data loss, and it is
-/// **not** an authentication refusal — the bearer was already minted before this
-/// runs (A4). See the module doc's ⚠️ for what this means for protobuf forgery.
-pub fn stamp(body: &[u8], access_token: &Redacted<String>) -> Result<Vec<u8>> {
+/// On a body that is **not JSON** (e.g. OTLP protobuf, `parsed` is `None`),
+/// the original bytes are passed through **unchanged rather than an error**,
+/// so a real client's default wire format is still forwarded. Identity
+/// stamping is a best-effort label, not an admission gate: withholding a
+/// valid payload merely because we cannot parse it to add attributes turns an
+/// unhandled format into data loss, and it is **not** an authentication
+/// refusal — the bearer was already minted before this runs (A4). See the
+/// module doc's ⚠️ for what this means for protobuf forgery.
+pub fn stamp(
+    parsed: Option<Value>,
+    body: &[u8],
+    access_token: &Redacted<String>,
+) -> Result<Vec<u8>> {
     let attributes = otel::identity_attributes(access_token.expose());
 
-    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+    let Some(mut value) = parsed else {
         // Not JSON (e.g. OTLP protobuf): forward the original unchanged, unstamped.
         return Ok(body.to_vec());
     };

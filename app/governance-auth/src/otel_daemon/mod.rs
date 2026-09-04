@@ -19,13 +19,10 @@
 //! Bytes go to the in-memory spool on a *retryable* refusal (an unreachable
 //! collector, a mint failure) and are never silently dropped: a failed
 //! `retain` answers `503`, never a `202` the payload never earned (#290
-//! review, P1-3). A *permanent* refusal (`is_permanent`: 400/413/422) is the
-//! one deliberate exception -- discarded and logged loudly rather than
-//! retained forever, because retrying it can never succeed (P2-6) and doing
-//! so anyway would fill the spool with payloads that can never drain. The
-//! spool is in-memory and lost on process exit — **that is accepted for #268
-//! only** because durability (#S2) is a separate story that must land before
-//! the daemon becomes the default profile.
+//! review, P1-3). A *permanent* refusal (400/413/422) is the one deliberate
+//! exception -- discarded and logged loudly, because retrying it can never
+//! succeed (P2-6). The spool is in-memory and lost on process exit —
+//! **accepted for #268 only**, until durability (#S2) lands.
 
 mod classify;
 mod drain;
@@ -45,10 +42,14 @@ use tokio::net::TcpListener;
 use crate::{config::OauthConfig, otel_port};
 
 /// Shared state for every request the daemon handles.
+///
+/// `config` is `Arc`-wrapped (#290 review round 2): axum's `State<S>` clones
+/// `S` per request, and cloning the whole `OauthConfig` was a fresh
+/// allocation per field for each request; `Arc::clone` is a refcount bump.
 #[derive(Clone)]
 struct DaemonState {
     http: reqwest::Client,
-    config: OauthConfig,
+    config: Arc<OauthConfig>,
     spool: Arc<Mutex<spool::Spool>>,
 }
 
@@ -78,7 +79,7 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
 
     let state = DaemonState {
         http: http.clone(),
-        config: config.clone(),
+        config: Arc::new(config.clone()),
         spool: Arc::new(Mutex::new(spool::Spool::new())),
     };
 
@@ -98,9 +99,12 @@ async fn handle_request(
     State(state): State<DaemonState>,
     request: axum::extract::Request,
 ) -> StatusCode {
-    // Best-effort: drain any retained payloads before handling the new one.
-    drain::drain_retained(&state).await;
-
+    // The admission check FIRST (#290 review round 2): `receive::build`'s
+    // `Host`/`Content-Type` checks are documented as making an untrusted
+    // request free -- true only if nothing costly runs before they do.
+    // `drain_retained` mints and can POST to the real collector, so it used
+    // to run first regardless of admission: an untrusted caller could force
+    // credentialed work on demand, once per rejected request.
     let incoming = match receive::build(request).await {
         Ok(incoming) => incoming,
         // Refused before the body was ever read (P1-2, #290 review): an
@@ -118,12 +122,22 @@ async fn handle_request(
             return StatusCode::PAYLOAD_TOO_LARGE;
         }
     };
+
+    // Best-effort: drain any retained payloads now the request is admitted.
+    // `drain_retained` only mints when the spool is non-empty, so nothing
+    // pending still costs no credential work either.
+    drain::drain_retained(&state).await;
+
     // The path is carried, not an admission gate (A2): log it for diagnostics,
     // never branch on it.
     tracing::trace!(method = %incoming.method, path = %incoming.path, "received OTLP");
+    // Parsed once, threaded through classify/normalize/forward (#290 review
+    // round 2): each used to re-parse the same bytes independently.
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&incoming.body).ok();
+    let is_json = parsed.is_some();
     // Classify before mint so a mint refusal can still retain with the signal it
     // would have forwarded on (the spool stores `(Signal, bytes)`).
-    let signal = classify::signal(&incoming.body, &incoming.path);
+    let signal = classify::signal(parsed.as_ref(), &incoming.path);
     let body = incoming.body;
 
     let minted = match mint::mint(&state.http, &state.config).await {
@@ -134,7 +148,7 @@ async fn handle_request(
         }
     };
 
-    let stamped = match normalize::stamp(&body, &minted.access_token) {
+    let stamped = match normalize::stamp(parsed, &body, &minted.access_token) {
         Ok(stamped) => stamped,
         Err(error) => {
             tracing::warn!(error = %error, "could not stamp identity; retaining original payload");
@@ -142,7 +156,16 @@ async fn handle_request(
         }
     };
 
-    match forward::post(&state.http, &state.config, &minted.bearer, signal, &stamped).await {
+    match forward::post(
+        &state.http,
+        &state.config,
+        &minted.bearer,
+        signal,
+        &stamped,
+        is_json,
+    )
+    .await
+    {
         Ok(forward::Verdict::Accepted) => StatusCode::OK,
         // A permanent refusal will never succeed no matter how many times it
         // is offered (`is_permanent`'s whole point, #290 review P2-6) --

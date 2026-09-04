@@ -9,10 +9,16 @@ fn token() -> Redacted<String> {
     Redacted::new(format!("header.{payload}.signature"))
 }
 
+/// Parses `body` once and calls `stamp` -- matches the new (caller parses
+/// once) signature without rewriting every call site below.
+fn stamp_body(body: &[u8], token: &Redacted<String>) -> Result<Vec<u8>> {
+    stamp(serde_json::from_slice(body).ok(), body, token)
+}
+
 #[test]
 fn stamps_identity_onto_a_logs_payload() {
     let body = br#"{"resourceLogs":[{"resource":{"attributes":[]}}]}"#;
-    let stamped = stamp(body, &token()).expect("stamp");
+    let stamped = stamp_body(body, &token()).expect("stamp");
     let value: Value = serde_json::from_slice(&stamped).expect("re-parse");
     let attrs = value["resourceLogs"][0]["resource"]["attributes"]
         .as_array()
@@ -25,7 +31,7 @@ fn stamps_identity_onto_a_logs_payload() {
 #[test]
 fn stamps_identity_onto_a_metrics_payload() {
     let body = br#"{"resourceMetrics":[{"resource":{"attributes":[]}}]}"#;
-    let stamped = stamp(body, &token()).expect("stamp");
+    let stamped = stamp_body(body, &token()).expect("stamp");
     let value: Value = serde_json::from_slice(&stamped).expect("re-parse");
     assert!(
         value["resourceMetrics"][0]["resource"]["attributes"]
@@ -43,7 +49,7 @@ fn stamps_identity_onto_a_metrics_payload() {
 #[test]
 fn a_client_supplied_user_id_is_replaced_not_forwarded() {
     let body = br#"{"resourceLogs":[{"resource":{"attributes":[{"key":"user.id","value":{"stringValue":"somebody-elses-uuid"}}]}}]}"#;
-    let stamped = stamp(body, &token()).expect("stamp");
+    let stamped = stamp_body(body, &token()).expect("stamp");
     let value: Value = serde_json::from_slice(&stamped).expect("re-parse");
     let attrs = value["resourceLogs"][0]["resource"]["attributes"]
         .as_array()
@@ -71,7 +77,7 @@ fn forged_account_and_api_key_attributes_are_stripped_even_though_nothing_replac
         {"key":"api_key_id","value":{"stringValue":"victim-key"}},
         {"key":"azp","value":{"stringValue":"victim-client"}}
     ]}}]}"#;
-    let stamped = stamp(body, &token()).expect("stamp");
+    let stamped = stamp_body(body, &token()).expect("stamp");
     let value: Value = serde_json::from_slice(&stamped).expect("re-parse");
     let attrs = value["resourceLogs"][0]["resource"]["attributes"]
         .as_array()
@@ -90,7 +96,7 @@ fn forged_account_and_api_key_attributes_are_stripped_even_though_nothing_replac
 #[test]
 fn an_opaque_token_still_strips_a_forged_attribute() {
     let body = br#"{"resourceLogs":[{"resource":{"attributes":[{"key":"user.id","value":{"stringValue":"forged"}}]}}]}"#;
-    let stamped = stamp(body, &Redacted::new("not-a-jwt".to_owned())).expect("stamp");
+    let stamped = stamp_body(body, &Redacted::new("not-a-jwt".to_owned())).expect("stamp");
     let value: Value = serde_json::from_slice(&stamped).expect("re-parse");
     let attrs = value["resourceLogs"][0]["resource"]["attributes"]
         .as_array()
@@ -105,7 +111,7 @@ fn an_opaque_token_still_strips_a_forged_attribute() {
 #[test]
 fn an_opaque_token_with_no_forged_attributes_yields_original_bytes() {
     let body = br#"{"resourceLogs":[{}]}"#.to_vec();
-    let stamped = stamp(&body, &Redacted::new("not-a-jwt".to_owned())).expect("stamp");
+    let stamped = stamp_body(&body, &Redacted::new("not-a-jwt".to_owned())).expect("stamp");
     assert_eq!(
         stamped, body,
         "nothing to add and nothing to strip => bytes pass through unchanged"
@@ -115,7 +121,7 @@ fn an_opaque_token_with_no_forged_attributes_yields_original_bytes() {
 #[test]
 fn an_unrecognised_body_is_left_unchanged() {
     let body = br#"{"anythingGoes":true}"#.to_vec();
-    let stamped = stamp(&body, &token()).expect("stamp");
+    let stamped = stamp_body(&body, &token()).expect("stamp");
     assert_eq!(stamped, body, "no resource list => forward unchanged");
 }
 
@@ -126,13 +132,13 @@ fn a_non_json_body_passes_through_unchanged() {
     // the bearer was already minted before this ran.
     let body = b"\x0a\x03log\x12\x04test".to_vec();
     assert_eq!(
-        stamp(&body, &token()).expect("stamp"),
+        stamp_body(&body, &token()).expect("stamp"),
         body,
         "protobuf must pass through unchanged"
     );
     // Also when the token is opaque, so the parse is real and not short-circuited.
     assert_eq!(
-        stamp(&body, &Redacted::new("opaque".to_owned())).expect("stamp"),
+        stamp_body(&body, &Redacted::new("opaque".to_owned())).expect("stamp"),
         body
     );
 }
