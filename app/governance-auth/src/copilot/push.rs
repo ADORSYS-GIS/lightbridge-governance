@@ -15,7 +15,7 @@ use crate::redacted::Redacted;
 /// The two OTLP/HTTP signal paths this drain uses. Traces are absent because
 /// Copilot's file exporter writes none -- adding a `/v1/traces` POST of an
 /// empty payload would be a request that can only ever fail or no-op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Signal {
     Metrics,
     Logs,

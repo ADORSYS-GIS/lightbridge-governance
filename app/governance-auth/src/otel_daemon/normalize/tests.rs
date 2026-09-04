@@ -9,10 +9,11 @@ fn token() -> Redacted<String> {
     Redacted::new(format!("header.{payload}.signature"))
 }
 
-/// Parses `body` once and calls `stamp` -- matches the new (caller parses
-/// once) signature without rewriting every call site below.
+/// Parses `body` once and calls `stamp` with no idempotency key -- matches
+/// the (caller parses once, live-pass-through has no key yet) signature
+/// without rewriting every call site below.
 fn stamp_body(body: &[u8], token: &Redacted<String>) -> Result<Vec<u8>> {
-    stamp(serde_json::from_slice(body).ok(), body, token)
+    stamp(serde_json::from_slice(body).ok(), body, token, None)
 }
 
 #[test]
