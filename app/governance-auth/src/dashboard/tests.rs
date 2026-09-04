@@ -82,6 +82,11 @@ fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
         applied: endpoint.is_some(),
         has_static_token,
         stale: false,
+        // `manual`: every existing caller of this helper is asserting on
+        // `has_static_token` meaning something, which is only true under
+        // `manual` (`Telemetry::row`'s doc) -- a `daemon` fixture belongs in
+        // `dashboard/tests/telemetry.rs`'s own daemon-specific test instead.
+        profile: crate::profile::Profile::Manual,
     }
 }
 
