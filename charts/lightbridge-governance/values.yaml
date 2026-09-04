@@ -451,6 +451,45 @@ aiCliOtel:
   # Alloy is this cluster's fan-out to Tempo/Loki/Mimir (ADR-0007), so this
   # collector needs one exporter and no knowledge of the backends.
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  # Raw OTLP archive leg (lightbridge-authz #692 / #589): a third exporter,
+  # parallel to -- not behind -- the Alloy leg, writing verbatim OTLP to
+  # S3-compatible object storage so a field can later be promoted to a column
+  # with historical backfill. Independent queue/retry from Alloy: a blocked S3
+  # sink alarms but never blocks the governed/observability path (D10).
+  s3:
+    # Enabled in prod. D9 decisions (the gate for turning this on):
+    #   - Access control: this is the SHARED cluster bucket (also LibreChat,
+    #     CNPG backups, copilot raw archive) and the creds are the shared
+    #     backup creds. Raw OTLP carries identity attributes, so anyone who can
+    #     read this bucket / these creds can read raw telemetry. Accepted for
+    #     now because the same creds already gate the copilot raw archive; a
+    #     dedicated telemetry bucket is the escape hatch if that ever changes.
+    #   - Retention: no bucket lifecycle rule yet. Apply one on the
+    #     `raw/otlp/` prefix (recommended: 90 days) before treating the archive
+    #     as anything but a short-window backfill source. The archive is
+    #     best-effort (D10): a blocked S3 sink drops after the queue fills and
+    #     never blocks the Alloy/observability path.
+    enabled: true
+    # Shared Hetzner Object Storage -- same material as copilot.s3 and the CNPG
+    # backups. Creds come from the lightbridge-governance-env ExternalSecret
+    # (externalSecret.s3AccessKeyProperty / s3SecretKeyProperty).
+    bucket: ssegning-k8s-state
+    endpoint: https://nbg1.your-objectstorage.com
+    region: us-east-1
+    forcePathStyle: true
+    # Root prefix inside the bucket; the per-source prefix and date partition
+    # are appended below -> <basePrefix>/<source>/<yyyy>/<mm>/<dd>/...
+    basePrefix: raw/otlp
+    # Archive format (D11 -- verify the round-trip through the authz-usage
+    # ingest before changing). otlp_json is the exporter default and the ingest
+    # handler already parses OTLP-JSON.
+    format: otlp_json
+    compression: gzip
+    partitionFormat: "%Y/%m/%d"
+    partitionTimezone: UTC
+    # Independent queue/retry from the Alloy leg (D10).
+    queueSize: 100
+    numConsumers: 10
   oidc:
     # The lightbridge-authz issuer -- it already serves OIDC discovery and JWKS
     # publicly (both confirmed 200), so the collector validates callers itself
@@ -549,6 +588,23 @@ opencodeOtel:
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  # Raw OTLP archive leg -- same shape as aiCliOtel.s3 (shared collector body).
+  # Enabled in prod; the D9 access-control and retention decisions are recorded
+  # on aiCliOtel.s3 and apply identically here (same shared bucket, same creds,
+  # same `raw/otlp/` prefix family).
+  s3:
+    enabled: true
+    bucket: ssegning-k8s-state
+    endpoint: https://nbg1.your-objectstorage.com
+    region: us-east-1
+    forcePathStyle: true
+    basePrefix: raw/otlp
+    format: otlp_json
+    compression: gzip
+    partitionFormat: "%Y/%m/%d"
+    partitionTimezone: UTC
+    queueSize: 100
+    numConsumers: 10
   oidc:
     # Same issuer as aiCliOtel -- authz-idp. Only the audience differs.
     issuerUrl: "https://auth.ai.camer.digital"
