@@ -77,6 +77,18 @@ impl Spool {
         Some((signal, payload))
     }
 
+    /// Puts a payload back at the FRONT, restoring FIFO order after a
+    /// [`Self::drain_one`] that could not be delivered this attempt (#290
+    /// review, P2-4). `retain` appends to the back and is for a payload that
+    /// has never been offered; using it to requeue a drained one moved the
+    /// oldest record to the newest position on every failed retry. Ignores
+    /// capacity: a payload this spool already held once cannot grow the
+    /// total.
+    pub fn requeue_front(&mut self, signal: Signal, payload: Vec<u8>) {
+        self.total_bytes = self.total_bytes.saturating_add(payload.len());
+        self.buffer.push_front((signal, payload));
+    }
+
     /// Total bytes currently retained.
     pub fn pending(&self) -> usize {
         self.total_bytes
@@ -120,6 +132,42 @@ mod tests {
         assert_eq!(spool.drain_one(), Some((Signal::Logs, b"three".to_vec())));
         assert_eq!(spool.drain_one(), None);
         assert_eq!(spool.pending(), 0);
+    }
+
+    /// #290 review, P2-4: a record put back after a failed attempt must
+    /// return to the FRONT, not jump to the back of a still-pending backlog.
+    #[test]
+    fn requeue_front_restores_fifo_order_after_a_failed_attempt() {
+        let mut spool = Spool::new();
+        spool.retain(Signal::Logs, b"one".to_vec()).expect("retain");
+        spool
+            .retain(Signal::Metrics, b"two".to_vec())
+            .expect("retain");
+
+        // "one" is drained for an attempt that then fails and puts it back.
+        let (signal, payload) = spool.drain_one().expect("one pending");
+        spool.requeue_front(signal, payload);
+
+        assert_eq!(
+            spool.drain_one(),
+            Some((Signal::Logs, b"one".to_vec())),
+            "the requeued record must be offered again before the next one, not after it"
+        );
+        assert_eq!(spool.drain_one(), Some((Signal::Metrics, b"two".to_vec())));
+    }
+
+    #[test]
+    fn requeue_front_is_never_refused_by_capacity() {
+        let mut spool = Spool::new();
+        spool
+            .retain(Signal::Logs, vec![0u8; CAPACITY])
+            .expect("fill exactly");
+        let (signal, payload) = spool.drain_one().expect("pending");
+        // The payload this spool already held once must not be refused just
+        // because `pending()` briefly reads as full.
+        spool.requeue_front(signal, payload);
+        assert_eq!(spool.pending(), CAPACITY);
+        assert_eq!(spool.pending_count(), 1);
     }
 
     #[test]

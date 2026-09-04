@@ -8,6 +8,7 @@
 mod support;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use support::{
     copilot as fixture,
     harness::Harness,
@@ -77,6 +78,70 @@ async fn metrics_and_logs_are_routed_and_stamped_with_identity() -> Result<()> {
         assert_eq!(
             user_id, "user-uuid-1234",
             "attribution must match the minted token's `sub` claim"
+        );
+    }
+
+    daemon.stop()?;
+    Ok(())
+}
+
+/// #290 review, P1-1: a poster that pre-sets `user.id`/`account_id`/
+/// `api_key_id` used to have those values forwarded verbatim under this
+/// developer's bearer -- the deployed ingest handler reads them straight from
+/// the payload, no credential-derived override. Real end-to-end reproduction
+/// of the review's own probe, kept as a permanent regression test.
+#[tokio::test]
+async fn a_forged_identity_attribute_is_replaced_before_forwarding() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    harness.seed_session(&jwt_session(harness.issuer())?)?;
+    let collector = MockCollector::start(Behavior::Accept).await?;
+
+    let daemon = Daemon::start(&harness, &collector.base_url, &[]).await?;
+
+    let forged = json!({
+        "resourceLogs": [{
+            "resource": {
+                "attributes": [
+                    { "key": "user.id", "value": { "stringValue": "somebody-elses-uuid" } },
+                    { "key": "account_id", "value": { "stringValue": "victim-account" } },
+                    { "key": "api_key_id", "value": { "stringValue": "victim-key" } },
+                ],
+            },
+            "scopeLogs": [{
+                "scope": { "name": "test", "version": "0.0.0" },
+                "logRecords": [{
+                    "timeUnixNano": "1788191912613000000",
+                    "body": { "stringValue": "forgery-attempt" },
+                }],
+            }],
+        }],
+    });
+    assert_eq!(daemon.post("/", &forged).await?.as_u16(), 200);
+
+    let payloads = collector.payloads()?;
+    assert_eq!(payloads.len(), 1);
+    let attributes = payloads[0]
+        .1
+        .pointer("/resourceLogs/0/resource/attributes")
+        .and_then(|a| a.as_array())
+        .context("forwarded payload must carry attributes")?;
+
+    let user_id = attributes
+        .iter()
+        .find(|a| a.pointer("/key").and_then(|k| k.as_str()) == Some("user.id"))
+        .and_then(|a| a.pointer("/value/stringValue").and_then(|v| v.as_str()));
+    assert_eq!(
+        user_id,
+        Some("user-uuid-1234"),
+        "the forged user.id must be replaced by the bearer's real identity, not forwarded"
+    );
+    for forged_key in ["account_id", "api_key_id"] {
+        assert!(
+            !attributes
+                .iter()
+                .any(|a| a.pointer("/key").and_then(|k| k.as_str()) == Some(forged_key)),
+            "{forged_key} is never written by this daemon and must be stripped, not forwarded: \
+             {attributes:?}"
         );
     }
 

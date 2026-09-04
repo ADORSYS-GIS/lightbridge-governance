@@ -29,6 +29,16 @@ pub const OTEL_PORT: u16 = 17457;
 )]
 pub const OTEL_LOOPBACK_ENDPOINT: &str = const_format::formatcp!("http://127.0.0.1:{}", OTEL_PORT);
 
+/// The only `Host` header values [`super::otel_daemon::receive`] trusts,
+/// lowercase. `127.0.0.1:<port>` is what every client is actually configured
+/// with ([`OTEL_LOOPBACK_ENDPOINT`]); `localhost:<port>` is accepted too
+/// because it can only ever resolve to loopback on this machine, unlike an
+/// attacker-owned domain a DNS-rebinding attack could otherwise point here.
+pub const TRUSTED_HOSTS: [&str; 2] = [
+    const_format::formatcp!("127.0.0.1:{}", OTEL_PORT),
+    const_format::formatcp!("localhost:{}", OTEL_PORT),
+];
+
 /// Binds the fixed loopback OTEL port, refusing to fall back to an ephemeral
 /// one — a fallback would leave the receiver where no client's telemetry can
 /// arrive, and every client's bytes would vanish silently, so it fails loudly.

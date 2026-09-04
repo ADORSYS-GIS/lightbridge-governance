@@ -64,6 +64,77 @@ async fn an_expired_unrefreshable_session_withholds_and_forwards_nothing() -> Re
     Ok(())
 }
 
+/// #290 review, P2-6: a *permanent* refusal (`is_permanent`: 400/413/422)
+/// will never succeed no matter how many times it is offered, so it must be
+/// discarded rather than retained and retried forever -- retaining it anyway
+/// would monotonically fill the spool with payloads that can never drain.
+/// The client is told the truth (the collector's own status), not a `202`
+/// the payload never earned.
+#[tokio::test]
+async fn a_permanently_refusing_collector_is_not_retried_forever() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    harness.seed_session(&fixture::fresh_session(harness.issuer())?)?;
+    let collector = MockCollector::start(Behavior::Reject(400)).await?;
+
+    let daemon = Daemon::start(&harness, &collector.base_url, &[]).await?;
+
+    let first = daemon.post("/", &logs_payload("permanent-1")).await?;
+    assert_eq!(
+        first.as_u16(),
+        400,
+        "a permanent refusal must be told to the client, not answered 202"
+    );
+    assert_eq!(collector.request_count()?, 1);
+
+    // A second, unrelated request must not carry the first one along as a
+    // retry -- if it were still retained, the drain-on-next-request would
+    // re-offer it here too.
+    let second = daemon.post("/", &logs_payload("permanent-2")).await?;
+    assert_eq!(second.as_u16(), 400);
+    assert_eq!(
+        collector.request_count()?,
+        2,
+        "exactly one request per POST -- the first payload must not have been retried"
+    );
+
+    daemon.stop()?;
+    Ok(())
+}
+
+/// #290 review, P1-3: a failed `retain` (the spool genuinely full) must not
+/// be reported to the client as `202` -- that would tell an exporter
+/// "delivered" while its only copy was dropped, the unavailable branch
+/// becoming the permissive one.
+#[tokio::test]
+async fn a_full_spool_answers_503_not_202() -> Result<()> {
+    let harness = Harness::new("https://unreachable.invalid.example")?;
+    harness.seed_session(&fixture::fresh_session(harness.issuer())?)?;
+    // Unreachable (connection refused), not `Reject`: every byte sent here
+    // must retain, none discarded as a permanent refusal, so the spool
+    // actually fills.
+    let collector_base = "http://127.0.0.1:1".to_owned();
+
+    let daemon = Daemon::start(&harness, &collector_base, &[]).await?;
+
+    // One payload just under the 16 MiB cap: still retains.
+    let almost_full = logs_payload(&"x".repeat(16 * 1024 * 1024 - 4096));
+    let first = daemon.post("/", &almost_full).await?;
+    assert_eq!(first.as_u16(), 202, "still room, must retain");
+
+    // A second payload that cannot fit in what is left must be refused by
+    // the spool itself, and that refusal must reach the client as 503.
+    let overflow = logs_payload(&"y".repeat(8192));
+    let second = daemon.post("/", &overflow).await?;
+    assert_eq!(
+        second.as_u16(),
+        503,
+        "a spool that could not retain the payload must not answer 202"
+    );
+
+    daemon.stop()?;
+    Ok(())
+}
+
 /// A collector that refuses the export (a retryable 500) must not fail the
 /// client: it costs a `202`, never a `500`, and the bytes are retained, not
 /// dropped. Then once the collector recovers, the very next accepted request

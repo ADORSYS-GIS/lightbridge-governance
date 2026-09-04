@@ -16,7 +16,13 @@
 //!
 //! ## And the second: nothing is lost quietly
 //!
-//! Bytes go to the in-memory spool on any refusal and are never dropped. The
+//! Bytes go to the in-memory spool on a *retryable* refusal (an unreachable
+//! collector, a mint failure) and are never silently dropped: a failed
+//! `retain` answers `503`, never a `202` the payload never earned (#290
+//! review, P1-3). A *permanent* refusal (`is_permanent`: 400/413/422) is the
+//! one deliberate exception -- discarded and logged loudly rather than
+//! retained forever, because retrying it can never succeed (P2-6) and doing
+//! so anyway would fill the spool with payloads that can never drain. The
 //! spool is in-memory and lost on process exit — **that is accepted for #268
 //! only** because durability (#S2) is a separate story that must land before
 //! the daemon becomes the default profile.
@@ -27,6 +33,7 @@ mod forward;
 mod mint;
 mod normalize;
 mod receive;
+mod shutdown;
 mod spool;
 
 use std::sync::{Arc, Mutex};
@@ -80,7 +87,7 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
         .with_state(state);
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown::signal())
         .await
         .context("running the OTEL loopback receiver")
 }
@@ -96,7 +103,20 @@ async fn handle_request(
 
     let incoming = match receive::build(request).await {
         Ok(incoming) => incoming,
-        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE,
+        // Refused before the body was ever read (P1-2, #290 review): an
+        // untrusted `Host` or a CORS-simple `Content-Type` -- see
+        // `receive`'s module doc for why both are admission gates.
+        Err(receive::ReceiveError::UntrustedHost) => {
+            tracing::warn!("refusing a request with an untrusted Host header");
+            return StatusCode::FORBIDDEN;
+        }
+        Err(receive::ReceiveError::UnsupportedContentType) => {
+            return StatusCode::UNSUPPORTED_MEDIA_TYPE;
+        }
+        Err(receive::ReceiveError::Body(error)) => {
+            tracing::warn!(error = %error, "could not read the request body");
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
     };
     // The path is carried, not an admission gate (A2): log it for diagnostics,
     // never branch on it.
@@ -110,8 +130,7 @@ async fn handle_request(
         Ok(minted) => minted,
         Err(error) => {
             tracing::warn!(error = %error, "no session; retaining payload, refusing to forward unauthenticated");
-            drain::retain(&state, signal, body);
-            return StatusCode::ACCEPTED;
+            return retained_status(&state, signal, body);
         }
     };
 
@@ -119,55 +138,40 @@ async fn handle_request(
         Ok(stamped) => stamped,
         Err(error) => {
             tracing::warn!(error = %error, "could not stamp identity; retaining original payload");
-            drain::retain(&state, signal, body);
-            return StatusCode::ACCEPTED;
+            return retained_status(&state, signal, body);
         }
     };
 
     match forward::post(&state.http, &state.config, &minted.bearer, signal, &stamped).await {
         Ok(forward::Verdict::Accepted) => StatusCode::OK,
+        // A permanent refusal will never succeed no matter how many times it
+        // is offered (`is_permanent`'s whole point, #290 review P2-6) --
+        // propagate the collector's own status rather than either retaining
+        // it forever or lying with a `202` the payload never earned.
         Ok(forward::Verdict::Refused(status)) => {
-            tracing::warn!(%status, "collector refused {signal}; retaining payload");
-            drain::retain(&state, signal, stamped);
-            StatusCode::ACCEPTED
+            tracing::error!(%status, "collector permanently refused {signal}; discarding, not retained");
+            status
         }
         Err(error) => {
             tracing::warn!(error = %error, "collector unreachable; retaining payload");
-            drain::retain(&state, signal, stamped);
-            StatusCode::ACCEPTED
+            retained_status(&state, signal, stamped)
         }
     }
 }
 
-/// Resolves once SIGINT or SIGTERM arrives, ending the accept loop.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::error!(error = %error, "failed to install Ctrl-C handler");
-        }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        // SIGTERM is how systemd/launchd stop the daemon (#S3). If the handler
-        // cannot be installed, SIGTERM's *default* action still terminates the
-        // process, so there is nothing lost by not intercepting it -- await
-        // forever and let the OS kill us, rather than panic inside the only
-        // path that runs at shutdown time.
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut stream) => {
-                let _ = stream.recv().await;
-            }
-            Err(error) => {
-                tracing::error!(error = %error, "failed to install the SIGTERM handler; relying on the OS default termination");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+/// Retains `payload` and answers the status that actually describes what
+/// happened: `202` when it is durably queued for retry, `503` when the spool
+/// itself is full and the payload was **not** retained (#290 review, P1-3) --
+/// answering `202` in that case would tell the exporter "delivered" while its
+/// only copy was dropped, the unavailable branch becoming the permissive one.
+fn retained_status(
+    state: &DaemonState,
+    signal: crate::copilot::Signal,
+    payload: Vec<u8>,
+) -> StatusCode {
+    if drain::retain(state, signal, payload) {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }
