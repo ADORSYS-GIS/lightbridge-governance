@@ -14,7 +14,11 @@ use std::{
 use anyhow::{Context, Result};
 
 use super::{DAEMON_LABEL, Invocation};
-use crate::schedule::{Schedule, run};
+use crate::schedule::{
+    Schedule,
+    launchd::{domain, write},
+    run,
+};
 
 fn plist_path(home: &Path) -> PathBuf {
     home.join("Library")
@@ -110,36 +114,6 @@ pub fn survey(home: &Path) -> Schedule {
         installed,
         active,
     }
-}
-
-/// `gui/<uid>`, read off the filesystem rather than `getuid(2)` -- same
-/// reasoning as [`crate::schedule::launchd`]'s own `domain`. Duplicated
-/// rather than imported: that one is private to a sibling module, not a
-/// descendant of this one, so it is not reachable from here (unlike
-/// `systemd::classify`, which this tree's `daemon::systemd` reuses because
-/// it IS a descendant of the module that defines it).
-#[cfg(unix)]
-fn domain(path: &Path) -> Result<String> {
-    use std::os::unix::fs::MetadataExt;
-
-    let dir = path.parent().unwrap_or(path);
-    let uid = fs::metadata(dir)
-        .with_context(|| format!("reading the owner of {}", dir.display()))?
-        .uid();
-    Ok(format!("gui/{uid}"))
-}
-
-#[cfg(not(unix))]
-fn domain(_path: &Path) -> Result<String> {
-    anyhow::bail!("launchd is only reachable on unix")
-}
-
-/// tmp-then-rename: launchd refuses to bootstrap a plist it cannot parse.
-fn write(path: &Path, body: &str) -> Result<()> {
-    let tmp = path.with_extension("governance-auth-tmp");
-    fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
 
 #[cfg(test)]

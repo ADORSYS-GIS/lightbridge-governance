@@ -12,7 +12,10 @@ use std::{
 use anyhow::{Context, Result};
 
 use super::{DAEMON_UNIT, Invocation};
-use crate::schedule::{Schedule, run, systemd::classify};
+use crate::schedule::{
+    Schedule, run,
+    systemd::{classify, write},
+};
 
 /// Same directory the drain's units live in -- one systemd user tree, two
 /// unrelated unit stems.
@@ -96,16 +99,6 @@ pub fn survey(home: &Path) -> Schedule {
         installed,
         active,
     }
-}
-
-/// tmp-then-rename, like every other unit file this binary writes: systemd
-/// may be reading the directory at any moment, and a half-written unit is a
-/// parse error that disables the daemon rather than a transient one.
-fn write(path: &Path, body: &str) -> Result<()> {
-    let tmp = path.with_extension("governance-auth-tmp");
-    fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
 
 #[cfg(test)]

@@ -128,6 +128,31 @@ fn apply_telemetry(
         );
     }
 
+    // The one chokepoint every `daemon`-profile decision below assumes has
+    // already been made (#280 review round 2): `TelemetryWiring::resolve`
+    // redirects every client to the loopback endpoint, and
+    // `optout.apply_schedule` tears down the Copilot drain timer, purely on
+    // `config.profile == Daemon` -- neither re-checks whether this build can
+    // actually serve that endpoint. Before this check, `schedule::daemon::apply`
+    // caught the unsupported case, but only at the very end and only for the
+    // daemon *service* -- by then the drain was already removed and every
+    // client config already rewritten, and its `Err` was caught and downgraded
+    // to an `eprintln!` warning (`configure` still exited `0`). Refusing here,
+    // before any of those three writes happen, makes the refusal atomic: either
+    // every daemon-profile side effect happens together, or none of them do.
+    if telemetry_requested
+        && config.profile == crate::profile::Profile::Daemon
+        && !cli::serve_otel_is_supported()
+    {
+        bail!(
+            "refusing to configure the `daemon` profile: this build of governance-auth does \
+             not have `serve --otel` yet (issue #268). Configuring it anyway would point every \
+             client at a loopback receiver nothing can serve and remove the Copilot drain \
+             timer that is shipping telemetry today. Upgrade to a build that has #268, or run \
+             `configure --profile manual` instead."
+        );
+    }
+
     let home = std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
@@ -518,6 +543,41 @@ mod tests {
         assert!(
             rendered.contains("--gateway-url"),
             "must name the gateway flag so the developer knows what to supply, got: {rendered}"
+        );
+    }
+
+    /// #280 review round 2: the `daemon`-profile refusal must happen before
+    /// ANY of `apply_telemetry`'s three daemon-profile side effects, not just
+    /// at the last one (`schedule::daemon::apply`, which used to catch this
+    /// too late and have its `Err` downgraded to a warning by its caller --
+    /// see the removed call site's old comment). This build has no `serve`
+    /// verb (`crate::cli::serve_otel_is_supported()` is deterministically
+    /// `false` here, not mocked), so a `Daemon`-profile config with an
+    /// endpoint must refuse outright.
+    ///
+    /// Hermetic by construction, not just by assertion: the chokepoint bails
+    /// before `apply_telemetry` ever reads `$HOME`, so this needs no
+    /// filesystem fixture -- if the reorder ever regressed and let the
+    /// function reach the `$HOME` lookup first, this test would fail on a
+    /// missing/unwritable home directory rather than on the assertion below,
+    /// which is itself a second, independent tripwire for the same bug.
+    #[test]
+    fn configure_refuses_the_daemon_profile_atomically_when_serve_otel_is_unsupported() {
+        let config = OauthConfig {
+            otel_endpoint: Some("https://otel.example".to_owned()),
+            profile: crate::profile::Profile::Daemon,
+            ..config()
+        };
+        let error = apply_telemetry(&config, &session(), ClientOptOut::default())
+            .expect_err("daemon profile on a build with no serve verb must refuse, not warn");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("serve --otel"),
+            "must name the missing capability, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("--profile manual"),
+            "must name the escape hatch, got: {rendered}"
         );
     }
 }

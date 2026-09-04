@@ -84,6 +84,13 @@ impl Invocation {
     /// pointing at nothing -- the same rule that already applied to a
     /// missing endpoint, now also applied to the profile that owns this
     /// path.
+    ///
+    /// No `serve_otel_is_supported()` check here either (#280 review round
+    /// 2, same reasoning as [`crate::oauth`]'s `TelemetryWiring::resolve`):
+    /// `apply_telemetry`'s chokepoint has already refused the call entirely
+    /// when `profile != Manual` on a build that can't serve `daemon`, so by
+    /// the time this sees a non-`Manual` profile it is safe to remove the
+    /// timer -- the daemon that replaces it is guaranteed to actually exist.
     fn resolve(config: &OauthConfig) -> Result<Option<Self>> {
         if config.profile != crate::profile::Profile::Manual {
             return Ok(None);

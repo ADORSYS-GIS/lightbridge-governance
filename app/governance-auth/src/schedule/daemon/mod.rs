@@ -64,7 +64,13 @@ impl Invocation {
     /// [`crate::cli::SERVE_OTEL`] yet, taken as a parameter (rather than
     /// asked for here via `crate::cli::serve_otel_is_supported` directly) so
     /// this decision is exercisable from a test without needing two builds
-    /// of the binary. Before this check, `configure --profile daemon`
+    /// of the binary. `oauth::apply_telemetry`'s chokepoint (#280 review
+    /// round 2) now refuses this same combination before any daemon-profile
+    /// side effect runs, so this `bail!` is no longer the first place the
+    /// refusal happens on that path -- kept anyway as the backstop for any
+    /// future caller of this module's `apply` that doesn't go through that
+    /// chokepoint, and because a wrong answer here must never merely warn.
+    /// Before this check, `configure --profile daemon`
     /// installed a `Restart=on-failure` unit whose `ExecStart` was a command
     /// that did not exist on a pre-#268 build -- every client's telemetry
     /// silently stopped (the drain timer this replaces was removed) and the

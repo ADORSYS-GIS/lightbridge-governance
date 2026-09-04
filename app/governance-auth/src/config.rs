@@ -124,21 +124,23 @@ pub struct OauthConfigArgs {
     #[arg(long, env = "GOVERNANCE_AUTH_GATEWAY_URL", value_parser = parse_issuer, global = true)]
     gateway_url: Option<String>,
 
-    /// Telemetry wiring profile: `daemon` (default) or `manual`. See ADR-0016.
+    /// Telemetry wiring profile: `daemon` or `manual` (currently the
+    /// default). See ADR-0016.
     #[arg(
         long,
         env = "GOVERNANCE_AUTH_PROFILE",
         value_parser = parse_profile,
         global = true,
         long_help = "Which telemetry wiring `configure` writes.\n\n\
-                     `daemon` (the default) points every installed client at the loopback \
-                     collector daemon and installs it as a service; no client ever holds a \
-                     long-lived OTLP credential. `manual` reproduces today's behaviour exactly: \
-                     direct exporters, the `copilot-push` timer, and a static `--otel-token` \
-                     where a client needs one -- the correct choice on a locked-down build \
-                     agent, in a container, or anywhere a long-running user service is \
-                     unwanted. Switching either way retracts the other profile's keys; a value \
-                     you edited by hand is left alone. See ADR-0016."
+                     `daemon` points every installed client at the loopback collector daemon \
+                     and installs it as a service; no client ever holds a long-lived OTLP \
+                     credential. `manual` (currently the default) reproduces today's behaviour \
+                     exactly: direct exporters, the `copilot-push` timer, and a static \
+                     `--otel-token` where a client needs \
+                     one -- also the correct choice on a locked-down build agent, in a \
+                     container, or anywhere a long-running user service is unwanted. Switching \
+                     either way retracts the other profile's keys; a value you edited by hand \
+                     is left alone. See ADR-0016."
     )]
     profile: Option<String>,
 

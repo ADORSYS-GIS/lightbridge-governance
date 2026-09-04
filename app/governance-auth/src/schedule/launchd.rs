@@ -128,8 +128,13 @@ pub fn survey(home: &Path) -> Schedule {
 /// libc dependency, and a subprocess to learn our own identity is a subprocess
 /// that can fail. The plist's parent is `~/Library/LaunchAgents`, which is
 /// owned by the user by construction -- we just created it.
+///
+/// `pub(super)`: [`super::daemon::launchd`] imports this rather than
+/// reimplementing it (#280 review round 2) -- it needs the identical uid
+/// lookup for its own, differently-located plist, and nothing about the
+/// reasoning above is specific to the drain's path.
 #[cfg(unix)]
-fn domain(path: &Path) -> Result<String> {
+pub(super) fn domain(path: &Path) -> Result<String> {
     use std::os::unix::fs::MetadataExt;
 
     let dir = path.parent().unwrap_or(path);
@@ -140,13 +145,17 @@ fn domain(path: &Path) -> Result<String> {
 }
 
 #[cfg(not(unix))]
-fn domain(_path: &Path) -> Result<String> {
+pub(super) fn domain(_path: &Path) -> Result<String> {
     anyhow::bail!("launchd is only reachable on unix")
 }
 
 /// tmp-then-rename: launchd refuses to bootstrap a plist it cannot parse, and
 /// a half-written file is exactly that.
-fn write(path: &Path, body: &str) -> Result<()> {
+///
+/// `pub(super)`: [`super::daemon::launchd`] reuses this rather than keeping
+/// its own copy (#280 review round 2), same as [`super::systemd::write`] and
+/// its `daemon::systemd` counterpart.
+pub(super) fn write(path: &Path, body: &str) -> Result<()> {
     let tmp = path.with_extension("governance-auth-tmp");
     fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path)
