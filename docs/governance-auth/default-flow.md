@@ -126,7 +126,11 @@ choice made here.
 
 ### VS Code — `<User>/settings.json`
 
-Written for each flavour present: `Code`, `Code - Insiders`, `VSCodium`.
+Written for each flavour present: `Code`, `Code - Insiders`, `VSCodium`. This section covers
+the `manual` profile, still the compiled default this page walks through — under `daemon`
+(issue #272) Copilot's own `otlp-http` exporter points directly at the loopback daemon
+instead, with no spool and no drain schedule at all; see [`files.md`](./files.md)'s "VS Code
+Copilot" section for both.
 
 | Key | Value | Gated on |
 |---|---|---|

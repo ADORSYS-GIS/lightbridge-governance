@@ -108,17 +108,20 @@ impl Drain {
                     ),
                 );
             }
-            // Not red: this is #270's own intended state, not a broken
-            // install. Not silent either -- #272 has not yet rewired
-            // Copilot to point its own OTLP exporter at the daemon, so the
-            // spool genuinely goes undrained under `daemon` today, and the
-            // fix that actually works is named instead of the generic
-            // `configure` re-run that does nothing here.
+            // No colour, not yellow: #270's own intended state, and -- since
+            // #272 -- not a gap either. Copilot no longer writes a spool
+            // under `daemon` at all (`vscode::entries`'s `otlp_settings`
+            // points its own exporter straight at the loopback daemon), so
+            // there being no drain timer to schedule is simply correct, not
+            // "pending" anything. This row used to warn here and tell a
+            // correctly-configured developer to switch back to `manual` --
+            // i.e. undo the security property #272 delivers -- found in
+            // review before it shipped that way.
             return (
                 "not scheduled".to_owned(),
-                Colour::Yellow,
-                "daemon profile: Copilot's spool is not yet drained (pending #272) -- switch to \
-                 `--profile manual` if you need Copilot telemetry now"
+                Colour::None,
+                "daemon profile: Copilot exports directly to the loopback daemon (issue #272), \
+                 no spool to drain"
                     .to_owned(),
             );
         }

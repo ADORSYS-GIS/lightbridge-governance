@@ -6,6 +6,7 @@
 //! manifest, and it is the one that proves an already-configured machine ends
 //! up with the new exporter and not both.
 
+mod daemon;
 mod retraction;
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -22,6 +23,7 @@ pub(super) fn settings() -> OtelSettings {
         endpoint: Some("https://otel.example.com".to_owned()),
         copilot_spool: PathBuf::from("/state/governance-auth/copilot-otel.jsonl"),
         copilot_drain_available: true,
+        copilot_otlp_direct: false,
         token: None,
         resource_attributes: BTreeMap::new(),
         headers_helper: None,
@@ -35,6 +37,7 @@ fn settings_gateway_only() -> OtelSettings {
     OtelSettings {
         endpoint: None,
         copilot_drain_available: false,
+        copilot_otlp_direct: false,
         gateway_url: Some("https://api.example".to_owned()),
         ..settings()
     }
@@ -143,34 +146,5 @@ fn the_file_exporter_is_not_enabled_without_a_collector_to_drain_to() {
     );
 }
 
-/// The `daemon`-profile case, distinct from the test above: `endpoint` is
-/// `Some` (the loopback substitute), so `settings.endpoint.is_none()` alone
-/// cannot catch this -- confirmed live, where reading only `endpoint` left
-/// the file exporter on with nothing draining it. `copilot_drain_available`
-/// is the signal that actually carries "nowhere to push", independent of
-/// whether an endpoint string happens to be present.
-#[test]
-fn the_file_exporter_is_not_enabled_when_nothing_can_drain_it_even_with_an_endpoint_set() {
-    let home = tempdir();
-    let user = user_dir(home.path(), "Code");
-    fs::create_dir_all(&user).expect("create VS Code User dir");
-    fs::write(user.join("settings.json"), r#"{"editor.fontSize":14}"#).expect("seed settings");
-
-    let daemon_shaped = OtelSettings {
-        copilot_drain_available: false,
-        ..settings()
-    };
-    assert!(
-        daemon_shaped.endpoint.is_some(),
-        "this fixture must keep a non-empty endpoint, or it collapses into the test above"
-    );
-
-    let outcomes = configure(home.path(), &daemon_shaped).expect("configure");
-    assert!(outcomes.is_empty(), "nothing to write, so nothing reported");
-
-    let text = fs::read_to_string(user.join("settings.json")).expect("read back");
-    assert_eq!(
-        text, r#"{"editor.fontSize":14}"#,
-        "file must be left untouched"
-    );
-}
+// #272 AC3's daemon-profile Copilot path has its own file, `daemon.rs`, for
+// the same LoC-ceiling reason `retraction.rs` does.

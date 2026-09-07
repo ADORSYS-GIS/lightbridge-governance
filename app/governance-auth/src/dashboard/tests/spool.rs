@@ -2,13 +2,11 @@
 //!
 //! Two of them are why this row exists at all:
 //!
-//! - `never_pushed_with_bytes_waiting` -- a timer that was never enabled or
-//!   that fails on every wake, indistinguishable from a healthy install
-//!   anywhere else a developer looks.
+//! - `never_pushed_with_bytes_waiting` -- a timer never enabled or failing on
+//!   every wake, indistinguishable from a healthy install anywhere else.
 //! - `discarded_records_are_never_green` -- a parser regression that consumes
-//!   the whole spool and delivers none of it. Nothing is pending afterwards,
-//!   because the checkpoint kept pace with the loss, so every other signal in
-//!   this row reads exactly like "up to date".
+//!   the whole spool and delivers none of it, with the checkpoint keeping
+//!   pace so every other signal reads exactly like "up to date".
 
 use std::path::PathBuf;
 
@@ -38,11 +36,11 @@ pub(super) fn spool(
         last_push_age: age,
         last_discard_age: None,
         held_age: None,
+        profile: crate::profile::Profile::Manual,
     }
 }
 
-/// A spool that looks perfectly drained -- and lost `discarded` records doing
-/// it, `age` seconds ago.
+/// A perfectly drained spool that lost `discarded` records `age` seconds ago.
 fn discarding(discarded: u64, age: Option<u64>) -> Spool {
     let mut row = spool(Some(4096), 4096, None, None);
     if let Some(status) = row.inner.as_mut() {
@@ -55,16 +53,34 @@ fn discarding(discarded: u64, age: Option<u64>) -> Spool {
 
 #[test]
 fn no_spool_file_reads_as_not_enabled_with_the_way_to_get_one() {
-    // The advice changed with the cutover and the test has to change with it:
-    // `configure` writes `exporterType`/`outfile` now, so telling a developer
-    // to paste them by hand sends them to edit a file this binary owns. What
-    // is still on them is restarting VS Code and sending a turn.
+    // `configure` writes `exporterType`/`outfile` now, so what's still on
+    // the developer is restarting VS Code and sending a turn.
     let (value, colour, note) = spool(None, 0, None, None).row();
     assert_eq!(value, "not enabled");
     assert_eq!(colour, Colour::Yellow, "an unused feature is not a fault");
     assert!(
         note.contains("governance-auth configure") && note.contains("restart VS Code"),
         "the note must say how to get a spool, got: {note}"
+    );
+}
+
+/// #272 / #302 review round 2: under `daemon`, Copilot never writes a spool
+/// at all (its exporter posts straight to the loopback daemon), so without
+/// a profile gate a healthy install reported permanent yellow "not enabled".
+#[test]
+fn no_spool_file_under_daemon_profile_is_informational_not_a_warning() {
+    let mut row = spool(None, 0, None, None);
+    row.profile = crate::profile::Profile::Daemon;
+    let (value, colour, note) = row.row();
+    assert_eq!(value, "not applicable");
+    assert_eq!(
+        colour,
+        Colour::None,
+        "a spool that will never exist under `daemon` is not a gap, so must not be yellow"
+    );
+    assert!(
+        !note.contains("governance-auth configure"),
+        "must not suggest a fix for a file `daemon` never creates: {note}"
     );
 }
 
@@ -80,8 +96,8 @@ fn nothing_pending_reads_as_up_to_date() {
     );
 }
 
-/// THE row this whole module exists for. Bytes are waiting and no push has
-/// ever succeeded -- the observable signature of a timer that never ran.
+/// THE row this module exists for: bytes waiting, no push ever succeeded --
+/// the signature of a timer that never ran.
 #[test]
 fn never_pushed_with_bytes_waiting_is_red() {
     let (value, colour, note) = spool(Some(9000), 0, None, None).row();
@@ -95,9 +111,8 @@ fn never_pushed_with_bytes_waiting_is_red() {
     assert!(note.contains("copilot push"), "{note}");
 }
 
-/// Pending but previously successful is the ordinary state between timer
-/// wakes. Colouring it red would train the reader to ignore the row, which is
-/// how the case above stays invisible.
+/// Pending but previously successful is the ordinary state between wakes;
+/// red here would train the reader to ignore the row entirely.
 #[test]
 fn pending_after_a_previous_push_is_yellow() {
     let (value, colour, _) = spool(Some(9000), 4096, Some(1_788_191_916), Some(45)).row();
@@ -105,10 +120,9 @@ fn pending_after_a_previous_push_is_yellow() {
     assert_eq!(colour, Colour::Yellow);
 }
 
-/// THE regression guard for the silent-loss case. The spool is fully drained
-/// and nothing is pending -- because the drain consumed three records it could
-/// not read and moved the checkpoint past them. Every other input to this row
-/// says "up to date, green"; only the discard counter knows better.
+/// THE regression guard for the silent-loss case: the drain consumed three
+/// unreadable records and moved the checkpoint past them, so every other
+/// input says "up to date, green" -- only the discard counter knows better.
 #[test]
 fn discarded_records_are_never_green() {
     let (value, colour, note) = discarding(3, Some(60)).row();
@@ -125,10 +139,9 @@ fn discarded_records_are_never_green() {
     );
 }
 
-/// The counter is cumulative and there is no command to reset it, so a red
-/// that never clears would train the reader to ignore this row -- which is the
-/// same failure the row exists to prevent, one level up. Old loss stays
-/// visible; it stops shouting.
+/// The counter is cumulative with no reset command, so a red that never
+/// clears would train the reader to ignore the row. Old loss stays visible,
+/// but stops shouting.
 #[test]
 fn a_discard_older_than_a_day_is_yellow_not_red() {
     let (_, colour, _) = discarding(1, Some(3 * 24 * 60 * 60)).row();
@@ -136,8 +149,7 @@ fn a_discard_older_than_a_day_is_yellow_not_red() {
     assert_ne!(colour, Colour::Green, "but still not green");
 }
 
-/// The documented table has to contain every row this can actually produce:
-/// an unresolvable state directory was rendering a value absent from it.
+/// The documented table must cover every value this can produce.
 #[test]
 fn an_unresolvable_state_directory_reads_as_unknown() {
     let nothing = Spool {
@@ -145,6 +157,7 @@ fn an_unresolvable_state_directory_reads_as_unknown() {
         last_push_age: None,
         last_discard_age: None,
         held_age: None,
+        profile: crate::profile::Profile::Manual,
     };
     let (value, colour, note) = nothing.row();
     assert_eq!(value, "unknown");

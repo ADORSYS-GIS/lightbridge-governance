@@ -143,12 +143,17 @@ mod tests {
     /// the comment on `every_generated_command_is_a_command_this_binary_has`).
     ///
     /// `Profile::default()` (`profile.rs`) does NOT flip to `Daemon` in this
-    /// same commit, despite the old tripwire's original plan: the module
-    /// doc's precondition was always #268 **and** #272 (Copilot's exporter
-    /// rewired onto the daemon), and #272 has not landed. Flipping now would
-    /// reintroduce the exact regression the round-1 #280 review found --
-    /// Copilot's drain timer torn down with nothing yet forwarding its spool.
-    /// [`crate::profile`]'s own doc names the still-open precondition.
+    /// same commit, despite the old tripwire's original plan. Both of the
+    /// module doc's original preconditions have now landed in code (#268
+    /// here, Copilot's own `otlp-http` exporter rewired onto the daemon via
+    /// #272) -- but #272's own PR flags one load-bearing assumption as not
+    /// yet independently confirmed against a real VS Code install (only at
+    /// the config-file level this repo can test), and flipping the compiled
+    /// default would move every developer who upgrades and re-runs
+    /// `configure` without an explicit `--profile` onto that unconfirmed
+    /// path silently -- the same "moved before this repo can fully serve
+    /// it" failure mode #268's own gap caused the round-1 #280 review to
+    /// find. [`crate::profile`]'s own doc names the still-open precondition.
     #[test]
     fn serve_otel_is_supported_now_that_268_has_landed() {
         assert!(

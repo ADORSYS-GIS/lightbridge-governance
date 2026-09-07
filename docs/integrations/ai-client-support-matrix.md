@@ -163,17 +163,28 @@ correcting RFC-0003's *Risks* section), but it is a **static** map and
 `settings.json` is covered by Settings Sync — a long-lived bearer written there
 syncs off-machine. The other channel, `OTEL_EXPORTER_OTLP_HEADERS`, is a
 **global** OpenTelemetry variable that a desktop-launched VS Code never sees
-anyway.
+anyway. This is the reasoning for the `manual` profile specifically — see
+below for `daemon`, where it stops applying.
 
-So neither is used. `configure` writes `exporterType: "file"` + `outfile`
-instead, and `governance-auth copilot push` — on a systemd user timer or a
-launchd agent that `configure` installs — ships the spool with a bearer it
-refreshes per wake. Copilot never holds a credential, which removes the problem
-rather than choosing between two bad answers to it.
+Under `manual` (the compiled default), neither channel is used: `configure`
+writes `exporterType: "file"` + `outfile` instead, and `governance-auth
+copilot push` — on a systemd user timer or a launchd agent that `configure`
+installs — ships the spool with a bearer it refreshes per wake. Copilot never
+holds a credential, which removes the problem rather than choosing between two
+bad answers to it.
 
 ⚠️ The cost is a spool file nothing bounds
 ([#230](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/230)),
 measured growing 73 KB → 315 KB in six minutes of ordinary use.
+
+Under `daemon` (issue #272), the static-header problem above does not apply in
+the first place: `configure` points Copilot's own `otlp-http` exporter
+directly at the loopback daemon, which needs no credential from Copilot at
+all, so there is nothing to sync off-machine by writing it there. No spool,
+no drain schedule, no unbounded file. The one load-bearing assumption this
+depends on — that `otlpEndpoint` accepts a plain `http://` loopback address —
+is flagged, not independently confirmed against a real VS Code install; see
+epic #260.
 
 ### A JSONC `settings.json` is refused, not rewritten
 
