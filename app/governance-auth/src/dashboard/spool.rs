@@ -1,15 +1,13 @@
-//! The Copilot spool row: is the drain actually running, and is it keeping
-//! everything it reads?
+//! The Copilot spool row: is the drain keeping everything it reads?
 //!
 //! ## Why this row exists at all
 //!
-//! `copilot push` runs on the schedule [`crate::schedule`] installs, and a
-//! wake that fails on every fire looks exactly like a working one from inside
-//! VS Code -- Copilot appends to the spool either way. The `copilot drain` row
+//! `copilot push` runs on the schedule [`crate::schedule`] installs, and a wake
+//! that fails on every fire looks exactly like a working one from inside VS
+//! Code -- Copilot appends to the spool either way. The `copilot drain` row
 //! next door reports whether the schedule is *running*; this one reports
-//! whether it is *keeping what it reads*. Independent answers, both needed.
-//!
-//! So the states are chosen around that failure, not around tidiness:
+//! whether it is *keeping what it reads*. Both needed, so the states below
+//! are chosen around that failure, not around tidiness:
 //!
 //! | State | Meaning |
 //! |---|---|
@@ -17,66 +15,61 @@
 //! | not enabled (yellow) | no spool file yet: Copilot has not exported |
 //! | `<n>` record(s) discarded (red/yellow) | data was consumed and never delivered |
 //! | held, waiting for a later record (yellow) | see below |
-//! | up to date (green)   | nothing pending, nothing lost; the count is the offset, which a reclaim resets to 0 |
-//! | pending (yellow)     | bytes waiting, and a push has succeeded before |
-//! | never pushed (red)   | bytes waiting and no push has *ever* succeeded |
-//! | unknown (yellow)     | the state directory could not be resolved |
+//! | up to date (green) | nothing pending, nothing lost; the count is the offset, reclaim resets it to 0 |
+//! | pending (yellow) | bytes waiting, and a push has succeeded before |
+//! | never pushed (red) | bytes waiting and no push has *ever* succeeded |
+//! | unknown (yellow) | the state directory could not be resolved |
 //!
-//! ## Why "held" is its own row and not a backlog
+//! ## Why "held" is its own row, not a backlog
 //!
-//! A record the collector refuses on its own is only given up on once the
-//! collector has been shown to accept *something*. When the refused record is
-//! the **last** one in the spool there is nothing after it to show that with,
-//! so it is held -- and unlike every other stall, no later wake resolves it.
-//! It clears when Copilot appends another record, and not before.
+//! A record the collector refuses on its own is only given up on once it has
+//! been shown to accept *something*. When the refused record is the **last**
+//! one in the spool there is nothing after it to prove that with, so it is
+//! held -- unlike every other stall, no later wake resolves it; it clears
+//! only when Copilot appends another record. An ordinary "N bytes pending
+//! ... run `copilot push`" would be actively misleading here: that command
+//! reproduces the same wake and exits 1 again for the same bytes.
 //!
-//! Rendered as an ordinary "N bytes pending ... run `governance-auth
-//! copilot push`" that is actively misleading: the suggested command reproduces
-//! the same wake and exits 1 again. Same bytes, entirely different advice.
-//!
-//! ## Why discards outrank "pending", and why they are not permanently red
+//! ## Why discards outrank "pending", and are not permanently red
 //!
 //! A parser regression is the failure this row is worst at showing without
 //! them: every record classifies as unrecognised, both payloads come out
-//! empty, no POST is made, and the checkpoint advances over the lot. Bytes
-//! pending then reads 0 -- so the row said "up to date", in green, while the
-//! entire spool went in the bin. Discards therefore beat `pending` and beat
-//! green.
-//!
-//! They fade to yellow after a day, because the counter is cumulative and a
-//! row that is red forever with no way to clear it is a row people stop
-//! reading -- which is the same failure again, one level up. Recent loss is
-//! the alarm; old loss is a note. Neither is green.
+//! empty, no POST is made, and the checkpoint advances over the lot -- bytes
+//! pending then reads 0, so the row would say "up to date", in green, while
+//! the entire spool went in the bin. Discards beat `pending` and green, and
+//! fade to yellow after a day: cumulative and permanently red is a row people
+//! stop reading. Recent loss is the alarm; old loss is a note, never green.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::style::{Colour, since};
-use crate::{config::OauthConfig, copilot::SpoolStatus};
+use crate::{config::OauthConfig, copilot::SpoolStatus, profile::Profile};
 
-/// How recent a discard has to be to still be an alarm. One day: long enough
-/// to survive a night and a weekend morning, short enough that a single lost
-/// record last spring is not still shouting.
+/// How recent a discard has to be to still be an alarm -- long enough to
+/// survive a night, short enough that a lost record last spring stays quiet.
 const FRESH_DISCARD_SECONDS: u64 = 24 * 60 * 60;
 
-/// `None` rather than an error on a clock before the epoch: `status` reports,
-/// it does not assert, and "last push at an unknown time" is still useful.
+/// `None`, not an error, on a clock before the epoch -- `status` reports.
 fn now_unix() -> Option<u64> {
     Some(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs())
 }
 
 pub struct Spool {
     /// `pub(super)` so `dashboard`'s tests can render every state from a
-    /// literal instead of planting files under a fake `$HOME`. Nothing outside
-    /// this module constructs one; every caller goes through [`Self::survey`].
+    /// literal instead of planting files under a fake `$HOME`; every real
+    /// caller goes through [`Self::survey`].
     pub(super) inner: Option<SpoolStatus>,
     /// Seconds since the last successful push, resolved at survey time so
-    /// [`Self::row`] stays a pure function of already-collected data -- the
-    /// same reason [`super::style::short`] takes `home` instead of reading it.
+    /// [`Self::row`] stays a pure function of already-collected data.
     pub(super) last_push_age: Option<u64>,
     /// Seconds since the last discarded record, for the same reason.
     pub(super) last_discard_age: Option<u64>,
     /// Seconds the drain has been held on the spool's final record, likewise.
     pub(super) held_age: Option<u64>,
+    /// Under `daemon`, Copilot writes no spool at all (#272) -- mirrors
+    /// `Drain`'s/`Daemon`'s own `profile` field: without it, a healthy
+    /// `daemon` install reads permanent yellow (#302 review).
+    pub(super) profile: Profile,
 }
 
 impl Spool {
@@ -91,6 +84,7 @@ impl Spool {
             last_push_age,
             last_discard_age,
             held_age,
+            profile: config.profile,
         }
     }
 
@@ -116,9 +110,16 @@ impl Spool {
         }
 
         if !status.present() {
-            // Not "you forgot to configure it": `configure` writes the file
-            // exporter itself now, so a missing spool means Copilot has not
-            // exported yet -- ordinary until the first turn after a restart.
+            if self.profile == Profile::Daemon {
+                // Not a gap: `daemon` never creates this file (#272).
+                return (
+                    "not applicable".to_owned(),
+                    Colour::None,
+                    "daemon profile: Copilot exports directly, no spool used".to_owned(),
+                );
+            }
+            // Not "you forgot to configure it" -- `configure` writes the file
+            // exporter itself; a missing spool just means no export yet.
             return (
                 "not enabled".to_owned(),
                 Colour::Yellow,
@@ -140,8 +141,7 @@ impl Spool {
             return self.discarded_row(status, &last);
         }
 
-        // Before `pending`, because the bytes ARE pending and that reading is
-        // the misleading one -- see the module doc.
+        // Before `pending` -- see the module doc's "held" section.
         if status.held_since_unix.is_some() {
             return (
                 "held, waiting for a later record".to_owned(),
@@ -182,7 +182,7 @@ impl Spool {
     fn discarded_row(&self, status: &SpoolStatus, last: &str) -> (String, Colour, String) {
         let recent = self
             .last_discard_age
-            .is_none_or(|age| age < FRESH_DISCARD_SECONDS);
+            .is_none_or(|a| a < FRESH_DISCARD_SECONDS);
         let colour = if recent { Colour::Red } else { Colour::Yellow };
         let when = match self.last_discard_age {
             Some(age) => format!("last {}", since(age)),

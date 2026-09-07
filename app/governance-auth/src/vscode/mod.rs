@@ -64,13 +64,20 @@ pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     // outcome, not a `Skipped` about a tool that may not even be installed
     // here.
     //
-    // Exactly one of the two flags gates each path -- never
-    // `settings.endpoint.is_none()`, which is `Some` under `daemon` too (the
-    // loopback substitute) regardless of which Copilot path is active.
-    // Confirmed live (pre-#272): reading `endpoint` alone here left the file
-    // exporter on with the drain that used to empty it removed, and the
-    // spool grew unbounded.
-    if !settings.copilot_drain_available && !settings.copilot_otlp_direct {
+    // `entries(settings).is_empty()`, not a hand-rolled copy of its two-flag
+    // branch (review round 2 on #302): a second copy of that logic here is
+    // exactly the drift `entries` exists to remove, and the two DID
+    // disagree on one input (`copilot_otlp_direct` true with `endpoint`
+    // `None` -- unreachable via `TelemetryWiring::resolve` today, but this
+    // guard let it through while `entries` itself returned nothing, hard-
+    // erroring on a JSONC file and silently reformatting a plain-JSON one
+    // for zero real keys). Never `settings.endpoint.is_none()` either,
+    // which is `Some` under `daemon` too (the loopback substitute)
+    // regardless of which Copilot path is active. Confirmed live
+    // (pre-#272): reading `endpoint` alone here left the file exporter on
+    // with the drain that used to empty it removed, and the spool grew
+    // unbounded.
+    if entries(settings).is_empty() {
         return Ok(Vec::new());
     }
 

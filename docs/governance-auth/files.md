@@ -502,6 +502,8 @@ Flavours checked: `Code`, `Code - Insiders`, `VSCodium`. Under `~/.config/` on L
 `~/Library/Application Support/` on macOS — VS Code does not follow `XDG_CONFIG_HOME` on
 macOS.
 
+**`manual` profile** (the compiled default today):
+
 ```json
 "github.copilot.chat.otel.enabled": true,
 "github.copilot.chat.otel.exporterType": "file",
@@ -509,12 +511,12 @@ macOS.
 "github.copilot.chat.otel.captureContent": false
 ```
 
-⚠️ **The exporter is `file`, not `otlp-http`, and that is the point.** Copilot's direct HTTP
-exporter has no header this binary is willing to write. `github.copilot.chat.otel.headers`
-exists, but it is a *static* map and `settings.json` is covered by Settings Sync — writing a
-bearer there syncs it off-machine. The `otlp-http` this used to write carried no header at
-all, so an authenticating collector returned **401 on every span** while the config looked
-complete.
+⚠️ **The exporter is `file`, not `otlp-http`, under `manual`.** Copilot's direct HTTP
+exporter has no header this binary is willing to write under this profile. `github.copilot
+.chat.otel.headers` exists, but it is a *static* map and `settings.json` is covered by
+Settings Sync — writing a bearer there syncs it off-machine. The `otlp-http` this used to
+write under every profile carried no header at all, so an authenticating collector returned
+**401 on every span** while the config looked complete.
 
 The file exporter has neither problem. Copilot appends to `outfile`;
 [`copilot push`](./commands.md#copilot-push) drains it on the schedule `configure` installs,
@@ -526,10 +528,26 @@ long-lived `--otel-token`.
 to the drain as `--copilot-spool-path`. They cannot disagree — which they could, and did, when
 both were copy-pasted out of a runbook.
 
-⚠️ **Upgrading from a build that wrote `otlp-http`** leaves `github.copilot.chat.otel.otlpEndpoint`
-behind. One `configure` removes it: the key is in the managed-key manifest, so
-the managed-key manifest retracts it — but only if its value still hashes to what we
-wrote, so a developer who edited it keeps their edit.
+**`daemon` profile** (issue #272): the reasoning above no longer applies, because there is no
+credential to sync off-machine — the loopback daemon needs none.
+
+```json
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.exporterType": "otlp-http",
+"github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:17457",
+"github.copilot.chat.otel.captureContent": false
+```
+
+No `outfile`, no `headers` key of any kind: Copilot exports directly to the daemon, which
+mints its own bearer on the outbound leg (`serve --otel`, #268), so nothing here ever holds a
+credential either way. `copilot push` and its schedule are not installed under this profile —
+there is no spool file for them to drain.
+
+⚠️ **Switching profiles retracts the other one's keys**, not just stops writing new ones: the
+key set is in the managed-key manifest, and `configure` removes whichever of `outfile` /
+`otlpEndpoint` the other profile owns — but only if its value still hashes to what we wrote,
+so a developer who hand-edited it keeps their edit. The same rule already covered the older
+cutover from a plain `otlp-http` exporter with no profile axis at all.
 
 **A JSONC file is refused, not rewritten.** VS Code's `settings.json` legally contains
 comments and trailing commas, and developers really do use them. `serde_json` can't parse
