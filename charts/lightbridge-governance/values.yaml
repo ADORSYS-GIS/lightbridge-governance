@@ -339,6 +339,28 @@ grafanaDashboard:
       name: governance
       title: "Governance"
 
+  # A second, sibling folder under the same `Governance` parent above, for
+  # the AI CLI telemetry dashboard (issue #268/#272) -- deliberately its own
+  # folder, not nested inside `folder` (Copilot's), since the daemon this
+  # dashboard visualizes serves Claude Code and Codex too, not just Copilot.
+  # Always nests under `folder.parent.name` -- there is no separate
+  # `aiCliFolder.parent.create` toggle, so the `Governance` parent is
+  # created exactly once, by `folder.parent` above.
+  #
+  # ⚠️ COUPLING: templates/grafanafolder.yaml (the `Governance` parent's
+  # only creator) is entirely gated on `folder.enabled`, not on this flag.
+  # Setting `folder.enabled: false` while leaving this `true` renders a
+  # `parentFolderRef` pointing at a `Governance` folder nothing creates --
+  # the operator's usual silent non-render (see the `instanceSelector`
+  # caveat below for what that looks like), not a `helm template` error.
+  # If you only want the AI CLI dashboard, keep `folder.enabled: true` (it
+  # only controls whether the *Copilot* dashboard's own folder is created,
+  # not the shared parent) rather than disabling it.
+  aiCliFolder:
+    enabled: true
+    nameSuffix: ai-cli
+    title: "AI CLI"
+
   # Grafana Operator v5 requires every GrafanaDashboard to carry an
   # instanceSelector (a label selector) so it knows which deployed `Grafana`
   # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a
@@ -374,12 +396,14 @@ grafanaDashboard:
   # Datasource UIDs the dashboard JSON references, substituted into
   # dashboards/copilot-connector.json at `helm template` time (Helm-side
   # string replace over literal placeholder tokens -- see
-  # templates/grafanadashboard.yaml for why this was chosen over the
-  # operator's own spec.datasources mapping field, and for what happens if a
-  # value here is wrong). Contract with the dashboard-JSON generator: the
-  # tokens are exactly `__DS_POSTGRES__` and `__DS_PROMETHEUS__`, used as the
-  # literal `uid` value of any Postgres/Prometheus datasource reference in
-  # that file.
+  # templates/grafanadashboard.yaml/templates/grafanadashboard-ai-cli.yaml
+  # for why this was chosen over the operator's own spec.datasources mapping
+  # field, and for what happens if a value here is wrong). Contract with the
+  # dashboard-JSON generators: `__DS_POSTGRES__`/`__DS_PROMETHEUS__` in
+  # dashboards/copilot-connector.json (generate_dashboards.py) and
+  # `__DS_LOKI__` in dashboards/ai-cli-telemetry.json
+  # (generate_ai_cli_dashboard.py), each used as the literal `uid` value of
+  # that datasource's reference in its own file.
   datasources:
     # ADR-0003, stated explicitly: "Expose the governance database to
     # Grafana as a read-only Postgres GrafanaDatasource (uid: governance)".
@@ -399,6 +423,17 @@ grafanaDashboard:
     # exactly the ambiguity ADR-0011 already warns about for
     # governance_copilot_*'s own 30h expiration cliff.
     prometheusUid: mimir
+    # Same gap as prometheusUid, for the same reason -- checked directly
+    # this time (kubectl get grafanadatasources -A against the live
+    # cluster), not just inferred: the ONLY GrafanaDatasource CR visible
+    # anywhere in `observability` is `lci-postgres` (unrelated). Loki and
+    # Mimir are evidently provisioned some other way (ai-helm's own Grafana
+    # values, most likely a static datasources.yaml this chart cannot see),
+    # not as separate CRs this chart could read a real UID from. "loki" is
+    # the same class of reasonable-default guess as "mimir" above -- CONFIRM
+    # AGAINST THE DEPLOYED GRAFANA before trusting the AI CLI telemetry
+    # dashboard (issue #268/#272).
+    lokiUid: loki
 
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
 # copilot-reports.github.com signed-download host (spike-0007), the S3
