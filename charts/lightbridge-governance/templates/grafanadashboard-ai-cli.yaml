@@ -8,31 +8,38 @@ substitution rationale ((b): Helm-side string replace over literal
 placeholder tokens, resolved entirely at `helm template` time); this file
 only restates what differs.
 
-The one difference worth calling out: this dashboard has no `templating`
-variables (no `$tenant_id`, no custom variable) -- Loki's own label
-selectors (`job`, and the JSON-parsed `attributes_*` fields) are the
-dashboard's filtering surface, not a Grafana template variable, since
-per-tenant scoping for this collector is a `governance.tenant.id` header
-stamped by Authorino ahead of the collector, not a column this data has to
-offer a variable over the way copilot-connector's Postgres queries do.
+This dashboard has no `templating` variables (no `$tenant_id`, no custom
+variable) -- Loki's own label selectors (`job`, and the JSON-parsed
+`attributes_*` fields) are Sections 1-3's filtering surface, not a Grafana
+template variable, since per-tenant scoping for this collector is a
+`governance.tenant.id` header stamped by Authorino ahead of the collector,
+not a column this data has to offer a variable over the way
+copilot-connector's Postgres queries do.
+
+TWO datasource tokens, not one: `__DS_LOKI__` (Sections 1-3) AND
+`__DS_PROMETHEUS__` (Section 4 -- Copilot Chat's own code-change metrics,
+confirmed live in Mimir; see the generator script's own module docstring
+for why this dashboard spans two backends). `__DS_PROMETHEUS__` reuses the
+SAME `prometheusUid` value copilot-connector.json already substitutes --
+one value, two dashboards, not a second guess to confirm.
 */}}
 {{- $dashboardPath := "dashboards/ai-cli-telemetry.json" }}
 {{- $rawJson := .Files.Get $dashboardPath }}
 {{- if not $rawJson }}
 {{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/ai-cli-telemetry.json (scripts/generate_ai_cli_dashboard.py generates it)." $dashboardPath) }}
 {{- end }}
-{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid }}
-{{- if contains "__DS_LOKI__" $dashboardJson }}
-{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from the __DS_LOKI__ contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
+{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid | replace "__DS_PROMETHEUS__" .Values.grafanaDashboard.datasources.prometheusUid }}
+{{- if or (contains "__DS_LOKI__" $dashboardJson) (contains "__DS_PROMETHEUS__" $dashboardJson) }}
+{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__/__DS_PROMETHEUS__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from that contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every affected panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
 {{- end }}
 {{- /*
 Same broader, pattern-based guard as templates/grafanadashboard.yaml's --
 see that file's own comment for why this catches a renamed token
-(`__DS_LOKI__` -> some other spelling) that the exact-string check above
-cannot.
+(e.g. `__DS_LOKI__` -> some other spelling) that the exact-string checks
+above cannot.
 */}}
 {{- if regexMatch "__DS_[A-Z0-9_]+__" $dashboardJson }}
-{{- fail (printf "%s still contains an unrecognized __DS_..._..__-shaped placeholder token after substitution -- this doesn't match the contracted __DS_LOKI__ token by name, but its shape strongly suggests it's an unreplaced datasource placeholder from a token spelling this template doesn't know about. Fix the token spelling in the dashboard JSON (or this template's replace call) to match the __DS_LOKI__ contract -- do not ship an unsubstituted placeholder, it becomes a literal invalid datasource UID with no error anywhere in Grafana." $dashboardPath) }}
+{{- fail (printf "%s still contains an unrecognized __DS_..._..__-shaped placeholder token after substitution -- this doesn't match either contracted token (__DS_LOKI__/__DS_PROMETHEUS__) by name, but its shape strongly suggests it's an unreplaced datasource placeholder from a token spelling this template doesn't know about. Fix the token spelling in the dashboard JSON (or this template's replace calls) to match the __DS_LOKI__/__DS_PROMETHEUS__ contract -- do not ship an unsubstituted placeholder, it becomes a literal invalid datasource UID with no error anywhere in Grafana." $dashboardPath) }}
 {{- end }}
 apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaDashboard

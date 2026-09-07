@@ -70,13 +70,36 @@ sessions sharing the same collector). What was directly confirmed:
     values.yaml's `grafanaDashboard.datasources.lokiUid` for the same loud
     caveat, and CONFIRM AGAINST THE DEPLOYED GRAFANA before trusting a
     panel that renders empty.
-  - Claude Code also emits OTLP *metrics* (`OTEL_METRICS_EXPORTER=otlp` is
-    part of this epic's own wiring) -- these were not inspected here, and
-    if they land in Mimir rather than Loki they would make several of this
-    dashboard's panels (cost, tokens) redundant and cheaper as native
-    Prometheus counters instead of LogQL `unwrap`. Left as a follow-up: this
-    dashboard visualizes what is confirmed reachable *today* via Loki, not
-    the eventual best answer.
+  - Claude Code's own OTLP *metrics* signal (`claude_code.*`,
+    `OTEL_METRICS_EXPORTER=otlp` is part of this epic's own wiring) --
+    checked directly in Mimir (every `__name__` value, substring-matched)
+    and NOT found under any prefix. Whatever the `ai-cli-otel-collector`'s
+    metrics pipeline does with them, it does not appear to reach Mimir
+    today. Left unresolved rather than guessed at.
+
+## Section 4's data source is a DIFFERENT collector than Sections 1-3
+
+Checked in Mimir directly (`__name__` label values, substring search):
+`claude_code_*` and `codex_*` metrics do not exist under any prefix, but
+`copilot_chat_*` does, richly -- `copilot_chat_lines_of_code_count_total`
+(labels `type=added|removed`, `copilot_chat_language_id`),
+`copilot_chat_session_count_total`, `copilot_chat_tool_call_count_total`,
+`copilot_chat_chat_edit_outcome_count_total` (labels
+`copilot_chat_edit_outcome=accepted|rejected`), all with real, non-empty
+history over the last 7 days (confirmed via `query_range`, not just the
+label existing). Two `job` label values appear on every one of these,
+`copilot-chat` and `ai-cli/copilot-chat` -- almost certainly the pre-#272
+file-exporter path and the post-#272 daemon path respectively, both
+already landing in the same metric. Section 4's panels deliberately do not
+split by `job`: comparing the two paths' adoption is a real, separate
+question this dashboard does not try to answer yet.
+
+This means Section 4 is Prometheus/Mimir-backed (reusing the SAME
+`__DS_PROMETHEUS__` token and `prometheusUid` value
+`generate_dashboards.py`'s copilot-connector dashboard already uses -- no
+new datasource UID to confirm), while Sections 1-3 are Loki-backed. Two
+different backends in one dashboard because that is genuinely where each
+client's data actually lives today, not a stylistic choice.
 
 Usage:
     python3 scripts/generate_ai_cli_dashboard.py           # regenerate the file
@@ -102,6 +125,13 @@ OUTPUT_PATH = REPO_ROOT / "charts" / "lightbridge-governance" / "dashboards" / "
 LOKI_TYPE = "loki"
 LOKI_UID = "__DS_LOKI__"
 LOKI_DS = {"type": LOKI_TYPE, "uid": LOKI_UID}
+
+# Section 4 only -- see the module docstring's "different collector" note.
+# Same token generate_dashboards.py's copilot-connector dashboard already
+# uses; substituted from the same values.yaml `prometheusUid`.
+PROM_TYPE = "prometheus"
+PROM_UID = "__DS_PROMETHEUS__"
+PROM_DS = {"type": PROM_TYPE, "uid": PROM_UID}
 
 # The one job value confirmed to carry the `claude_code.*` event shape this
 # script's cost/token/tool panels parse. See the module docstring's "what is
@@ -258,6 +288,123 @@ def loki_table_panel(
                 "expr": expr,
                 "queryType": "instant",
                 "instant": True,
+                "format": "table",
+                "refId": "A",
+            }
+        ],
+        "transformations": [
+            {"id": "organize", "options": {"excludeByName": {"Time": True}}},
+        ],
+    }
+
+
+def prom_timeseries_panel(
+    ids: Ids,
+    *,
+    title: str,
+    description: str,
+    expr: str,
+    legend: str,
+    unit: str,
+    grid: dict[str, int],
+) -> dict[str, Any]:
+    """Section 4 only -- mirrors generate_dashboards.py's own
+    `prom_timeseries_panel` exactly (same shape, `PROM_DS` in place of
+    that script's own datasource constant)."""
+    return {
+        "id": ids.take(),
+        "type": "timeseries",
+        "title": title,
+        "description": description,
+        "datasource": PROM_DS,
+        "gridPos": grid,
+        "fieldConfig": {
+            "defaults": {"unit": unit, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": None}]}},
+            "overrides": [],
+        },
+        "options": {
+            "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "sum"]},
+            "tooltip": {"mode": "multi"},
+        },
+        "targets": [
+            {
+                "datasource": PROM_DS,
+                "expr": expr,
+                "instant": False,
+                "range": True,
+                "legendFormat": legend,
+                "refId": "A",
+            }
+        ],
+    }
+
+
+def prom_stat_panel(
+    ids: Ids,
+    *,
+    title: str,
+    description: str,
+    expr: str,
+    unit: str,
+    grid: dict[str, int],
+    mappings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {"unit": unit, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": None}]}}
+    if mappings:
+        defaults["mappings"] = mappings
+    return {
+        "id": ids.take(),
+        "type": "stat",
+        "title": title,
+        "description": description,
+        "datasource": PROM_DS,
+        "gridPos": grid,
+        "fieldConfig": {"defaults": defaults, "overrides": []},
+        "options": {
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+        },
+        "targets": [
+            {
+                "datasource": PROM_DS,
+                "expr": expr,
+                "instant": True,
+                "range": False,
+                "legendFormat": "__auto",
+                "refId": "A",
+            }
+        ],
+    }
+
+
+def prom_table_panel(
+    ids: Ids,
+    *,
+    title: str,
+    description: str,
+    expr: str,
+    grid: dict[str, int],
+    unit: str = "short",
+) -> dict[str, Any]:
+    return {
+        "id": ids.take(),
+        "type": "table",
+        "title": title,
+        "description": description,
+        "datasource": PROM_DS,
+        "gridPos": grid,
+        "fieldConfig": {"defaults": {"unit": unit}, "overrides": []},
+        "options": {"showHeader": True, "cellHeight": "sm"},
+        "targets": [
+            {
+                "datasource": PROM_DS,
+                "expr": expr,
+                "instant": True,
+                "range": False,
                 "format": "table",
                 "refId": "A",
             }
@@ -523,15 +670,129 @@ def build_dashboard() -> dict[str, Any]:
     )
     y += 8
 
+    # ---------------------------------------------------------------
+    # Section 4 -- Code changes, VS Code Copilot Chat. A DIFFERENT
+    # collector/backend than Sections 1-3 -- see the module docstring's
+    # "different collector" note for why, and for what `job=copilot-chat`
+    # vs `job=ai-cli/copilot-chat` most likely means.
+    # ---------------------------------------------------------------
+    panels.append(row(ids, "Code changes -- VS Code Copilot Chat (Mimir)", y))
+    y += 1
+
+    panels.append(
+        prom_timeseries_panel(
+            ids,
+            title="Lines added / removed, by language",
+            description=(
+                "sum by (copilot_chat_language_id, type) "
+                "(increase(copilot_chat_lines_of_code_count_total[$__interval])). "
+                "Confirmed live in Mimir with real, non-empty history over the last 7 "
+                "days -- languages seen: just, rust, yaml, shellscript. Not filtered by "
+                "`job`: both copilot-chat (pre-#272 file exporter) and ai-cli/copilot-chat "
+                "(post-#272 daemon) already report the same metric, and comparing the two "
+                "paths' adoption is a separate question this panel does not answer."
+            ),
+            expr=(
+                "sum by (copilot_chat_language_id, type) "
+                "(increase(copilot_chat_lines_of_code_count_total[$__interval]))"
+            ),
+            legend="{{copilot_chat_language_id}} ({{type}})",
+            unit="short",
+            grid={"h": 8, "w": 16, "x": 0, "y": y},
+        )
+    )
+    panels.append(
+        prom_stat_panel(
+            ids,
+            title="Net lines (7d)",
+            description=(
+                "sum(increase(...{type=\"added\"}[7d])) - sum(increase(...{type=\"removed\"}"
+                "[7d])). A single top-line answer to 'is the agent writing code, on net' -- "
+                "the same question 'lines of code the agents are writing' asks, reduced to "
+                "one number."
+            ),
+            expr=(
+                'sum(increase(copilot_chat_lines_of_code_count_total{type="added"}[7d])) - '
+                'sum(increase(copilot_chat_lines_of_code_count_total{type="removed"}[7d]))'
+            ),
+            unit="short",
+            grid={"h": 8, "w": 8, "x": 16, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    y += 8
+
+    panels.append(
+        prom_table_panel(
+            ids,
+            title="Lines added by language (7d)",
+            description=(
+                "topk(10, sum by (copilot_chat_language_id) (increase(...{type=\"added\"}"
+                "[7d]))), as an instant snapshot table."
+            ),
+            expr=(
+                "topk(10, sum by (copilot_chat_language_id) "
+                '(increase(copilot_chat_lines_of_code_count_total{type="added"}[7d])))'
+            ),
+            unit="short",
+            grid={"h": 8, "w": 8, "x": 0, "y": y},
+        )
+    )
+    panels.append(
+        prom_stat_panel(
+            ids,
+            title="Sessions (7d)",
+            description="sum(increase(copilot_chat_session_count_total[7d])).",
+            expr="sum(increase(copilot_chat_session_count_total[7d]))",
+            unit="none",
+            grid={"h": 8, "w": 4, "x": 8, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        prom_stat_panel(
+            ids,
+            title="Tool calls (7d)",
+            description="sum(increase(copilot_chat_tool_call_count_total[7d])).",
+            expr="sum(increase(copilot_chat_tool_call_count_total[7d]))",
+            unit="none",
+            grid={"h": 8, "w": 4, "x": 12, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        prom_stat_panel(
+            ids,
+            title="Edit acceptance rate (7d)",
+            description=(
+                "accepted / (accepted + rejected), from "
+                "copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=...}. "
+                "A dropping rate is the signal worth a human's attention -- the same "
+                "'is what the agent proposes actually good' question Section 3's tool-decision "
+                "accept/reject panel asks for Claude Code's own tool calls."
+            ),
+            expr=(
+                'sum(increase(copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome="accepted"}[7d])) '
+                "/ "
+                "sum(increase(copilot_chat_chat_edit_outcome_count_total[7d]))"
+            ),
+            unit="percentunit",
+            grid={"h": 8, "w": 8, "x": 16, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    y += 8
+
     dashboard: dict[str, Any] = {
         "id": None,
         "uid": "governance-ai-cli-telemetry",
         "title": "AI CLI telemetry",
         "description": (
-            "Volume, cost, tokens and tool activity for Claude Code / Codex / VS Code "
-            "Copilot, sourced from the loopback daemon's forwarded OTLP -> Grafana Loki "
-            "(issue #268/#269/#270/#271/#272). Generated by "
-            "scripts/generate_ai_cli_dashboard.py -- do not hand-edit; regenerate instead."
+            "Volume, cost, tokens, tool activity and lines of code for Claude Code / Codex / "
+            "VS Code Copilot, sourced from the loopback daemon's forwarded OTLP -- Loki for "
+            "Sections 1-3, Mimir for Section 4's Copilot Chat code-change metrics (issue "
+            "#268/#269/#270/#271/#272). Generated by scripts/generate_ai_cli_dashboard.py -- "
+            "do not hand-edit; regenerate instead."
         ),
         "tags": ["governance", "ai-cli"],
         "style": "dark",
@@ -541,7 +802,12 @@ def build_dashboard() -> dict[str, Any]:
         "schemaVersion": 39,
         "version": 1,
         "refresh": "1m",
-        "time": {"from": "now-24h", "to": "now"},
+        # 7d, not 24h: Section 4's copilot_chat_* metrics are genuinely sparse
+        # (points hours to days apart in the confirmed live query), so a 24h
+        # window would render several of its panels emptier than the data
+        # actually is. Sections 1-3's Loki data (much higher volume) reads
+        # fine over 7d too -- the window is chosen for the sparser source.
+        "time": {"from": "now-7d", "to": "now"},
         "timepicker": {},
         "templating": {"list": []},
         "annotations": {"list": []},
