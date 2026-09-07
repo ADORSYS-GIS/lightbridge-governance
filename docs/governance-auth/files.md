@@ -391,6 +391,7 @@ Keys owned, in the `env` block and at the root:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-endpoint` set | `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` set | the collector base |
 | `OTEL_RESOURCE_ATTRIBUTES` | `--otel-endpoint` set | `service.namespace=ai-cli,user.email=…,user.id=…,user.name=…` |
+| `OTEL_METRICS_INCLUDE_ENTRYPOINT` | `--otel-endpoint` set | `1` |
 | `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | helper in use | the debounce value |
 | `OTEL_EXPORTER_OTLP_HEADERS` | **only** when no helper | `Authorization=Bearer …` |
 
@@ -574,3 +575,12 @@ trade.
 
 Attributes are rendered from a sorted map so the output is deterministic. An unstable
 ordering would make every `login` rewrite the config with a spurious diff.
+
+⚠️ **`app.entrypoint` is separate from all of the above**, and this binary does not construct
+it — `OTEL_METRICS_INCLUDE_ENTRYPOINT=1` only turns on an attribute Claude Code adds itself
+(off by default; see its own docs at
+[code.claude.com/docs/en/monitoring-usage](https://code.claude.com/docs/en/monitoring-usage)).
+Confirmed live to be the documented way to tell an interactive `cli` session apart from an
+Agent-SDK-driven one (`sdk-cli`/`sdk-ts`/`sdk-py`) or a VS Code/Cursor integration
+(`claude-vscode`) — without this flag, real traffic through this org's own collector carried
+no such distinction at all.

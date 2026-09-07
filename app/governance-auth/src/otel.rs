@@ -617,9 +617,8 @@ pub fn configure_claude_code(home: &Path, settings: &OtelSettings) -> Result<Out
     Ok(Outcome::Written(path))
 }
 
-/// The exact `env` entries this module owns in `settings.json`. Split out so
-/// the test can assert the full set without re-deriving it, and so the
-/// "which keys do we touch" question has one answer.
+/// The exact `env` entries this module owns in `settings.json` -- so "which
+/// keys do we touch" has one answer, and the test can assert the full set.
 pub(crate) fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, String)> {
     let mut entries = vec![
         // `apiKeyHelper` output is cached for FIVE MINUTES by default -- the
@@ -655,10 +654,9 @@ pub(crate) fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, Str
 
     // Everything below is genuinely telemetry-only: without an OTEL endpoint
     // there is no collector to export to, so none of these keys should be
-    // written -- that's the other half of the bug this module fixes (the
-    // first half was `apply_telemetry` bailing out before even reaching
-    // here; this half is `settings.endpoint` no longer being a `String` that
-    // could silently be anything when the caller has none).
+    // written -- the other half of the bug this module fixes (the first half
+    // was `apply_telemetry` bailing out before reaching here; this half is
+    // `settings.endpoint` no longer silently being any `String` when absent).
     let Some(endpoint) = &settings.endpoint else {
         return entries;
     };
@@ -672,6 +670,8 @@ pub(crate) fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, Str
         "OTEL_RESOURCE_ATTRIBUTES",
         settings.resource_attributes_value(),
     ));
+    // Off by default in Claude Code -- see files.md's "Resource attributes".
+    entries.push(("OTEL_METRICS_INCLUDE_ENTRYPOINT", "1".to_owned()));
 
     match (&settings.headers_helper, settings.headers_value()) {
         // The helper wins outright when present: a stale static header

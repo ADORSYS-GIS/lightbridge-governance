@@ -170,7 +170,7 @@
       "id": 4,
       "type": "stat",
       "title": "Distinct users active (24h)",
-      "description": "count(count by (attributes_user_email) (count_over_time({job=\"ai-cli/claude-code-desktop\"} | json [24h]))). Scoped to Claude Code's own event shape (attributes.user.email) -- see the module docstring's confirmed-field list.",
+      "description": "count(count by (attributes_user_email) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} | json [24h]))). Scoped to Claude Code's own event shape (attributes.user.email) -- see the module docstring's confirmed-field list.",
       "datasource": {
         "type": "loki",
         "uid": "__DS_LOKI__"
@@ -229,7 +229,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "count(count by (attributes_user_email) (count_over_time({job=\"ai-cli/claude-code-desktop\"} | json [24h])))",
+          "expr": "count(count by (attributes_user_email) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} | json [24h])))",
           "queryType": "range",
           "legendFormat": "__auto",
           "refId": "A"
@@ -238,6 +238,55 @@
     },
     {
       "id": 5,
+      "type": "table",
+      "title": "Sessions by entrypoint (7d) -- CLI vs Agent SDK vs VS Code",
+      "description": "sum by (attributes_app_entrypoint) (count_over_time({...} | json [7d])). Answers 'was this a human typing at a terminal (cli), an Agent-SDK-driven run (sdk-cli/sdk-ts/sdk-py), or the VS Code/Cursor integration (claude-vscode)' -- app.entrypoint, which Claude Code's own docs (code.claude.com/docs/en/monitoring-usage) name as the attribute for exactly this. NOT YET POPULATED as of this panel shipping: the attribute is off by default in Claude Code itself, and this daemon only started turning it on (OTEL_METRICS_INCLUDE_ENTRYPOINT=1 in otel.rs) in the same change that added this panel -- it appears once a developer re-runs `configure` and restarts Claude Code, the same restart rule as every other settings.json env change. A table panel's own built-in empty state ('No data') is what shows until then, which is the honest reading -- nothing special had to be configured to get it.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "sum by (attributes_app_entrypoint) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} | json [7d]))",
+          "queryType": "instant",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
       "type": "row",
       "title": "Cost & tokens -- Claude Code (claude_code.api_request)",
       "collapsed": false,
@@ -245,12 +294,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 17
       },
       "panels": []
     },
     {
-      "id": 6,
+      "id": 7,
       "type": "timeseries",
       "title": "Cost, by model",
       "description": "sum by (attributes_model) (sum_over_time({...} |= \"api_request\" | json | unwrap attributes_cost_usd [$__interval])). attributes_cost_usd is the same field Claude Code's own cost accounting derives from -- confirmed live returning real per-request USD values (low single digits per 5-minute window under Opus 5 at the time this was checked).",
@@ -262,7 +311,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -298,7 +347,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum by (attributes_model) (sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [$__interval]))",
+          "expr": "sum by (attributes_model) (sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [$__interval]))",
           "queryType": "range",
           "legendFormat": "{{attributes_model}}",
           "refId": "A"
@@ -306,7 +355,7 @@
       ]
     },
     {
-      "id": 7,
+      "id": 8,
       "type": "stat",
       "title": "Total cost (24h)",
       "description": "sum(sum_over_time({...} |= \"api_request\" | json | unwrap attributes_cost_usd [24h])).",
@@ -318,7 +367,7 @@
         "h": 8,
         "w": 4,
         "x": 12,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -368,7 +417,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum(sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [24h]))",
+          "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [24h]))",
           "queryType": "range",
           "legendFormat": "__auto",
           "refId": "A"
@@ -376,7 +425,7 @@
       ]
     },
     {
-      "id": 8,
+      "id": 9,
       "type": "table",
       "title": "Cost by user (24h)",
       "description": "topk(10, sum by (attributes_user_email) (sum_over_time({...} | json | unwrap attributes_cost_usd [24h]))), as an instant snapshot table. Mirrors copilot-connector's own 'Cost per active user' panel for the Copilot seat data -- same question, this epic's data source.",
@@ -388,7 +437,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -406,7 +455,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "topk(10, sum by (attributes_user_email) (sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [24h])))",
+          "expr": "topk(10, sum by (attributes_user_email) (sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [24h])))",
           "queryType": "instant",
           "instant": true,
           "format": "table",
@@ -425,7 +474,7 @@
       ]
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "timeseries",
       "title": "Tokens, by kind",
       "description": "input/output/cache-creation/cache-read tokens, each sum_over_time(... | json | unwrap attributes_<kind>_tokens [$__interval]). All four fields confirmed live against real claude_code.api_request lines.",
@@ -437,7 +486,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 26
       },
       "fieldConfig": {
         "defaults": {
@@ -473,7 +522,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum(sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_input_tokens [$__interval]))",
+          "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_input_tokens [$__interval]))",
           "queryType": "range",
           "legendFormat": "input",
           "refId": "A"
@@ -483,7 +532,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum(sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_output_tokens [$__interval]))",
+          "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_output_tokens [$__interval]))",
           "queryType": "range",
           "legendFormat": "output",
           "refId": "B"
@@ -493,7 +542,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum(sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cache_creation_tokens [$__interval]))",
+          "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cache_creation_tokens [$__interval]))",
           "queryType": "range",
           "legendFormat": "cache creation",
           "refId": "C"
@@ -503,7 +552,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum(sum_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cache_read_tokens [$__interval]))",
+          "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cache_read_tokens [$__interval]))",
           "queryType": "range",
           "legendFormat": "cache read",
           "refId": "D"
@@ -511,7 +560,7 @@
       ]
     },
     {
-      "id": 10,
+      "id": 11,
       "type": "timeseries",
       "title": "API request latency (avg duration_ms)",
       "description": "avg_over_time({...} |= \"api_request\" | json | unwrap attributes_duration_ms [$__interval]). The request-level latency Claude Code itself measured, not this daemon's own forwarding time.",
@@ -523,7 +572,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 18
+        "y": 26
       },
       "fieldConfig": {
         "defaults": {
@@ -559,7 +608,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "avg(avg_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_duration_ms [$__interval]))",
+          "expr": "avg(avg_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_duration_ms [$__interval]))",
           "queryType": "range",
           "legendFormat": "avg duration",
           "refId": "A"
@@ -567,7 +616,7 @@
       ]
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "row",
       "title": "Tool activity -- Claude Code (claude_code.tool_decision)",
       "collapsed": false,
@@ -575,12 +624,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "panels": []
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "timeseries",
       "title": "Tool decisions, accept vs reject",
       "description": "sum by (attributes_decision) (count_over_time({...} |= \"tool_decision\" | json [$__interval])). A rising reject share is the signal worth alerting a human to look at, independent of raw volume.",
@@ -592,7 +641,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 27
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -628,7 +677,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum by (attributes_decision) (count_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"tool_decision\" | json [$__interval]))",
+          "expr": "sum by (attributes_decision) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"tool_decision\" | json [$__interval]))",
           "queryType": "range",
           "legendFormat": "{{attributes_decision}}",
           "refId": "A"
@@ -636,7 +685,7 @@
       ]
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "table",
       "title": "Top tools (24h)",
       "description": "topk(10, sum by (attributes_tool_name) (count_over_time({...} |= \"tool_decision\" | json [24h]))). attributes_tool_name confirmed live (e.g. \"Bash\").",
@@ -648,7 +697,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 27
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -666,7 +715,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "topk(10, sum by (attributes_tool_name) (count_over_time({job=\"ai-cli/claude-code-desktop\"} |= \"tool_decision\" | json [24h])))",
+          "expr": "topk(10, sum by (attributes_tool_name) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"tool_decision\" | json [24h])))",
           "queryType": "instant",
           "instant": true,
           "format": "table",
@@ -685,7 +734,7 @@
       ]
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "row",
       "title": "Code changes -- VS Code Copilot Chat (Mimir)",
       "collapsed": false,
@@ -693,12 +742,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 43
       },
       "panels": []
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "timeseries",
       "title": "Lines added / removed, by language",
       "description": "sum by (copilot_chat_language_id, type) (increase(copilot_chat_lines_of_code_count_total[$__interval])). Confirmed live in Mimir with real, non-empty history over the last 7 days -- languages seen: just, rust, yaml, shellscript. Not filtered by `job`: both copilot-chat (pre-#272 file exporter) and ai-cli/copilot-chat (post-#272 daemon) already report the same metric, and comparing the two paths' adoption is a separate question this panel does not answer.",
@@ -710,7 +759,7 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -755,7 +804,7 @@
       ]
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "stat",
       "title": "Net lines (7d)",
       "description": "sum(increase(...{type=\"added\"}[7d])) - sum(increase(...{type=\"removed\"}[7d])). A single top-line answer to 'is the agent writing code, on net' -- the same question 'lines of code the agents are writing' asks, reduced to one number.",
@@ -767,7 +816,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 36
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -826,7 +875,7 @@
       ]
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "table",
       "title": "Lines added by language (7d)",
       "description": "topk(10, sum by (copilot_chat_language_id) (increase(...{type=\"added\"}[7d]))), as an instant snapshot table.",
@@ -838,7 +887,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -875,7 +924,7 @@
       ]
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "stat",
       "title": "Sessions (7d)",
       "description": "sum(increase(copilot_chat_session_count_total[7d])).",
@@ -887,7 +936,7 @@
         "h": 8,
         "w": 4,
         "x": 8,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -946,7 +995,7 @@
       ]
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "stat",
       "title": "Tool calls (7d)",
       "description": "sum(increase(copilot_chat_tool_call_count_total[7d])).",
@@ -958,7 +1007,7 @@
         "h": 8,
         "w": 4,
         "x": 12,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {
@@ -1017,7 +1066,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "stat",
       "title": "Edit acceptance rate (7d)",
       "description": "accepted / (accepted + rejected), from copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=...}. A dropping rate is the signal worth a human's attention -- the same 'is what the agent proposes actually good' question Section 3's tool-decision accept/reject panel asks for Claude Code's own tool calls.",
@@ -1029,7 +1078,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 52
       },
       "fieldConfig": {
         "defaults": {

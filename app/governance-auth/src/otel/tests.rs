@@ -1,8 +1,7 @@
 //! Tests for [`super`]. Split into its own file (review, #302) rather than
-//! raising `otel.rs`'s already-grandfathered LoC ceiling for this PR's own
-//! new test content -- the same move `telemetry_wiring.rs` and
-//! `vscode/tests.rs` made in this same PR, applied to the whole `mod tests`
-//! block since none of it lived in its own file yet.
+//! raising `otel.rs`'s already-grandfathered LoC ceiling -- the same move
+//! `telemetry_wiring.rs`/`vscode/tests.rs` made, applied to the whole
+//! `mod tests` block since none of it lived in its own file yet.
 
 use super::*;
 use crate::optout::ClientOptOut;
@@ -307,6 +306,8 @@ fn claude_code_env_carries_every_key_the_docs_require() {
         env.get("OTEL_EXPORTER_OTLP_HEADERS"),
         Some(&"Authorization=Bearer ingest-token".to_owned())
     );
+    let entrypoint = env.get("OTEL_METRICS_INCLUDE_ENTRYPOINT");
+    assert_eq!(entrypoint, Some(&"1".to_owned()));
 }
 
 #[test]
@@ -831,6 +832,7 @@ fn gateway_only_writes_claude_code_inference_keys_with_no_telemetry_keys() {
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_METRICS_INCLUDE_ENTRYPOINT",
     ] {
         assert!(
             value["env"].get(key).is_none(),
