@@ -28,16 +28,31 @@ between backends.
 
 Every LogQL expression below was run against the live `loki-gateway` in the
 `observability` namespace (not guessed from documentation) before being
-written here, against real traffic this session generated (this machine's
-own `governance-auth` daemon, live, plus other developers' real Claude Code
-sessions sharing the same collector). What was directly confirmed:
+written here, against real traffic (this org's real developers' real Claude
+Code sessions, sharing the same collector). What was directly confirmed:
 
   - `job`/`service_name` labels: `ai-cli/claude-code-desktop`,
     `claude-code-desktop`, `opencode` all appear; Codex did not emit real
-    traffic in this session, so no Codex-specific job value is confirmed --
-    the volume panel's `job=~".+"` is deliberately unfiltered so a Codex (or
-    Copilot, once #272's otlp-http path sees real VS Code traffic) job value
-    shows up the moment one exists, with no dashboard edit required.
+    traffic during this investigation, so no Codex-specific job value is
+    confirmed -- the volume panel's `job=~".+"` is deliberately unfiltered so
+    a Codex (or Copilot, once #272's otlp-http path sees real VS Code
+    traffic) job value shows up the moment one exists, with no dashboard
+    edit required.
+  - ⚠️ **`ai-cli/claude-code-desktop` is NOT "the daemon path" and bare
+    `claude-code-desktop` is NOT "some other path" -- both carry real
+    developers' real usage, and which one a given developer's traffic lands
+    under is NOT proof of whether their own machine is daemon-routed.** This
+    was checked wrong in an earlier revision: a developer's own session (a
+    real, live Claude Code CLI process, `session.id` confirmed byte-for-byte
+    against `~/.claude.json`) showed up under bare `claude-code-desktop`,
+    with no `governance-auth` identity stamp on it at all (`resources` had
+    no `service.namespace`/`user.*`) -- while a DIFFERENT real developer's
+    traffic, genuinely daemon-stamped (`resources.service.namespace=ai-cli`
+    plus `resources.user.*`), landed under `ai-cli/claude-code-desktop`.
+    Scoping Sections 1-3 to only the "ai-cli/"-prefixed job silently
+    excluded the first developer's entire real usage from every panel here
+    -- not a rendering bug, a filter that was too narrow for what it claimed
+    to show. [`CLAUDE_CODE_JOB`] now matches both.
   - Loki's `json` parser flattens nested keys with `_`, confirmed live:
     `attributes.cost_usd` -> `attributes_cost_usd`, `attributes.user.email`
     (itself a dotted key inside the JSON) -> `attributes_user_email`.
@@ -50,13 +65,33 @@ sessions sharing the same collector). What was directly confirmed:
     values (e.g. real `cost_usd` in the low single-digit USD range per
     5-minute window, matching Claude Opus 5 pricing).
   - These fields are confirmed for `claude_code.api_request` / `.tool_decision`
-    events on the `ai-cli/claude-code-desktop` job specifically. `opencode`'s
-    own event shape was NOT inspected -- this dashboard's cost/token/tool
-    panels are scoped to `job="ai-cli/claude-code-desktop"` deliberately,
-    not because other clients don't matter, but because asserting a field
-    name for a shape nobody looked at is exactly the guessing this docstring
-    is trying to avoid. Extend once a real payload from another client has
-    been inspected the same way.
+    events on both `claude-code-desktop` job values. `opencode`'s own event
+    shape was NOT inspected -- this dashboard's cost/token/tool panels stay
+    scoped to [`CLAUDE_CODE_JOB`] deliberately, not because other clients
+    don't matter, but because asserting a field name for a shape nobody
+    looked at is exactly the guessing this docstring is trying to avoid.
+    Extend once a real payload from another client has been inspected the
+    same way.
+
+## `app.entrypoint` -- CLI vs Agent SDK vs VS Code, not yet populated
+
+Asked directly: can a CLI-typed session be told apart from an Agent-SDK-
+driven one (what generated this very investigation) or a VS Code/Cursor
+integration? Checked Anthropic's own docs
+(code.claude.com/docs/en/monitoring-usage): `app.entrypoint` is documented
+as "the primary distinguishing attribute" for exactly this, values `cli` /
+`sdk-cli` / `sdk-ts` / `sdk-py` / `claude-vscode` -- but it is gated behind
+`OTEL_METRICS_INCLUDE_ENTRYPOINT` (default `false`), confirmed live: 500
+real sampled events carried `agent.name`/`query_source` but not one carried
+`app.entrypoint`, because nothing turned the flag on. Fixed at the source in
+the same change that widened `CLAUDE_CODE_JOB` above --
+`otel.rs::claude_code_env` now sets `OTEL_METRICS_INCLUDE_ENTRYPOINT=1`, so
+`attributes_app_entrypoint` will start appearing once a developer re-runs
+`configure` and restarts Claude Code (the same "restart required" rule as
+every other `settings.json` env change this binary writes). The panel below
+reads it now, with the same `NO_DATA_MAPPING` every other panel here uses,
+so it renders honestly (a labeled "no data", not a misleading blank) until
+that rollout has actually happened.
 
 ## What is NOT confirmed, unlike the panels above
 
@@ -133,10 +168,21 @@ PROM_TYPE = "prometheus"
 PROM_UID = "__DS_PROMETHEUS__"
 PROM_DS = {"type": PROM_TYPE, "uid": PROM_UID}
 
-# The one job value confirmed to carry the `claude_code.*` event shape this
-# script's cost/token/tool panels parse. See the module docstring's "what is
-# NOT confirmed" section for why this is not widened to `job=~".+"`.
-CLAUDE_CODE_JOB = 'job="ai-cli/claude-code-desktop"'
+# BOTH job values confirmed to carry the `claude_code.*` event shape this
+# script's cost/token/tool panels parse -- `ai-cli/claude-code-desktop`
+# (identity-stamped, went through a governance-auth daemon: `resources`
+# carries `service.namespace=ai-cli` + `user.*`) AND bare
+# `claude-code-desktop` (no such stamp -- reaches the collector some other
+# way, e.g. a client whose Claude Code process predates its own
+# `governance-auth configure` run, or was never pointed at the daemon at
+# all). Originally scoped to the daemon-stamped value alone; widened after
+# review found that excluded a real developer's own real traffic entirely
+# (their session reported under the bare job, not the "ai-cli/"-prefixed
+# one) -- confirmed live, not assumed. See the module docstring's "what is
+# NOT confirmed" section for why this is still not widened to `job=~".+"`
+# (that would also catch opencode, envoy, etc., which do not share this
+# event shape).
+CLAUDE_CODE_JOB = 'job=~"claude-code-desktop|ai-cli/claude-code-desktop"'
 
 # Same convention as generate_dashboards.py: an empty panel must read as
 # visibly "no data", never as a legitimate zero.
@@ -484,6 +530,36 @@ def build_dashboard() -> dict[str, Any]:
             grid={"h": 8, "w": 4, "x": 20, "y": y},
             mappings=[NO_DATA_MAPPING],
             reduce_calc="lastNotNull",
+        )
+    )
+    y += 8
+
+    panels.append(
+        loki_table_panel(
+            ids,
+            title="Sessions by entrypoint (7d) -- CLI vs Agent SDK vs VS Code",
+            description=(
+                "sum by (attributes_app_entrypoint) (count_over_time({...} | json [7d])). "
+                "Answers 'was this a human typing at a terminal (cli), an Agent-SDK-driven "
+                "run (sdk-cli/sdk-ts/sdk-py), or the VS Code/Cursor integration "
+                "(claude-vscode)' -- app.entrypoint, which Claude Code's own docs "
+                "(code.claude.com/docs/en/monitoring-usage) name as the attribute for "
+                "exactly this. NOT YET POPULATED as of this panel shipping: the attribute "
+                "is off by default in Claude Code itself, and this daemon only started "
+                "turning it on (OTEL_METRICS_INCLUDE_ENTRYPOINT=1 in otel.rs) in the same "
+                "change that added this panel -- it appears once a developer re-runs "
+                "`configure` and restarts Claude Code, the same restart rule as every other "
+                "settings.json env change. A table panel's own built-in empty state ('No "
+                "data') is what shows until then, which is the honest reading -- nothing "
+                "special had to be configured to get it."
+            ),
+            expr=(
+                "sum by (attributes_app_entrypoint) (count_over_time({"
+                + CLAUDE_CODE_JOB
+                + "} | json [7d]))"
+            ),
+            unit="none",
+            grid={"h": 8, "w": 24, "x": 0, "y": y},
         )
     )
     y += 8
