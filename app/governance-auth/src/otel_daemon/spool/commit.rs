@@ -124,6 +124,20 @@ impl DurableSpool {
         }
         file.set_len(0)
             .with_context(|| format!("truncating {}", self.spool_path.display()))?;
+        // `fsync` the truncate itself, not just the checkpoint reset below
+        // (human review, #269/#299): without this, a crash between the
+        // checkpoint's durable `{offset: 0}` landing and the truncate's own
+        // flush can revert the file to its full pre-truncation size on
+        // reboot while the checkpoint still says "start at byte 0" --
+        // re-offering every record above `RECLAIM_ABOVE` as a duplicate
+        // burst, not the single record adjacent to a kill this module's
+        // torn-write paragraph promises as the worst case.
+        file.sync_all().with_context(|| {
+            format!(
+                "syncing the truncated {} to disk",
+                self.spool_path.display()
+            )
+        })?;
         self.checkpoint.restart();
         // `None`, not a freshly-computed identity of the (now empty) file:
         // `identity::restart`'s "unknown is not a mismatch" rule already
