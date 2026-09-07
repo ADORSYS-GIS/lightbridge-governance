@@ -230,8 +230,18 @@ def loki_stat_panel(
     unit: str,
     grid: dict[str, int],
     mappings: list[dict[str, Any]] | None = None,
-    reduce_calc: str = "sum",
+    reduce_calc: str = "lastNotNull",
 ) -> dict[str, Any]:
+    """⚠️ `reduce_calc` default is `lastNotNull`, not `sum` (review finding:
+    every stat panel here embeds its OWN window in `expr` itself, e.g. a
+    literal `[24h]` bracket -- the target still runs as a **range** query
+    over the dashboard's own (now-7d) time range, so Loki returns one
+    sample per step, each ALREADY the full trailing-24h aggregate.
+    Reducing those samples with `sum` multiplies the true value by the
+    number of steps (~100-1000x on a 7d/1m-refresh dashboard), not
+    "total over 24h". `lastNotNull` reads the one number that's actually
+    correct -- the most recent already-fully-aggregated sample -- which is
+    what every current caller of this function wants."""
     return {
         "id": ids.take(),
         "type": "stat",
