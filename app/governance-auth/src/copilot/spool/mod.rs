@@ -55,7 +55,12 @@ pub const DEFAULT_FILE_NAME: &str = "copilot-otel.jsonl";
 /// now repeats the call within one wake instead, which is why raising this
 /// number is not the answer to a backlog: it would trade memory for throughput
 /// and still leave a fixed ceiling per wake.
-const MAX_READ: u64 = 8 * 1024 * 1024;
+///
+/// `pub(crate)`: `otel_daemon::spool` (#269) reuses [`drain`], and its own
+/// record-size cap must stay strictly under this one -- a single encoded
+/// line at or above `MAX_READ` makes `drain` bail permanently (the `bail!`
+/// below) -- so it references the real constant, not a guessed copy.
+pub(crate) const MAX_READ: u64 = 8 * 1024 * 1024;
 
 /// One complete record and where it starts in the file. The offset is what
 /// lets a signal that was already accepted skip the lines it delivered

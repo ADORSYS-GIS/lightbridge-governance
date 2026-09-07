@@ -116,20 +116,30 @@ async fn a_full_spool_answers_503_not_202() -> Result<()> {
 
     let daemon = Daemon::start(&harness, &collector_base, &[]).await?;
 
-    // One payload just under the 16 MiB cap: still retains.
-    let almost_full = logs_payload(&"x".repeat(16 * 1024 * 1024 - 4096));
-    let first = daemon.post("/", &almost_full).await?;
-    assert_eq!(first.as_u16(), 202, "still room, must retain");
-
-    // A second payload that cannot fit in what is left must be refused by
-    // the spool itself, and that refusal must reach the client as 503.
-    let overflow = logs_payload(&"y".repeat(8192));
-    let second = daemon.post("/", &overflow).await?;
+    // 3 MiB raw per POST: comfortably under the per-record ceiling
+    // (`otel_daemon::spool::MAX_RETAINABLE_PAYLOAD`, ~6 MiB once base64 and
+    // the JSON envelope are accounted for -- #269/#291 review, P2-5), so
+    // each one is retained on its own merits, and small enough that several
+    // are needed to reach the 16 MiB aggregate `CAPACITY`. A single POST
+    // near 16 MiB (the old fixture here) is now correctly refused at the
+    // door with 413 before it ever reaches the spool, which is P2-5's whole
+    // point -- so filling capacity now takes several POSTs, not one.
+    let chunk = "x".repeat(3 * 1024 * 1024);
+    let mut retained = 0;
+    let status = loop {
+        let status = daemon.post("/", &logs_payload(&chunk)).await?;
+        if status.as_u16() != 202 {
+            break status;
+        }
+        retained += 1;
+        assert!(retained <= 10, "capacity should have refused by now");
+    };
     assert_eq!(
-        second.as_u16(),
+        status.as_u16(),
         503,
         "a spool that could not retain the payload must not answer 202"
     );
+    assert!(retained > 0, "some room must exist below capacity");
 
     daemon.stop()?;
     Ok(())

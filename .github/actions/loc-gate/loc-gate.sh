@@ -57,6 +57,15 @@ fail=0
 # and, for renames, measure the NEW path while keeping the OLD path's
 # grandfathered ceiling — a rename is "touching", not "growing".
 while IFS=$'\t' read -r status path newpath; do
+  # Reset every iteration: `read` only ever *sets* `baseline_key` inside the
+  # `R*` arm below, so without this a rename earlier in the diff leaves it
+  # set for every later `A`/`M` file too — silently swapping their real
+  # baseline entry for the renamed file's old path (which is usually absent
+  # from the baseline, so the file falls back to the bare 200-line
+  # threshold and can fail even though it is correctly grandfathered).
+  # Measured: a rename anywhere ahead of a grandfathered, untouched-in-this-
+  # diff file's own `M` line reproduced this exact false failure.
+  baseline_key=""
   case "${status}" in
     A | M) ;; # added, modified — measure `path`
     R*) # renamed — measure the new path, keep the old path's ceiling

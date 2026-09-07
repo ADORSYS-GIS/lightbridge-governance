@@ -64,7 +64,9 @@ pub(super) async fn refused(
     };
     let key = Quarantine::key(&line.text);
     let now = offer.now;
-    let enough_wakes = offer.journal.quarantine().refused(&key, now);
+    // `0`: consecutive wakes here are already ~5 minutes apart, so every
+    // call is a genuinely separate attempt -- see `Quarantine::refused`'s doc.
+    let enough_wakes = offer.journal.quarantine().refused(&key, now, 0);
     let resolved_to = if !enough_wakes {
         None
     } else if progress.accepted > 0 {
