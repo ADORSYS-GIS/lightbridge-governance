@@ -4,6 +4,8 @@
 
 use std::{collections::HashSet, time::Duration};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use super::{TokenReviewVerifier, types::VerifyError};
 
 impl TokenReviewVerifier {
@@ -35,7 +37,7 @@ fn verify_error_display_matches_expected_tracing_fields() {
     );
     assert_eq!(VerifyError::Rejected.to_string(), "token_rejected");
     assert_eq!(
-        VerifyError::NotAllowed("default/my-sa".to_owned()).to_string(),
+        VerifyError::NotAllowed.to_string(),
         "service_account_not_allowed"
     );
 }
@@ -110,5 +112,72 @@ async fn unreachable_apiserver_is_fail_closed() {
     assert!(
         elapsed < Duration::from_secs(5),
         "must fail within the client timeout (~2s), not hang — took {elapsed:?}"
+    );
+}
+
+/// Starts a one-shot TCP stub that answers the TokenReview POST with a canned
+/// JSON body, and returns the base URL to point a verifier at. Uses plain
+/// `http://` so no TLS is involved; the verifier only adds the in-cluster CA
+/// when the file exists, which it never does in tests.
+async fn token_review_stub(body: &'static str) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut buf = [0u8; 4096];
+        let _ = socket.read(&mut buf).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+    format!("http://{addr}")
+}
+
+/// ADR-0017 AC 3: a token that authenticates but whose ServiceAccount is not
+/// in the allowlist must be refused. This exercises the REAL `verify()`
+/// parsing/allowlist code (not the `always_accept` bypass) by pointing the
+/// verifier at a local stub that returns an `authenticated: true` response
+/// for a non-allowlisted username.
+#[tokio::test]
+async fn non_allowlisted_identity_is_rejected_by_the_real_verify_path() {
+    let body = r#"{"status":{"authenticated":true,"audiences":["api"],"user":{"username":"system:serviceaccount:default:not-allowed"}}}"#;
+    let base = token_review_stub(body).await;
+    let verifier = TokenReviewVerifier::new(
+        base,
+        vec!["api".to_owned()],
+        HashSet::from(["default/allowed".to_owned()]),
+    )
+    .expect("client construction should succeed");
+
+    let result = verifier.verify("some.jwt.token").await;
+    assert!(
+        matches!(result, Err(VerifyError::NotAllowed)),
+        "expected NotAllowed, got {result:?}"
+    );
+}
+
+/// ADR-0017: an `authenticated: true` response that does not confirm the
+/// requested audience (empty `status.audiences`) must be refused — the
+/// apiserver was not audience-aware, so the audience pin is unenforced.
+#[tokio::test]
+async fn missing_audience_confirmation_is_rejected() {
+    let body = r#"{"status":{"authenticated":true,"user":{"username":"system:serviceaccount:default/allowed"}}}"#;
+    let base = token_review_stub(body).await;
+    let verifier = TokenReviewVerifier::new(
+        base,
+        vec!["api".to_owned()],
+        HashSet::from(["default/allowed".to_owned()]),
+    )
+    .expect("client construction should succeed");
+
+    let result = verifier.verify("some.jwt.token").await;
+    assert!(
+        matches!(result, Err(VerifyError::Rejected)),
+        "expected Rejected (audience not confirmed), got {result:?}"
     );
 }

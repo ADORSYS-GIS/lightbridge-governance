@@ -154,11 +154,18 @@ fn parse_allowed_accounts(raw: &str) -> Result<HashSet<String>, String> {
         if entry.is_empty() {
             continue;
         }
-        if !entry.contains('/') {
+        let Some((namespace, name)) = entry.split_once('/') else {
             return Err(format!(
                 "ALLOWED_SERVICE_ACCOUNTS entry \"{entry}\" is not in \
                  namespace/name format (e.g. \"authorino/authorino\"). \
                  Every entry must contain a `/` separator."
+            ));
+        };
+        if namespace.is_empty() || name.is_empty() {
+            return Err(format!(
+                "ALLOWED_SERVICE_ACCOUNTS entry \"{entry}\" has an empty \
+                 namespace or name. Every entry must be in \
+                 namespace/name format (e.g. \"authorino/authorino\")."
             ));
         }
         accounts.insert(entry.to_owned());

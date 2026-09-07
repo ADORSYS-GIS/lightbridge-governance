@@ -24,6 +24,14 @@ pub struct TokenReviewRequest {
 #[derive(Debug, Deserialize)]
 pub struct TokenReviewStatus {
     pub authenticated: bool,
+    /// The audiences the responding authenticator validated the token
+    /// against. Per the Kubernetes API's own doc comment on
+    /// `TokenReviewStatus.Audiences`, a client that sets `spec.audiences`
+    /// must confirm a compatible audience is returned here; an empty list
+    /// means the server was not audience-aware, which we treat as a
+    /// rejection (fail closed).
+    #[serde(default)]
+    pub audiences: Vec<String>,
     #[serde(default)]
     pub user: Option<TokenReviewUser>,
 }
@@ -48,11 +56,9 @@ pub enum VerifyError {
     /// The token was not authenticated (expired, malformed, wrong audience).
     Rejected,
     /// The token authenticated but the ServiceAccount is not in the allowlist.
-    #[allow(
-        dead_code,
-        reason = "consumed by Display + tracing, invisible to rustc dead-code analysis"
-    )]
-    NotAllowed(String),
+    /// The offending username is logged at the rejection point in `verify()`,
+    /// so no payload is carried here.
+    NotAllowed,
 }
 
 impl std::fmt::Display for VerifyError {
@@ -60,7 +66,7 @@ impl std::fmt::Display for VerifyError {
         f.write_str(match self {
             Self::Unreachable => "kube-apiserver_unreachable",
             Self::Rejected => "token_rejected",
-            Self::NotAllowed(_) => "service_account_not_allowed",
+            Self::NotAllowed => "service_account_not_allowed",
         })
     }
 }

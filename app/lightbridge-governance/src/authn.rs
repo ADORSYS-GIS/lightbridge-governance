@@ -11,11 +11,9 @@
 //!
 //! ## Why raw `reqwest`, not `kube`
 //!
-//! TokenReview is a single HTTP POST with a simple JSON body and response.
-//! The `kube` crate's typed client, watch streams and runtime are unnecessary
-//! overhead for this — and they pull ~200 transitive crates (`hyper`, `tower`,
-//! `tonic`/`prost`) into the supply chain. `reqwest` is already in this
-//! binary's dependency tree.
+//! TokenReview is a single HTTP POST with a simple JSON body; the `kube`
+//! crate's typed client and runtime are unnecessary overhead and pull ~200
+//! transitive crates into the supply chain. `reqwest` is already a dependency.
 
 #[cfg(test)]
 mod tests;
@@ -54,11 +52,9 @@ impl TokenReviewVerifier {
     /// `https://kubernetes.default.svc`). The `/tokenreviews` path is
     /// appended internally.
     ///
-    /// The in-cluster CA bundle is loaded from
-    /// `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` (the standard
-    /// projected-token mount) so the kube-apiserver's self-signed certificate
-    /// is trusted. If the file is absent (e.g. local dev), the client falls
-    /// back to the system/webpki roots.
+    /// The in-cluster CA bundle is loaded from the standard projected-token
+    /// mount (`ca.crt`) so the apiserver's self-signed cert is trusted; if
+    /// absent (local dev), the client falls back to system/webpki roots.
     ///
     /// Returns `Err` only if `reqwest::Client` construction fails — which
     /// indicates a broken TLS backend, not a caller error.
@@ -67,16 +63,13 @@ impl TokenReviewVerifier {
         audiences: Vec<String>,
         allowed_accounts: HashSet<String>,
     ) -> Result<Self, VerifyError> {
-        // Bounded timeout: must be shorter than Authorino's ext_authz timeout
-        // and the `resolve_timeout` (ADR-0006). 2s is well under a typical
-        // 2–5s ext_authz budget and short enough that a dead apiserver never
-        // starves the Authorino step.
+        // Bounded timeout: shorter than Authorino's ext_authz budget and the
+        // `resolve_timeout` (ADR-0006), so a dead apiserver never starves it.
         let mut builder = Client::builder().timeout(Duration::from_secs(2));
 
-        // In-cluster: trust the kube-apiserver's CA. The projected SA token
-        // volume mounts the cluster CA at this path. Without it, the
-        // self-signed apiserver cert fails verification and every TokenReview
-        // fails closed — an outage, not a security decision.
+        // In-cluster: trust the apiserver's CA from the projected-token mount.
+        // Without it, every TokenReview fails closed — an outage, not a
+        // security decision.
         const IN_CLUSTER_CA: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
         if let Ok(pem) = std::fs::read(IN_CLUSTER_CA) {
             match reqwest::Certificate::from_pem(&pem) {
@@ -99,10 +92,8 @@ impl TokenReviewVerifier {
             VerifyError::Unreachable
         })?;
 
-        // The pod's own SA token authenticates the TokenReview call to the
-        // kube-apiserver. In-cluster this is the projected-token mount; local
-        // dev / tests have no such file and the token stays empty (the
-        // verifier is only exercised against a real apiserver in-cluster).
+        // The pod's own SA token authenticates the TokenReview call; local
+        // dev / tests have no such file and the token stays empty.
         const IN_CLUSTER_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
         let bearer_token = std::fs::read_to_string(IN_CLUSTER_TOKEN)
             .map(|s| s.trim().to_owned())
@@ -122,12 +113,10 @@ impl TokenReviewVerifier {
     /// Verifies a Bearer token via Kubernetes TokenReview.
     ///
     /// - Sends the token to the kube-apiserver with the configured audiences.
-    /// - Checks `status.authenticated == true`.
-    /// - Checks `status.user.username` is in the allowlist.
+    /// - Checks `authenticated`, the returned `audiences`, and the allowlist.
     /// - Every non-happy path returns `Err(VerifyError)`.
     pub async fn verify(&self, bearer_token: &str) -> Result<(), VerifyError> {
-        // Test-only bypass: allows DB-backed integration tests to exercise
-        // the full handle() path without a real kube-apiserver.
+        // Test-only bypass for DB-backed integration tests.
         #[cfg(test)]
         if self.review_url.is_empty() {
             return Ok(());
@@ -172,6 +161,19 @@ impl TokenReviewVerifier {
             return Err(VerifyError::Rejected);
         }
 
+        // The apiserver must confirm it validated the token against one of
+        // our requested audiences; an empty `status.audiences` (not
+        // audience-aware) is a rejection, not "any audience is fine".
+        if !review
+            .status
+            .audiences
+            .iter()
+            .any(|a| self.audiences.contains(a))
+        {
+            tracing::info!("tokenreview: token not validated for a requested audience");
+            return Err(VerifyError::Rejected);
+        }
+
         let username = review
             .status
             .user
@@ -188,7 +190,7 @@ impl TokenReviewVerifier {
 
         if !self.allowed_accounts.contains(&normalized) {
             tracing::info!(username, "tokenreview: service account not in allowlist");
-            return Err(VerifyError::NotAllowed(username.to_owned()));
+            return Err(VerifyError::NotAllowed);
         }
 
         tracing::debug!(username, "tokenreview: authenticated");
