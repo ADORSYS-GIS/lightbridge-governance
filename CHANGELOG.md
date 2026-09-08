@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.3.0...v2.4.0) (2026-09-08)
+
+
+### Features
+
+* **governance:** stamp real client.address from X-Forwarded-For on accepted telemetry (issue [#284](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/284)) ([#305](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/305)) ([05a06a8](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/05a06a845148dd5b2f042a3e3505d467b8b3694c))
+* **ticket 692:** raw otlp archive leg on the edge collector ([a0d7735](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/a0d7735c2b47942d53eb09aabe2b1924ed6711ba))
+
 ## [2.3.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.1...v2.3.0) (2026-09-07)
 
 
