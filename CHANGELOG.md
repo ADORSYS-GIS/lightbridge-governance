@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.0...v2.4.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **ci:** stop push+pull_request double-triggering CI on branches with an open PR ([#307](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/307)) ([be8bd06](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/be8bd06e9c05362cc213e9ee0918623a247ce34b))
+
 ## [2.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.3.0...v2.4.0) (2026-09-08)
 
 
