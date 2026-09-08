@@ -17,13 +17,12 @@ collector records run outcomes in `ingest_manifests` and this always-running pro
 
 ## `/metrics`
 
-`governance_ingest_*` (the `/internal/v1/ingest` telemetry path) is a set of plain in-process
-counters. `governance_connector_*` (ADR-0007) is different: it is derived from
-`ingest_manifests` fresh on every scrape, bounded by `CONNECTOR_METRICS_TIMEOUT_MS`, and is
-absent (not zero) for a provider that has never synced or before the first successful refresh
--- an unreachable database must never render as a healthy-looking reading. See `metrics.rs`'s
-module doc comment for exactly what each metric means, the refresh-on-scrape tradeoff, and
-what a DB outage looks like on this endpoint.
+`governance_connector_*` (ADR-0007) is derived from `ingest_manifests` fresh on every
+scrape, bounded by `CONNECTOR_METRICS_TIMEOUT_MS`, and is absent (not zero) for a provider
+that has never synced or before the first successful refresh -- an unreachable database
+must never render as a healthy-looking reading. See `metrics.rs`'s module doc comment for
+exactly what each metric means, the refresh-on-scrape tradeoff, and what a DB outage looks
+like on this endpoint.
 
 ## `/internal/v1/resolve` is fail-closed by design
 
@@ -39,7 +38,6 @@ rationale, including why a database error must never resolve to "allow".
 just up && just migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lightbridge_governance \
 INTERNAL_RESOLVE_TOKEN=dev-token \
-INTERNAL_INGEST_TOKEN=dev-token \
 TENANT_ID=dev-tenant \
 cargo run --bin lightbridge-governance
 ```
@@ -47,7 +45,7 @@ cargo run --bin lightbridge-governance
 `TENANT_ID` has no default (ADR-0001: single-tenant per deployment, and `governance_connector_*`
 scopes its `ingest_manifests` query by it, per the house rule that `tenant_id` belongs in the
 WHERE clause of every query even here) — the process will not start without it, matching
-`INTERNAL_RESOLVE_TOKEN`/`INTERNAL_INGEST_TOKEN`. See `main.rs`'s `Args` struct for the full
+`INTERNAL_RESOLVE_TOKEN`. See `main.rs`'s `Args` struct for the full
 list of `env`-bindable CLI args and their defaults, including `CONNECTOR_METRICS_TIMEOUT_MS`
 (bounds the `governance_connector_*` query, see `metrics.rs`).
 

@@ -38,6 +38,15 @@ Foundry agent
   -> Tempo | Loki | Mimir | this API
 ```
 
+> **Amendment (2026-09-04) — the "this API" destination was removed (#243).** The
+> `/internal/v1/ingest` endpoint this diagram's "this API" referred to was deleted in #243 —
+> nothing had ever called it. When RFC-0002 ships, it must design its **own** authenticated
+> endpoint (e.g. `kubernetesTokenReview`) rather than re-adding the shared-secret route this
+> diagram predates; #243's technical context explains why that is less work than retrofitting
+> the removed one. The `governance_core::ingest::ingest_telemetry` persistence entry point and
+> the `governance-foundry` normalizer pipeline still exist and are the intended write path for
+> that future endpoint, but are currently reachable only from tests.
+
 Increment 2 of the source spec is therefore **already built** (ADR-0006). We add a host, an
 AuthConfig and a collector -- not an authentication service.
 
