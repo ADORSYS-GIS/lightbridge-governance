@@ -27,8 +27,10 @@ pub(super) async fn advance_one(state: &DaemonState) -> Outcome {
     };
     // Parsed once, threaded through `stamp` and `forward::post` -- each used
     // to re-parse the same bytes independently, repeating on every retry.
-    let parsed: Option<serde_json::Value> = serde_json::from_slice(&pending.payload).ok();
-    let is_json = parsed.is_some();
+    let is_json = pending.format == super::super::receive::WireFormat::Json;
+    let parsed: Option<serde_json::Value> = is_json
+        .then(|| serde_json::from_slice(&pending.payload).ok())
+        .flatten();
     // `Some(&pending.key)`: a retry has the stable key ingest can dedupe on.
     let stamped = match normalize::stamp(
         parsed,

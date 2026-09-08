@@ -11,37 +11,50 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
-use crate::copilot::Signal;
+use crate::{copilot::Signal, otel_daemon::receive::WireFormat};
 
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     signal: Signal,
     body: String,
+    #[serde(default)]
+    format: Option<WireFormat>,
 }
 
 /// Serializes one record to its on-disk line (without the trailing newline
 /// [`append_line`] adds).
-pub(super) fn encode(signal: Signal, payload: &[u8]) -> Result<String> {
+pub(super) fn encode(signal: Signal, payload: &[u8], format: WireFormat) -> Result<String> {
     serde_json::to_string(&Envelope {
         signal,
         body: STANDARD.encode(payload),
+        format: Some(format),
     })
     .context("serialising a retained OTLP payload for the durable spool")
 }
 
 /// The inverse of [`encode`]. Kept separate from deserializing `Envelope`
 /// directly so a caller never has to name that type.
-pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>)> {
+pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>, WireFormat)> {
     let envelope: Envelope =
         serde_json::from_str(text).context("parsing a durable spool envelope")?;
     let body = STANDARD
         .decode(envelope.body)
         .context("base64-decoding a durable spool payload")?;
-    Ok((envelope.signal, body))
+    // Spools written before the format field existed inferred it this way on
+    // every retry. Preserve that behavior only for those existing lines;
+    // every new line records the sender's actual Content-Type.
+    let format = envelope.format.unwrap_or_else(|| {
+        if serde_json::from_slice::<serde_json::Value>(&body).is_ok() {
+            WireFormat::Json
+        } else {
+            WireFormat::Protobuf
+        }
+    });
+    Ok((envelope.signal, body, format))
 }
 
 /// Appends `line` plus a newline to `path`, `fsync`ing before returning, so a
-/// client told `202` durably has that bearing-out on disk before the answer
+/// client told success durably has that bearing-out on disk before the answer
 /// leaves this process -- creating the state directory and the file (mode
 /// `0600`) as needed. `O_APPEND` on Unix, matching Copilot's own outfile --
 /// see the parent module doc's "torn write" paragraph for the one thing this
@@ -55,7 +68,7 @@ pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>)> {
 /// freshly created -- an unsynced creation can vanish across a power loss
 /// exactly as an unsynced rename can (see [`crate::durable_state`]'s module
 /// doc), which would silently take every retained line with it even though
-/// the client was already told `202`. Unconditional on every append rather
+/// the client was already told success. Unconditional on every append rather
 /// than only the first, since telling "created" apart from "reused" here
 /// would cost its own `stat` for no real saving -- one extra `fsync` on an
 /// already-`fsync`ing, low-frequency path is cheap.
@@ -130,22 +143,37 @@ mod tests {
         // The whole reason this is base64, not a raw line: a protobuf byte
         // can legitimately be `\n`.
         let payload = vec![0x0a, 0x03, b'\n', 0x12, 0x04, b'\r'];
-        let line = encode(Signal::Logs, &payload).expect("encode");
+        let line = encode(Signal::Logs, &payload, WireFormat::Protobuf).expect("encode");
         assert!(
             !line.as_bytes().contains(&b'\n'),
             "an encoded line must never itself contain a raw newline: {line:?}"
         );
-        let (signal, decoded) = decode(&line).expect("decode");
+        let (signal, decoded, format) = decode(&line).expect("decode");
         assert_eq!(signal, Signal::Logs);
         assert_eq!(decoded, payload);
+        assert_eq!(format, WireFormat::Protobuf);
     }
 
     #[test]
     fn a_metrics_signal_round_trips() {
-        let line = encode(Signal::Metrics, b"hello").expect("encode");
-        let (signal, decoded) = decode(&line).expect("decode");
+        // Deliberately not valid JSON: the recorded wire format, rather than
+        // reparsing bytes later, is the source of truth.
+        let line = encode(Signal::Metrics, b"hello", WireFormat::Json).expect("encode");
+        let (signal, decoded, format) = decode(&line).expect("decode");
         assert_eq!(signal, Signal::Metrics);
         assert_eq!(decoded, b"hello");
+        assert_eq!(format, WireFormat::Json);
+    }
+
+    #[test]
+    fn an_old_envelope_without_a_format_remains_readable() {
+        // `e30=` is base64 for `{}`. This is the exact two-field shape written
+        // before format persistence was added.
+        let old = r#"{"signal":"Logs","body":"e30="}"#;
+        let (signal, body, format) = decode(old).expect("decode the old envelope");
+        assert_eq!(signal, Signal::Logs);
+        assert_eq!(body, b"{}");
+        assert_eq!(format, WireFormat::Json);
     }
 
     #[test]

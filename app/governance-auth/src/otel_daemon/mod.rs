@@ -15,13 +15,16 @@
 //!
 //! ## And the second: nothing is lost quietly
 //!
-//! A *retryable* refusal (an unreachable collector, a mint failure) goes to
-//! the durable spool, never silently dropped: a failed `retain` answers
-//! `503`, never a `202` the payload never earned. A *permanent* refusal
-//! (400/413/422) is discarded and logged loudly instead, because retrying it
-//! can never succeed. [`spool::DurableSpool`] writes to disk, `fsync`-durably,
-//! before this handler ever answers the client (#269), so a killed daemon --
-//! or laptop -- loses at most the narrow exception that module's doc names.
+//! Every admitted payload goes to the durable spool before the daemon answers
+//! its sender. One drain path then handles authentication, forwarding, retry,
+//! and confirmed permanent refusal. That ordering matters: whether a payload
+//! receives quarantine protection must be a property of the payload and the
+//! collector, not of whether the collector happened to be reachable when the
+//! payload first arrived. A failed `retain` answers `503`, never success the
+//! payload never earned. [`spool::DurableSpool`] writes to disk,
+//! `fsync`-durably, before this handler ever answers the client (#269), so a
+//! killed daemon -- or laptop -- loses at most the narrow exception that
+//! module's doc names.
 
 mod checkpoint;
 mod classify;
@@ -36,8 +39,14 @@ mod spool;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use axum::{Router, extract::State, http::StatusCode, routing::any};
-use tokio::net::TcpListener;
+use axum::{
+    Router,
+    extract::State,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::any,
+};
+use tokio::{net::TcpListener, sync::Notify};
 
 use crate::{config::OauthConfig, otel_port};
 
@@ -51,6 +60,7 @@ struct DaemonState {
     http: reqwest::Client,
     config: Arc<OauthConfig>,
     spool: Arc<Mutex<spool::DurableSpool>>,
+    drain_wake: Arc<Notify>,
 }
 
 /// Runs the daemon until a shutdown signal arrives.
@@ -83,6 +93,7 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
         spool: Arc::new(Mutex::new(
             spool::DurableSpool::open().context("opening the daemon's durable spool")?,
         )),
+        drain_wake: Arc::new(Notify::new()),
     };
 
     // Keeps retrying independent of client traffic -- see `drain::pump`'s
@@ -102,99 +113,71 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     result
 }
 
-/// Handles one OTLP request: receive -> classify -> mint -> normalize ->
-/// forward, with fail-closed spooling on every refusal.
+/// Handles one OTLP request: receive -> classify -> durable admission.
+///
+/// Forwarding belongs exclusively to the background drain. Keeping the
+/// network out of this handler makes the acknowledgement precise: `200`
+/// means this daemon has durably accepted custody, independent of the online
+/// collector's latency or current verdict. OTLP defines `200`, rather than
+/// HTTP's asynchronous `202`, as its full-success response.
 async fn handle_request(
     State(state): State<DaemonState>,
     request: axum::extract::Request,
-) -> StatusCode {
+) -> Response {
     // Admission FIRST: `receive::build`'s `Host`/`Content-Type` checks make
-    // an untrusted request free only if nothing costly runs before them.
-    // `drain_retained` mints and can POST to the real collector, so it must
-    // never run before admission -- an untrusted caller could otherwise
-    // force credentialed work on demand, once per rejected request.
+    // an untrusted request free because no disk or credentialed work runs
+    // before them.
     let incoming = match receive::build(request).await {
         Ok(incoming) => incoming,
         Err(receive::ReceiveError::UntrustedHost) => {
             tracing::warn!("refusing a request with an untrusted Host header");
-            return StatusCode::FORBIDDEN;
+            return StatusCode::FORBIDDEN.into_response();
         }
         Err(receive::ReceiveError::UnsupportedContentType) => {
-            return StatusCode::UNSUPPORTED_MEDIA_TYPE;
+            return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
         }
         Err(receive::ReceiveError::Body(error)) => {
             tracing::warn!(error = %error, "could not read the request body");
-            return StatusCode::PAYLOAD_TOO_LARGE;
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
         }
     };
-
-    // Best-effort: `drain_retained` only mints when the spool is non-empty.
-    drain::drain_retained(&state).await;
 
     // Carried for diagnostics, never a branch (A2).
     tracing::trace!(method = %incoming.method, path = %incoming.path, "received OTLP");
-    // Parsed once, threaded through classify/normalize/forward.
+    // Classification is the only inspection needed at admission. Identity
+    // stamping happens when the drain forwards the retained bytes.
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&incoming.body).ok();
-    let is_json = parsed.is_some();
-    // Classify before mint: a mint refusal can still retain with this signal.
     let signal = classify::signal(parsed.as_ref(), &incoming.path);
-    let body = incoming.body;
-
-    let minted = match mint::mint(&state.http, &state.config).await {
-        Ok(minted) => minted,
-        Err(error) => {
-            tracing::warn!(error = %error, "no session; retaining payload, refusing to forward unauthenticated");
-            return retained_status(&state, signal, body).await;
-        }
-    };
-
-    // `None`: a live pass-through has no stable key yet -- see `normalize`.
-    let stamped = match normalize::stamp(parsed, &body, &minted.access_token, None) {
-        Ok(stamped) => stamped,
-        Err(error) => {
-            tracing::warn!(error = %error, "could not stamp identity; retaining original payload");
-            return retained_status(&state, signal, body).await;
-        }
-    };
-
-    match forward::post(
-        &state.http,
-        &state.config,
-        &minted.bearer,
-        signal,
-        &stamped,
-        is_json,
-    )
-    .await
-    {
-        Ok(forward::Verdict::Accepted) => StatusCode::OK,
-        // A permanent refusal will never succeed no matter how many times it
-        // is offered -- propagate the collector's own status rather than
-        // retaining it forever or lying with a `202` it never earned.
-        Ok(forward::Verdict::Refused(status)) => {
-            tracing::error!(%status, "collector permanently refused {signal}; discarding, not retained");
-            status
-        }
-        Err(error) => {
-            tracing::warn!(error = %error, "collector unreachable; retaining payload");
-            retained_status(&state, signal, stamped).await
-        }
-    }
+    retained_response(&state, signal, incoming.body, incoming.format).await
 }
 
-/// Retains `payload` and answers the status that actually describes what
-/// happened: `202` when it is durably queued for retry, `503` when the spool
-/// itself is full and the payload was **not** retained -- answering `202`
-/// there would tell the exporter "delivered" while its only copy was
-/// dropped, the unavailable branch becoming the permissive one.
-async fn retained_status(
+/// Retains `payload` and answers what actually happened: an OTLP full-success
+/// response when it is durably queued, `503` when the spool could not retain
+/// it. The success body is the empty ExportLogsServiceResponse /
+/// ExportMetricsServiceResponse encoding: `{}` for JSON, zero bytes for
+/// protobuf, with the same content type the sender used as OTLP requires.
+async fn retained_response(
     state: &DaemonState,
     signal: crate::copilot::Signal,
     payload: Vec<u8>,
-) -> StatusCode {
-    if drain::retain(state, signal, payload).await {
-        StatusCode::ACCEPTED
+    format: receive::WireFormat,
+) -> Response {
+    if drain::retain(state, signal, payload, format).await {
+        let content_type = [(header::CONTENT_TYPE, format.content_type())];
+        match format {
+            receive::WireFormat::Json => (StatusCode::OK, content_type, "{}").into_response(),
+            receive::WireFormat::Protobuf => {
+                (StatusCode::OK, content_type, Vec::<u8>::new()).into_response()
+            }
+        }
     } else {
-        StatusCode::SERVICE_UNAVAILABLE
+        // Spool capacity is backpressure, not a permanent payload verdict.
+        // Give an exporter a concrete floor for retry instead of inviting a
+        // tight loop while the drain is already stalled.
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "5")],
+        )
+            .into_response()
     }
 }

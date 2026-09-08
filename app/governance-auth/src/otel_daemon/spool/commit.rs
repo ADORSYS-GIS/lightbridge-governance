@@ -18,14 +18,13 @@ pub(super) const RECLAIM_ABOVE: u64 = 1024 * 1024;
 /// count as genuinely *separate* evidence (#269/#291 review round 2, P2).
 /// `Quarantine::refused`'s "separate wakes" reasoning assumes attempts are
 /// time-decorrelated -- true of Copilot's own ~5-minute wake, but this
-/// daemon's `pump` retries every 5 seconds (`drain::PUMP_INTERVAL`), and
-/// `drain_retained` can retry again on every admitted request besides. Two
+/// daemon's `pump` retries every 5 seconds (`drain::PUMP_INTERVAL`). Two
 /// refusals landing inside the same brief flaky window (a WAF or proxy blip)
-/// used to satisfy condition 1 almost immediately. 60 seconds is well above
-/// one `pump` interval -- a deterministically bad payload still clears it on
-/// the next tick past the gap, but a transient blip has to span a full
-/// minute to fool it, which the measured half-400-gateway case this rule
-/// guards against does not.
+/// must not satisfy condition 1 almost immediately. 60 seconds is well above
+/// one pump interval -- a deterministically bad payload still clears it on
+/// the next tick past the gap, but a transient blip has to span a full minute
+/// to fool it, which the measured half-400-gateway case this rule guards
+/// against does not.
 ///
 /// `pub(super)`: `spool::tests` needs it to space out synthetic timestamps in
 /// a test that does not wait on real wall-clock time.

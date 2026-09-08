@@ -107,18 +107,14 @@ pub struct OtelSettings {
     /// for most of every half-hour, silently. This must stay below the
     /// token lifetime.
     pub headers_helper_debounce_ms: u64,
-    /// The `governance-auth … token` command clients spawn for a fresh
-    /// INFERENCE credential (Claude Code's `apiKeyHelper`, Codex's
-    /// `[model_providers.*.auth] command`).
+    /// The `governance-auth … token` command Claude Code spawns through
+    /// `apiKeyHelper` for a fresh inference credential. Codex receives the
+    /// same logical invocation as a separate executable and argument array.
     ///
-    /// ⚠️ MUST be an absolute path. Codex spawns this itself rather than
-    /// through a shell, so it does NOT get the login shell's `PATH` -- a bare
-    /// `governance-auth` fails with `No such file or directory (os error 2)`
-    /// and the provider silently falls back to unauthenticated. Measured live
-    /// against codex-cli 0.146.1 with the binary in `~/.local/bin`. Claude
-    /// Code happens to resolve a bare name (it goes through a shell), so this
-    /// trap only shows up on one of the two clients -- which is exactly why
-    /// both are built from [`binary_path`] rather than a literal.
+    /// Built from [`binary_path`] so both clients name the same installed
+    /// binary. Codex requires that absolute path in `auth.command` and every
+    /// flag in `auth.args`; combining them makes the entire string an
+    /// executable filename and fails with OS error 2.
     pub token_command: String,
     /// Gateway base URL. `Some` turns on inference wiring in both writers;
     /// `None` leaves every inference key untouched, so a telemetry-only
@@ -276,6 +272,14 @@ pub fn configure_all(
     optout: crate::optout::ClientOptOut,
 ) -> Result<Vec<Outcome>> {
     let previous = crate::managed::load(&crate::managed::manifest_path(home));
+    let codex_settings = if optout.codex_telemetry_only {
+        OtelSettings {
+            gateway_url: None,
+            ..settings.clone()
+        }
+    } else {
+        settings.clone()
+    };
 
     let mut outcomes = vec![
         if optout.claude {
@@ -292,7 +296,7 @@ pub fn configure_all(
                 flag: "--no-codex",
             }
         } else {
-            configure_codex(home, settings)?
+            configure_codex(home, &codex_settings)?
         },
     ];
     if optout.vscode {
@@ -780,9 +784,14 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         );
 
         let auth = table_entry(provider, "auth")?;
-        // Absolute path, deliberately -- see OtelSettings::token_command.
-        // Codex spawns this without a shell, so a bare name cannot resolve.
-        auth.insert("command", toml_edit::value(&settings.token_command));
+        // Codex passes `command` directly to the OS. Arguments belong in its
+        // separate array; putting the whole command line here asks the OS to
+        // find one executable whose filename contains every flag and value.
+        auth.insert("command", toml_edit::value(binary_path()));
+        let args: toml_edit::Array = crate::cli::token_args(&settings.issuer, &settings.client_id)
+            .into_iter()
+            .collect();
+        auth.insert("args", toml_edit::value(args));
         auth.insert(
             "refresh_interval_ms",
             toml_edit::value(i64::try_from(settings.headers_helper_debounce_ms).unwrap_or(240_000)),

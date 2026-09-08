@@ -21,7 +21,7 @@ capability works per client; that one says *how*, and exactly where it breaks.
 | Capability | Claude Code | Codex CLI | opencode | GitHub Copilot (VS Code) |
 |---|---|---|---|---|
 | **Inference endpoint** | ✅ `ANTHROPIC_BASE_URL` | ⚠️ `model_providers.*` — blocked, see below | ✅ `provider.<id>.options.baseURL` | ❌ no supported override |
-| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ `auth.command` — needs an ABSOLUTE path, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
+| **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ absolute `auth.command` plus `auth.args` array, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
 | **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
 | **Telemetry endpoint** | ✅ `env.OTEL_EXPORTER_OTLP_ENDPOINT` in `settings.json` | ✅ `otel.exporter.otlp-http.endpoint` | ✅ `@vymalo/opencode-otel`, its OWN collector — see below | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot push` |
 | **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
@@ -63,12 +63,13 @@ document pins — the per-signal `endpoints` that were pinned as the immediate
 unblock are no longer load-bearing against this binary, though they remain the
 more precise thing to pin.
 
-### A command written into a config must be an ABSOLUTE path
+### Codex requires a separate executable and argument array
 
-Codex spawns `[model_providers.*.auth] command` **itself, not through a
-shell**, so it never inherits the login shell's `PATH`. With
-`governance-auth` installed to `~/.local/bin` (the documented location), a
-bare command name fails:
+Codex spawns `[model_providers.*.auth] command` **itself, without a shell**.
+The field must contain only the absolute executable path, and each flag and
+value must be a separate element of `auth.args`. A bare command does not use
+the login shell's `PATH`; a single string containing the executable and flags
+is interpreted as one executable filename. Either shape fails:
 
 ```
 ERROR codex_login::auth::manager: Failed to resolve external auth: provider auth
@@ -81,10 +82,10 @@ as a confusing downstream API error, not as "the helper never ran."
 
 Claude Code resolves a bare name fine — it goes through a shell — so this
 trap is completely invisible if you only test that client. `governance-auth`
-now builds every command it writes from `otel::binary_path()`
-(`std::env::current_exe()`), pinned by two tests: one on the writer, one on
-`binary_path` itself, because the writer test alone still passes if
-`binary_path` regresses to its bare-name fallback.
+now writes `otel::binary_path()` (`std::env::current_exe()`) to `command` and
+writes `--issuer`, issuer, `--client-id`, client id, and `token` as distinct
+array entries. Tests pin the executable path, argv shape, and migration from
+the old combined string.
 
 ### Codex cannot reach this gateway at all
 

@@ -61,7 +61,8 @@ pub enum Command {
     /// change the commands written into their config.
     ///
     /// `--no-claude` / `--no-codex` / `--no-vscode` each leave one client
-    /// entirely alone: not written, and not retracted either.
+    /// entirely alone. `--codex-telemetry-only` updates Codex's OTel tables
+    /// without adding or changing its model provider.
     Configure {
         #[command(flatten)]
         optout: ClientOptOut,

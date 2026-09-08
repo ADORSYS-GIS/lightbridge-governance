@@ -40,6 +40,15 @@
 //! the only reading of "leave that client alone" that is true in both
 //! directions.
 //!
+//! ## Codex can receive telemetry without a managed model provider
+//!
+//! `--codex-telemetry-only` narrows the write within `config.toml`: the OTel
+//! tables are configured, while the provider keys are not added or changed.
+//! This explicit switch is necessary because `gateway_url` can resolve from a
+//! lower config layer even when the current command does not pass
+//! `--gateway-url`. Prior provider ownership is carried forward so retraction
+//! does not turn "leave it alone" into deletion.
+//!
 //! ## What these flags do not reach
 //!
 //! The shell rc block and `~/.config/governance-auth/otel.env` are the
@@ -67,6 +76,10 @@ pub struct ClientOptOut {
     /// Leave Codex's `~/.codex/config.toml` exactly as it is.
     #[arg(long = "no-codex")]
     pub codex: bool,
+    /// Configure Codex telemetry without adding or changing its model
+    /// provider, even when a gateway URL resolves from another config layer.
+    #[arg(long, conflicts_with = "codex")]
+    pub codex_telemetry_only: bool,
     /// Leave VS Code's `settings.json` and the Copilot drain schedule alone.
     #[arg(long = "no-vscode")]
     pub vscode: bool,

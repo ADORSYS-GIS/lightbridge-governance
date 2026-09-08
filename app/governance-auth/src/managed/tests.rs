@@ -103,6 +103,25 @@ fn nested_keys_still_resolve() {
     assert!(after["env"].get("KEPT").is_some(), "sibling removed too");
 }
 
+#[test]
+fn string_arrays_are_tracked_and_retracted_by_value() {
+    let dir = tempdir();
+    let target = dir.path().join("config.toml");
+    fs::write(
+        &target,
+        "[provider.auth]\nargs = [\"--issuer\", \"https://auth.example\", \"token\"]\nkeep = 1\n",
+    )
+    .expect("seed");
+    let canonical = r#"["--issuer","https://auth.example","token"]"#;
+    let manifest = previous(&target, &[("provider.auth.args", canonical)]);
+
+    let removed = retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let after = fs::read_to_string(&target).expect("read");
+    assert!(!after.contains("args"), "managed array survived: {after}");
+    assert!(after.contains("keep = 1"), "sibling changed: {after}");
+    assert_eq!(removed.len(), 1);
+}
+
 /// ⚠️ Documents a KNOWN LIMITATION, not a desired property.
 ///
 /// In `toml_edit` a comment above a key is that key's leading decor, so

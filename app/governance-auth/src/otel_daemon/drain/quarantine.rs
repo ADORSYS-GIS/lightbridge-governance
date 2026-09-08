@@ -145,8 +145,10 @@ async fn probe_accepted(state: &DaemonState, probe: &Pending) -> bool {
     let Ok(minted) = mint::mint(&state.http, &state.config).await else {
         return false;
     };
-    let parsed: Option<serde_json::Value> = serde_json::from_slice(&probe.payload).ok();
-    let is_json = parsed.is_some();
+    let is_json = probe.format == super::super::receive::WireFormat::Json;
+    let parsed: Option<serde_json::Value> = is_json
+        .then(|| serde_json::from_slice(&probe.payload).ok())
+        .flatten();
     let Ok(stamped) = normalize::stamp(
         parsed,
         &probe.payload,

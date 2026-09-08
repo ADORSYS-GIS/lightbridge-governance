@@ -27,8 +27,8 @@ fn vscode_settings(home: &Path) -> serde_json::Value {
 /// without carrying the previous entry forward -- the naive skip. Run that way
 /// it prints two `Removed (no longer managed):` lines and fails on
 /// `exporterType`, with `outfile` gone from `settings.json` too. Two, not four,
-/// because only string values are ever recorded, so the two boolean keys were
-/// never retractable in the first place. Checked, not assumed -- and the other
+/// because only strings and string arrays are recorded, so the two boolean
+/// keys were never retractable in the first place. Checked, not assumed -- and the other
 /// four tests in this module still passed while it failed, which is why this
 /// one is here.
 #[test]

@@ -3,7 +3,7 @@
 //! refusal (#269/#291 review round 2, P2). Split from [`super`] purely for
 //! the LoC gate.
 
-use super::{super::commit::MIN_SEPARATION_SECONDS, Signal, TempDir};
+use super::{super::commit::MIN_SEPARATION_SECONDS, FORMAT, Signal, TempDir};
 
 /// An arbitrary anchor timestamp -- these tests never touch real wall-clock
 /// time, only offsets from this.
@@ -14,7 +14,7 @@ fn a_record_refused_once_is_retried_not_discarded() {
     let dir = TempDir::new("quarantine-once");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, b"maybe".to_vec())
+        .retain(Signal::Logs, b"maybe".to_vec(), FORMAT)
         .expect("retain");
 
     let pending = spool.next().expect("next").expect("pending");
@@ -40,7 +40,7 @@ fn two_refusals_a_pump_interval_apart_do_not_reach_eligibility() {
     let dir = TempDir::new("quarantine-too-close");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, b"flaky".to_vec())
+        .retain(Signal::Logs, b"flaky".to_vec(), FORMAT)
         .expect("retain");
 
     let first = spool.next().expect("next").expect("pending");
@@ -67,7 +67,7 @@ fn a_record_refused_twice_with_nothing_after_it_stays_held() {
     let dir = TempDir::new("quarantine-twice-exhausted");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, b"never".to_vec())
+        .retain(Signal::Logs, b"never".to_vec(), FORMAT)
         .expect("retain");
 
     let first = spool.next().expect("next").expect("pending");
@@ -103,10 +103,10 @@ fn a_record_refused_twice_with_a_confirmed_probe_is_discarded() {
     let dir = TempDir::new("quarantine-twice-confirmed");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, b"stuck".to_vec())
+        .retain(Signal::Logs, b"stuck".to_vec(), FORMAT)
         .expect("retain stuck");
     spool
-        .retain(Signal::Logs, b"probe".to_vec())
+        .retain(Signal::Logs, b"probe".to_vec(), FORMAT)
         .expect("retain probe");
 
     let stuck = spool.next().expect("next").expect("stuck pending");
@@ -145,8 +145,12 @@ fn a_record_refused_twice_with_a_confirmed_probe_is_discarded() {
 fn peek_next_does_not_advance_the_checkpoint() {
     let dir = TempDir::new("peek-is-read-only");
     let mut spool = dir.spool("a");
-    spool.retain(Signal::Logs, b"one".to_vec()).expect("retain");
-    spool.retain(Signal::Logs, b"two".to_vec()).expect("retain");
+    spool
+        .retain(Signal::Logs, b"one".to_vec(), FORMAT)
+        .expect("retain");
+    spool
+        .retain(Signal::Logs, b"two".to_vec(), FORMAT)
+        .expect("retain");
 
     let first = spool.next().expect("next").expect("first pending");
     let peeked = spool

@@ -6,7 +6,7 @@ Copilot at this org's AI gateway, and their telemetry at this org's collector.
 It is **not a server**. It is a pure OAuth2 *client*: `login` runs the interactive flow
 once, `token` prints a currently-valid access token on every subsequent call, and the two
 AI clients invoke `token` themselves through their own credential-helper hooks
-(`apiKeyHelper`, `[model_providers.*.auth] command`). Nothing in this binary makes an
+(`apiKeyHelper`, `[model_providers.*.auth] command` plus `args`). Nothing in this binary makes an
 authorization decision — the authorization server validates its own tokens and the gateway
 validates the JWTs it accepts.
 

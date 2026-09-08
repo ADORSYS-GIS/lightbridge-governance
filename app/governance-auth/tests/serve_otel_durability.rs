@@ -35,7 +35,7 @@ async fn a_payload_retained_before_a_kill_is_delivered_by_the_daemon_restarted_a
     let status = first.post("/", &logs_payload("survives-a-kill")).await?;
     assert_eq!(
         status.as_u16(),
-        202,
+        200,
         "retained, not failed, while the collector is down"
     );
     first.stop()?;

@@ -44,6 +44,15 @@ explicitly selected alternative.**
 port. Every client exports to it over plain HTTP with no credential. The daemon spools to disk,
 attaches a freshly minted bearer, and forwards to the governed collector.
 
+Durable admission and forwarding are deliberately separate. Every admitted payload is appended and
+`fsync`ed before the daemon answers OTLP `200`; that response means the daemon owns the payload, not that
+the governed collector has already accepted it. A single background consumer performs every
+forward, so live traffic and an outage backlog cannot race the same checkpoint. Permanent collector
+refusals use the same quarantine rule regardless of when the payload arrived: repeated refusal is
+not enough to discard while the collector is refusing everything; the daemon must also prove that a
+later payload is accepted. This keeps a collector-wide configuration fault from turning into total
+client-side loss while still allowing a genuinely bad payload to stop blocking the stream.
+
 **Two profiles, selected at `configure` time and recorded in the config file:**
 
 - **`daemon`** (default) — clients point at `http://127.0.0.1:<port>`; the daemon forwards.

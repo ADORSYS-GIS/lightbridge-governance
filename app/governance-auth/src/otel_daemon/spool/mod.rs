@@ -20,8 +20,8 @@
 //!
 //! ## The envelope, and why base64
 //!
-//! Each retained payload is one JSON line: `{"signal":"metrics","body":
-//! "<base64>"}` (see [`envelope`]). The payload can be OTLP protobuf
+//! Each retained payload is one JSON line: `{"signal":"Metrics","body":
+//! "<base64>","format":"protobuf"}` (see [`envelope`]). The payload can be OTLP protobuf
 //! ([`super::classify`] routes on the body, but does not require it to be
 //! JSON), so it cannot be written as a raw line -- a protobuf byte can *be*
 //! `\n`, which would silently fracture [`crate::copilot::spool::drain`]'s
@@ -70,6 +70,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use super::checkpoint::{self, Checkpoint};
+use super::receive::WireFormat;
 use crate::copilot::{Signal, spool as tail, spool::Identity};
 
 /// The file name under the state directory. No CLI override exists for it
@@ -118,6 +119,10 @@ pub const MAX_RETAINABLE_PAYLOAD: usize = {
 pub struct Pending {
     pub signal: Signal,
     pub payload: Vec<u8>,
+    /// The sender's admitted Content-Type. Persisted rather than guessed from
+    /// bytes on retry, because malformed JSON is still JSON and arbitrary
+    /// protobuf can happen to be parseable as JSON.
+    pub format: WireFormat,
     /// A stable, content-derived name for this line -- used by
     /// [`crate::copilot::quarantine::Quarantine`] and, stamped onto the
     /// forward via `normalize::stamp`'s idempotency parameter, by the
@@ -172,8 +177,8 @@ impl DurableSpool {
     /// Durably retains `payload` for a later retry, refusing (not silently
     /// dropping) once [`CAPACITY`] worth of unconsumed bytes is already on
     /// disk.
-    pub fn retain(&mut self, signal: Signal, payload: Vec<u8>) -> Result<()> {
-        let line = envelope::encode(signal, &payload)?;
+    pub fn retain(&mut self, signal: Signal, payload: Vec<u8>, format: WireFormat) -> Result<()> {
+        let line = envelope::encode(signal, &payload, format)?;
 
         let size = match std::fs::metadata(&self.spool_path) {
             Ok(metadata) => metadata.len(),

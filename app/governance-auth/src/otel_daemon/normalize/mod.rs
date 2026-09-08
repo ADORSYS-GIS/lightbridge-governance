@@ -40,10 +40,9 @@
 //! export rather than a loss (see `spool`'s own module doc, "at-least-once,
 //! not exactly-once"). This daemon cannot itself deduplicate that -- it does
 //! not own the ingest table -- but it can carry the key that lets the ingest
-//! side do so: [`stamp`]'s `idempotency_key` parameter, when `Some` (only the
-//! drain's retry path has one; a live pass-through's first attempt does not,
-//! since nothing has a stable key until it has been read back out of the
-//! spool at least once), is stamped as [`RETRY_KEY_ATTRIBUTE`] alongside the
+//! side do so: every forwarded record has first been read from the durable
+//! spool, so [`stamp`]'s `idempotency_key` parameter is `Some` on every
+//! production call and is stamped as [`RETRY_KEY_ATTRIBUTE`] alongside the
 //! identity attributes, through the exact same strip-then-set path -- a
 //! client-supplied value under that key is stripped unconditionally too, for
 //! the same reason a forged identity is: an attacker naming a real record's

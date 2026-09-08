@@ -1,6 +1,6 @@
 //! Orchestrates the login/token/refresh/status/logout commands over the flow
 //! submodules. `token` is the credential-helper entrypoint wired into Claude
-//! Code's `apiKeyHelper` and Codex's `[model_providers.<id>.auth] command`:
+//! Code's `apiKeyHelper` and Codex's `[model_providers.<id>.auth] command` plus `args`:
 //! it must fail closed (non-zero exit, nothing on stdout) whenever it can't
 //! produce a genuinely valid token, and must never launch an interactive
 //! browser from an unattended re-invoke -- only `login` does that.

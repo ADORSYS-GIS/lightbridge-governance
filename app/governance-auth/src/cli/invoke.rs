@@ -1,11 +1,11 @@
 //! How this binary spells its own commands when it writes them into somebody
 //! else's config file.
 //!
-//! Three files hold a `governance-auth …` command line that this binary
+//! Three targets hold a `governance-auth` invocation that this binary
 //! generated: Claude Code's `settings.json` (`apiKeyHelper`,
-//! `otelHeadersHelper`), Codex's `config.toml`
-//! (`model_providers.*.auth.command`) and the drain's systemd unit / launchd
-//! plist. Before this module each of those strings was built at its own call
+//! `otelHeadersHelper`), Codex's `config.toml` (`auth.command` + `args`) and
+//! the drain's systemd unit / launchd plist. Before this module each
+//! invocation was built at its own call
 //! site, so renaming a subcommand meant finding every one of them by grep --
 //! and a miss is invisible: the file still parses, the tool still starts, and
 //! the only symptom is telemetry that stops arriving.
@@ -69,7 +69,31 @@ pub const TOKEN_TAIL: &str = " token";
 /// See [`TOKEN_TAIL`].
 pub const OTEL_HEADERS_TAIL: &str = " otel headers";
 
-/// What Claude Code's `apiKeyHelper` and Codex's `auth.command` run.
+/// Codex's inference credential-helper arguments. Codex stores the executable
+/// and argv separately and spawns them without a shell.
+pub fn token_args(issuer: &str, client_id: &str) -> Vec<String> {
+    vec![
+        "--issuer".to_owned(),
+        issuer.to_owned(),
+        "--client-id".to_owned(),
+        client_id.to_owned(),
+        "token".to_owned(),
+    ]
+}
+
+/// Whether persisted Codex auth arguments still name this version's token
+/// command. Values vary by installation, so only flags and the command path
+/// are structural.
+pub fn token_args_are_current(args: &[String]) -> bool {
+    matches!(
+        args,
+        [issuer_flag, _, client_id_flag, _, token]
+            if issuer_flag == "--issuer" && client_id_flag == "--client-id" && token == "token"
+    )
+}
+
+/// What Claude Code's `apiKeyHelper` runs. Claude Code's field is a command
+/// line string; Codex uses [`token_args`] alongside a separate executable.
 ///
 /// `--issuer`/`--client-id` are written explicitly rather than left to
 /// `GOVERNANCE_AUTH_*`: a helper subprocess is not guaranteed to inherit the
@@ -78,8 +102,9 @@ pub const OTEL_HEADERS_TAIL: &str = " otel headers";
 /// watching.
 pub fn token_command(issuer: &str, client_id: &str) -> String {
     format!(
-        "{} --issuer {issuer} --client-id {client_id}{TOKEN_TAIL}",
-        crate::otel::binary_path()
+        "{} {}",
+        crate::otel::binary_path(),
+        token_args(issuer, client_id).join(" ")
     )
 }
 
@@ -127,6 +152,10 @@ mod tests {
             crate::cli::tests::accepts(&COPILOT_PUSH),
             "the drain's argv is not a command this binary has"
         );
+        assert!(token_args_are_current(&token_args(
+            "https://issuer.example",
+            "client"
+        )));
     }
 
     /// #268 has landed: `serve --otel` is now a real command, so

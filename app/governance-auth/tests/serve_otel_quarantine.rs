@@ -82,22 +82,17 @@ async fn a_record_refused_twice_with_nothing_to_probe_stays_held_until_it_can_be
     let collector = MockCollector::start(Behavior::Reject(503)).await?;
 
     let daemon = Daemon::start(&harness, &collector.base_url, &[]).await?;
-    // Retained under a retryable refusal (503, not permanent) -- so it lands
-    // in the spool at all, which a permanent refusal on the live path never
-    // would (see `serve_otel_fail_closed.rs`'s permanent-refusal test).
+    // Every admitted payload lands in the spool before any forward attempt.
     let status = daemon
         .post("/", &logs_payload("held-through-refusals"))
         .await?;
-    assert_eq!(status.as_u16(), 202, "retained while unreachable");
+    assert_eq!(status.as_u16(), 200, "accepted into durable custody");
 
     // Now every attempt is a PERMANENT refusal -- the shape that makes the
     // retained record eligible for quarantine on its own two attempts.
     collector.set_behavior(Behavior::Reject(400))?;
-    // Two more requests: each one's `drain_retained` retries the held record
-    // before handling its own body, so this is two separate refusal
-    // attempts against it. Neither live request itself gets retained --
-    // a permanent refusal on the *live* path is told to the client directly,
-    // never spooled (see the module doc on `otel_daemon::mod`).
+    // Two more requests are durably retained behind it. The background pump
+    // remains the only component allowed to advance the queue.
     daemon.post("/", &logs_payload("trigger-1")).await?;
     daemon.post("/", &logs_payload("trigger-2")).await?;
 

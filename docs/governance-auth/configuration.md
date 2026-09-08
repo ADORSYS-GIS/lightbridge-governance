@@ -107,6 +107,12 @@ They are independent knobs: supply either, both, or neither. The per-client path
 the gateway are Envoy AI Gateway's layout, both verified live —
 `<gateway>/anthropic/v1/messages` and `<gateway>/v1/chat/completions` each return 200.
 
+Because these values use layered configuration, omitting `--gateway-url` does not suppress a
+`gateway_url` already stored in `~/.config/governance-auth/config.toml`, supplied by the
+environment, or installed machine-wide. Use `--codex-telemetry-only` on `login` or `configure`
+when Codex should receive the collector configuration without adding or changing its governance
+model-provider block.
+
 ### `--token-exchange` and its four companions
 
 Off by default, opt-in only ([#140]), and fail-closed once on: a misconfigured or failing
@@ -234,9 +240,8 @@ rustdoc renders — or in this file.
 
 Without it, clap accepts these only *before* the subcommand
 (`governance-auth --issuer … token`), because they are flattened onto the top-level `Cli`
-rather than duplicated per subcommand. The main use case is a single command line embedded in
-`apiKeyHelper`/`auth.command`, which both vendors' docs and this repo's runbook write
-subcommand-first — composing that with explicit flags used to fail with
+rather than duplicated per subcommand. The main use case is the command line embedded in Claude
+Code's `apiKeyHelper`, whose documentation writes the subcommand first. Composing that with explicit flags used to fail with
 `error: unexpected argument '--issuer' found`. Found against a real `apiKeyHelper`, not by
 inspection; `tests/cli_arg_order.rs` pins both orders now.
 

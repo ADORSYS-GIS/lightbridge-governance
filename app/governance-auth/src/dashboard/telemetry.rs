@@ -76,26 +76,38 @@ fn stale_wiring(home: &Path) -> bool {
             let format = managed::Format::of(&path)?;
             path.is_file().then_some(())?;
             let document = format.read(&path).ok()?;
-            Some(keys.keys().filter_map(move |key| {
-                let tail = expected_tail(key)?;
-                Some((document.get(key)?, tail))
-            }))
+            Some(
+                keys.keys()
+                    .filter_map(move |key| managed_key_is_stale(&document, key)),
+            )
         })
         .flatten()
-        .any(|(value, tail)| !value.ends_with(tail))
+        .any(std::convert::identity)
 }
 
-/// The command a managed key must end with, or `None` when the key holds
-/// something other than one of this binary's own command lines.
-fn expected_tail(key: &str) -> Option<&'static str> {
+/// Checks command-bearing managed keys. Codex's command and arguments are two
+/// fields: the command is an executable path and the argv carries the token
+/// subcommand. A managed old-style command with no argv is therefore stale.
+fn managed_key_is_stale(document: &managed::Document, key: &str) -> Option<bool> {
     match key {
-        "otelHeadersHelper" => Some(cli::OTEL_HEADERS_TAIL),
-        // Claude Code's inference helper, and Codex's
-        // `model_providers.<id>.auth.command`. Neither name moved, so these
-        // never fire today -- they are here because the next rename should
-        // not need this function edited to be caught.
-        "apiKeyHelper" => Some(cli::TOKEN_TAIL),
-        key if key.ends_with(".auth.command") => Some(cli::TOKEN_TAIL),
+        "otelHeadersHelper" => document
+            .get(key)
+            .map(|value| !value.ends_with(cli::OTEL_HEADERS_TAIL)),
+        "apiKeyHelper" => document
+            .get(key)
+            .map(|value| !value.ends_with(cli::TOKEN_TAIL)),
+        key if key.ends_with(".auth.command") => {
+            document.get(key)?;
+            let args_key = format!("{}.args", key.trim_end_matches(".command"));
+            Some(
+                document
+                    .get(&args_key)
+                    .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                    .is_none_or(|args| !cli::token_args_are_current(&args)),
+            )
+        }
+        // The command-key branch validates this pair once.
+        key if key.ends_with(".auth.args") => None,
         _ => None,
     }
 }

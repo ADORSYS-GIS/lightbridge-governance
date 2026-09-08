@@ -22,8 +22,9 @@ use crate::{config::OauthConfig, copilot, redacted::Redacted};
 /// always agree.
 ///
 /// A retryable failure is an `Err`; a permanent refusal is a
-/// [`Verdict::Refused`]. Both tell the caller to retain the payload; neither
-/// ever forwards unauthenticated or logs the bearer/body.
+/// [`Verdict::Refused`]. The caller operates exclusively on an already
+/// retained payload, so neither outcome can bypass durable accounting.
+/// Neither ever forwards unauthenticated or logs the bearer/body.
 pub async fn post(
     http: &reqwest::Client,
     config: &OauthConfig,

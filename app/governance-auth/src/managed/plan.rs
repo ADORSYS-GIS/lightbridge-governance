@@ -5,10 +5,11 @@
 //! the files back: a key merely *present* might be the developer's, and
 //! recording it as ours would let a later run delete their work.
 //!
-//! Only string values are recorded. [`super::Format`]'s documents return
-//! strings only -- a digest of a rendered number would depend on formatting --
-//! so numeric keys like `log_user_prompt` are never retracted. Accepted: they
-//! are few, and the alternative is a digest that changes when nothing did.
+//! Only strings and string arrays are recorded. [`super::Format`]'s documents
+//! canonicalize arrays before hashing; a digest of a rendered number would
+//! depend on formatting, so numeric keys like `log_user_prompt` are never
+//! retracted. Accepted: they are few, and the alternative is a digest that
+//! changes when nothing did.
 //!
 //! ## Why "what we own" and "what we carry forward" are one function
 //!
@@ -68,11 +69,29 @@ pub fn plan(
                 recorded.insert(key, digest(&value));
             }
         }
+        // `--codex-telemetry-only` leaves the provider half of the same TOML
+        // file untouched. Carry its prior ownership forward just like a full
+        // client opt-out; otherwise the retraction immediately following this
+        // plan would delete the very keys the flag promised not to touch.
+        if optout.codex_telemetry_only
+            && path == home.join(".codex/config.toml")
+            && let Some(previous) = previous.targets.get(&target)
+        {
+            for (key, value) in previous {
+                if codex_inference_key(key) {
+                    recorded.insert(key.clone(), value.clone());
+                }
+            }
+        }
         if !recorded.is_empty() {
             out.insert(target, recorded);
         }
     }
     out
+}
+
+fn codex_inference_key(key: &str) -> bool {
+    key == "model_provider" || key.starts_with("model_providers.")
 }
 
 /// What this run owns in one target file.
@@ -94,6 +113,7 @@ fn owned(declined: bool, keys: Vec<String>) -> Owned {
 fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(PathBuf, Owned)> {
     let telemetry = settings.endpoint.is_some();
     let inference = settings.gateway_url.is_some();
+    let codex_inference = inference && !optout.codex_telemetry_only;
 
     let mut claude: Vec<String> = Vec::new();
     if inference {
@@ -108,12 +128,13 @@ fn targets(home: &Path, settings: &OtelSettings, optout: ClientOptOut) -> Vec<(P
     }
 
     let mut codex: Vec<String> = Vec::new();
-    if inference {
+    if codex_inference {
         codex.push("model_provider".to_owned());
         for leaf in ["name", "base_url", "wire_api"] {
             codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.{leaf}"));
         }
         codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.auth.command"));
+        codex.push(format!("model_providers.{CODEX_PROVIDER_ID}.auth.args"));
     }
     if telemetry {
         codex.push("otel.environment".to_owned());

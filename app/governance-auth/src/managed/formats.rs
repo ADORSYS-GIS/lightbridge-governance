@@ -1,7 +1,8 @@
 //! Reading and removing a dotted key from the two config formats this binary
 //! writes into.
 //!
-//! Deliberately minimal: get a scalar, remove a key, write back. The manifest
+//! Deliberately minimal: get a string or string array, remove a key, write
+//! back. The manifest
 //! only ever needs to ask "is this still what we wrote?" and "take it out
 //! again" -- everything else stays with the writers in `otel.rs`, which own the
 //! merge semantics.
@@ -65,7 +66,9 @@ impl Format {
 }
 
 impl Document {
-    /// The value at `key`, if it is a string.
+    /// The value at `key`, if it is a string or an array of strings. Arrays
+    /// are encoded as compact JSON before hashing, giving both source formats
+    /// one representation independent of whitespace and TOML decoration.
     ///
     /// ⚠️ A LITERAL key is tried before treating dots as nesting, and the order
     /// matters. VS Code's `settings.json` uses **flat keys that contain dots**
@@ -75,10 +78,9 @@ impl Document {
     /// "not ours", so they would never be retracted and the failure would be
     /// invisible. `flat_dotted_keys_are_found_before_nesting` pins it.
     ///
-    /// Only strings: a digest of a rendered number or object would depend on
-    /// formatting rather than content, making "unchanged since we wrote it"
-    /// mean "unchanged AND reserialised identically" -- which would delete keys
-    /// it should not.
+    /// Other values stay excluded: a digest of a rendered number or object
+    /// would depend on formatting rather than content, making "unchanged since
+    /// we wrote it" mean "unchanged AND reserialised identically".
     pub fn get(&self, key: &str) -> Option<String> {
         match self {
             Self::Json(root) => root
@@ -90,7 +92,7 @@ impl Document {
                     }
                     Some(node)
                 })
-                .and_then(|node| node.as_str().map(ToOwned::to_owned)),
+                .and_then(json_string_or_array),
             Self::Toml(root) => {
                 let item = root.as_item();
                 item.get(key)
@@ -101,7 +103,7 @@ impl Document {
                         }
                         Some(item)
                     })
-                    .and_then(|item| item.as_str().map(ToOwned::to_owned))
+                    .and_then(toml_string_or_array)
             }
         }
     }
@@ -163,4 +165,28 @@ impl Document {
             }
         }
     }
+}
+
+fn json_string_or_array(value: &serde_json::Value) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        return Some(value.to_owned());
+    }
+    let values: Vec<&str> = value
+        .as_array()?
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<_>>()?;
+    serde_json::to_string(&values).ok()
+}
+
+fn toml_string_or_array(item: &toml_edit::Item) -> Option<String> {
+    if let Some(value) = item.as_str() {
+        return Some(value.to_owned());
+    }
+    let values: Vec<&str> = item
+        .as_array()?
+        .iter()
+        .map(toml_edit::Value::as_str)
+        .collect::<Option<_>>()?;
+    serde_json::to_string(&values).ok()
 }

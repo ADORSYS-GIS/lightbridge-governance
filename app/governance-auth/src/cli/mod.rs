@@ -48,7 +48,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 pub use invoke::{
     COPILOT_PUSH, OTEL_HEADERS_TAIL, SERVE_OTEL, TOKEN_TAIL, otel_headers_command,
-    serve_otel_is_supported, token_command,
+    serve_otel_is_supported, token_args, token_args_are_current, token_command,
 };
 use scopes::{CopilotCommand, OtelCommand, SelfCommand};
 use verbs::Command;

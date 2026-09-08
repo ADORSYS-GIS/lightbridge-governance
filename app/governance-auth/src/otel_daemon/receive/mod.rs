@@ -53,14 +53,32 @@ pub struct Incoming {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    pub format: WireFormat,
 }
 
 impl Incoming {
-    fn new(method: &str, path: &str, body: Vec<u8>) -> Self {
+    fn new(method: &str, path: &str, body: Vec<u8>, format: WireFormat) -> Self {
         Self {
             method: method.to_owned(),
             path: path.to_owned(),
             body,
+            format,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireFormat {
+    Json,
+    Protobuf,
+}
+
+impl WireFormat {
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Json => "application/json",
+            Self::Protobuf => "application/x-protobuf",
         }
     }
 }
@@ -85,9 +103,9 @@ pub async fn build(request: axum::extract::Request) -> Result<Incoming, ReceiveE
     if !host_is_trusted(request.headers()) {
         return Err(ReceiveError::UntrustedHost);
     }
-    if !content_type_is_otlp(request.headers()) {
+    let Some(format) = content_type_is_otlp(request.headers()) else {
         return Err(ReceiveError::UnsupportedContentType);
-    }
+    };
 
     let method = request.method().to_string();
     let path = request.uri().path().to_string();
@@ -95,7 +113,7 @@ pub async fn build(request: axum::extract::Request) -> Result<Incoming, ReceiveE
         .await
         .context("reading the OTLP request body")
         .map_err(ReceiveError::Body)?;
-    Ok(Incoming::new(&method, &path, bytes.to_vec()))
+    Ok(Incoming::new(&method, &path, bytes.to_vec(), format))
 }
 
 /// `Host` must be exactly this daemon's own loopback endpoint (`127.0.0.1
@@ -121,13 +139,10 @@ fn host_is_trusted(headers: &HeaderMap) -> bool {
 /// (`application/x-www-form-urlencoded`, `multipart/form-data`,
 /// `text/plain`) were never valid OTLP anyway, so this is a real validation
 /// as well as a defence.
-fn content_type_is_otlp(headers: &HeaderMap) -> bool {
-    let Some(content_type) = headers
+fn content_type_is_otlp(headers: &HeaderMap) -> Option<WireFormat> {
+    let content_type = headers
         .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
+        .and_then(|value| value.to_str().ok())?;
     // Strip a `; charset=...` (or any other) parameter before comparing --
     // `application/json; charset=utf-8` is the same media type as
     // `application/json`.
@@ -137,7 +152,11 @@ fn content_type_is_otlp(headers: &HeaderMap) -> bool {
         .unwrap_or(content_type)
         .trim()
         .to_ascii_lowercase();
-    essence == "application/json" || essence == "application/x-protobuf"
+    match essence.as_str() {
+        "application/json" => Some(WireFormat::Json),
+        "application/x-protobuf" => Some(WireFormat::Protobuf),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

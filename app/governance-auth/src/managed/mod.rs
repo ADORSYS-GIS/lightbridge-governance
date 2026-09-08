@@ -51,6 +51,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+pub(crate) use formats::Document;
 pub use formats::Format;
 pub use plan::plan;
 

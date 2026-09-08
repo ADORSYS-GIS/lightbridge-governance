@@ -104,22 +104,25 @@ sequenceDiagram
     participant OS as OS exec
     participant ga as governance-auth token
 
-    CX->>OS: spawn auth.command (NO shell)
-    Note over CX,OS: ⚠️ No shell ⇒ no login-shell PATH.<br/>A bare `governance-auth` cannot resolve when the<br/>binary lives in ~/.local/bin.
+    CX->>OS: spawn auth.command with auth.args (NO shell)
+    Note over CX,OS: ⚠️ No shell ⇒ command is one executable path.<br/>Flags and values must be separate args entries.
 
     alt command is a bare name
         OS-->>CX: No such file or directory (os error 2)
         CX->>CX: proceeds UNAUTHENTICATED
         Note over CX: Surfaces later as a confusing API error,<br/>never as "the helper did not run".
-    else command is an absolute path
+    else command contains executable and flags in one string
+        OS-->>CX: No such file or directory (os error 2)
+    else command is absolute and args is an array
         OS->>ga: exec /home/USER/.local/bin/governance-auth … token
         ga-->>CX: access_token
     end
 ```
 
 Claude Code resolves a bare name (it uses a shell), so this trap is invisible
-if only that client is tested. `governance-auth` now builds every command it
-writes from `otel::binary_path()` (`std::env::current_exe()`).
+if only that client is tested. `governance-auth` writes
+`otel::binary_path()` (`std::env::current_exe()`) as Codex's executable and
+puts every flag and value in `auth.args`.
 
 ---
 
@@ -392,7 +395,7 @@ sequenceDiagram
     alt --gateway-url given
         ga->>FS: Claude: apiKeyHelper + ANTHROPIC_BASE_URL
         Note over ga,FS: Written as a PAIR or not at all — an apiKeyHelper<br/>minting gateway tokens while the base URL still points<br/>at api.anthropic.com would ship a Keycloak token there.
-        ga->>FS: Codex: [model_providers.governance] + auth.command (ABSOLUTE path)
+        ga->>FS: Codex: provider + absolute auth.command + auth.args array
         Note over ga,FS: Block is written with an inline "inert" comment:<br/>codex-cli only accepts wire_api="responses" and<br/>/v1/responses 404s upstream.
     end
 

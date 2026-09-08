@@ -153,6 +153,10 @@ installing one of the tools for the first time, or when the endpoint or ingest t
 changed. Exactly which keys in which files:
 [`files.md`](../governance-auth/files.md).
 
+For a Codex installation that should export telemetry through the daemon while keeping its
+existing model provider, add `--codex-telemetry-only` to `login` or `configure`. This remains
+effective when `gateway_url` is inherited from another governance-auth configuration layer.
+
 The two sections below are the by-hand equivalent, for when you want to see it or when
 you're editing managed settings your org pushes.
 
@@ -185,7 +189,8 @@ base_url = "https://api.ai.camer.digital/v1"
 wire_api = "responses"
 
 [model_providers.camer.auth]
-command = ["governance-auth", "token"]
+command = "/home/<user>/.local/bin/governance-auth"
+args = ["--issuer", "https://auth.ai.camer.digital", "--client-id", "governance-auth-cli", "token"]
 refresh_interval_ms = 240000
 ```
 

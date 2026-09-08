@@ -87,7 +87,7 @@ because there the wiring is the entire point.
 ## `token`
 
 Prints a currently-valid access token to stdout. **This is the command to wire into
-`apiKeyHelper` and `[model_providers.*.auth] command`.**
+`apiKeyHelper` and `[model_providers.*.auth] command` plus `args`.**
 
 ```bash
 governance-auth token
@@ -245,6 +245,21 @@ config directory doesn't exist is skipped, never created — most developers hav
 three, not all of them.
 
 Which files, and which keys inside them, is [`files.md`](./files.md).
+
+### Configure Codex telemetry without its model provider
+
+```bash
+governance-auth configure \
+  --profile daemon \
+  --otel-endpoint https://otel.ai.camer.digital \
+  --codex-telemetry-only
+```
+
+`--codex-telemetry-only` writes Codex's `[otel]` tables without adding or
+changing `model_provider` or `[model_providers.governance]`. It overrides a
+`gateway_url` inherited from the environment, per-user config, or machine
+config for this Codex write. Claude Code's inference configuration is still
+governed by `gateway_url`.
 
 ### Leaving one client alone
 

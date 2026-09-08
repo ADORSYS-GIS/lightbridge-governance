@@ -13,11 +13,10 @@
 //!
 //! ## Kill is SIGKILL, and that is fine here
 //!
-//! The spool is in-memory and lost on process exit -- accepted for #268. So
-//! these tests assert against the mock collector's state and the HTTP status
-//! the client got, never against a graceful shutdown, and [`Child::kill`]
-//! (the only kill reachable without `libc`/`unsafe`, which the repo denies) is
-//! all `stop` needs.
+//! The spool is durable and requires no graceful shutdown. [`Child::kill`]
+//! (the only kill reachable without `libc`/`unsafe`, which the repo denies)
+//! is therefore the stronger test: anything acknowledged before it must
+//! remain recoverable on restart.
 //!
 //! ## Why `until` and never the clock
 //!
@@ -33,7 +32,7 @@ use std::{
     sync::{Mutex, MutexGuard, OnceLock},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use super::{harness::Harness, interrupt};
@@ -62,6 +61,12 @@ impl Daemon {
         let guard = port_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        if TcpStream::connect(("127.0.0.1", 17457)).is_ok() {
+            bail!(
+                "cannot start the test daemon: 127.0.0.1:17457 is already occupied by a process \
+                 outside this test; refusing to exercise that process and report a false result"
+            );
+        }
         let mut command = Command::new(env!("CARGO_BIN_EXE_governance-auth"));
         command
             .env("HOME", harness.home())
@@ -82,7 +87,7 @@ impl Daemon {
         let child = command
             .spawn()
             .context("spawning the serve --otel daemon")?;
-        let daemon = Self {
+        let mut daemon = Self {
             child,
             _port_guard: guard,
         };
@@ -92,8 +97,15 @@ impl Daemon {
 
     /// Blocks until the daemon has bound the loopback port, so callers can POST
     /// without racing the spawn.
-    pub async fn until_ready(&self) -> Result<()> {
+    pub async fn until_ready(&mut self) -> Result<()> {
         interrupt::until("the serve --otel daemon to bind the loopback port", || {
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .context("checking the test daemon while waiting for its port")?
+            {
+                bail!("the test daemon exited before binding its port: {status}");
+            }
             Ok(TcpStream::connect(("127.0.0.1", 17457)).is_ok())
         })
         .await
@@ -102,14 +114,19 @@ impl Daemon {
     /// POSTs an OTLP JSON body to the daemon's loopback endpoint and returns the
     /// status it answered with. `path` exercises the "any path" contract.
     pub async fn post(&self, path: &str, body: &Value) -> Result<reqwest::StatusCode> {
-        let response = reqwest::Client::new()
+        Ok(self.post_response(path, body).await?.status())
+    }
+
+    /// The full response variant, for tests that pin OTLP's response body and
+    /// content-type contract rather than only its status.
+    pub async fn post_response(&self, path: &str, body: &Value) -> Result<reqwest::Response> {
+        reqwest::Client::new()
             .post(format!("{DAEMON_ENDPOINT}{path}"))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
             .await
-            .with_context(|| format!("POSTing to {DAEMON_ENDPOINT}{path}"))?;
-        Ok(response.status())
+            .with_context(|| format!("POSTing to {DAEMON_ENDPOINT}{path}"))
     }
 
     /// POSTs with an explicit `Host` header, for proving the admission check
@@ -142,14 +159,25 @@ impl Daemon {
         content_type: &str,
         body: Vec<u8>,
     ) -> Result<reqwest::StatusCode> {
-        let response = reqwest::Client::new()
+        Ok(self
+            .post_bytes_response(path, content_type, body)
+            .await?
+            .status())
+    }
+
+    pub async fn post_bytes_response(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response> {
+        reqwest::Client::new()
             .post(format!("{DAEMON_ENDPOINT}{path}"))
             .header("content-type", content_type)
             .body(body)
             .send()
             .await
-            .with_context(|| format!("POSTing bytes to {DAEMON_ENDPOINT}{path}"))?;
-        Ok(response.status())
+            .with_context(|| format!("POSTing bytes to {DAEMON_ENDPOINT}{path}"))
     }
 
     /// SIGKILLs the daemon and reaps it, releasing the fixed-port lock. Errors if

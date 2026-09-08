@@ -3,7 +3,7 @@
 //! P1: a crash between `try_reclaim`'s truncate and its checkpoint reset must
 //! not wedge the drain.
 
-use super::{super::commit::RECLAIM_ABOVE, DurableSpool, TempDir};
+use super::{super::commit::RECLAIM_ABOVE, DurableSpool, FORMAT, TempDir};
 use crate::copilot::Signal;
 
 #[test]
@@ -16,7 +16,7 @@ fn a_fully_delivered_spool_over_the_reclaim_threshold_is_truncated() {
     // One record safely over RECLAIM_ABOVE, so the very first advance already
     // meets the reclaim precondition (size == offset).
     let big = vec![b'x'; usize::try_from(RECLAIM_ABOVE).unwrap_or(usize::MAX) + 1024];
-    spool.retain(Signal::Logs, big).expect("retain");
+    spool.retain(Signal::Logs, big, FORMAT).expect("retain");
     let pending = spool.next().expect("next").expect("pending");
     spool.advance(&pending).expect("advance");
 
@@ -33,7 +33,9 @@ fn is_empty_reflects_pending_bytes_not_file_existence() {
     let mut spool = dir.spool("a");
     assert!(spool.is_empty().expect("no file yet"), "no file at all");
 
-    spool.retain(Signal::Logs, b"one".to_vec()).expect("retain");
+    spool
+        .retain(Signal::Logs, b"one".to_vec(), FORMAT)
+        .expect("retain");
     assert!(!spool.is_empty().expect("check"), "one record pending");
 
     let pending = spool.next().expect("next").expect("pending");
@@ -49,7 +51,7 @@ fn is_empty_reflects_pending_bytes_not_file_existence() {
 /// `{checkpoint: offset=N (stale, large), file: truncated to 0}`. `is_empty`
 /// used to trust a raw `size <= offset` compare, which reads that state as
 /// "caught up" forever -- even once new records are appended starting from
-/// byte 0 -- wedging the drain permanently: the client keeps getting `202`,
+/// byte 0 -- wedging the drain permanently: the client keeps getting success,
 /// but nothing is ever offered to the collector again. Seeded here by hand,
 /// since actually killing the process mid-`try_reclaim` is what
 /// `tests/serve_otel_durability.rs`'s SIGKILL tests exercise at a much
@@ -81,7 +83,7 @@ fn a_stale_offset_after_an_unfinished_reclaim_does_not_wedge_the_drain() {
     );
 
     spool
-        .retain(Signal::Logs, b"after-the-crash".to_vec())
+        .retain(Signal::Logs, b"after-the-crash".to_vec(), FORMAT)
         .expect("retain");
     let pending = spool
         .next()

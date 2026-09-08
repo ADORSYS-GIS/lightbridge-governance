@@ -5,7 +5,7 @@
 //! validates the JWTs it issues. This is a pure OAuth2 *client*: `login`
 //! performs the interactive flow once, `token` prints a currently-valid access
 //! token on every subsequent call, wired into Claude Code's `apiKeyHelper` and
-//! Codex's `[model_providers.<id>.auth] command`.
+//! Codex's `[model_providers.<id>.auth] command` and `args`.
 //!
 //! The command tree, and the rule that decided which names were allowed to
 //! move when it was reorganised into scopes, live in `crate::cli`.

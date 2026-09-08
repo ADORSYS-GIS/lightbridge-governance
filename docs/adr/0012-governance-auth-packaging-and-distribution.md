@@ -37,8 +37,8 @@ Everything below is marked by how it was established:
 - Config today is CLI flags plus `GOVERNANCE_AUTH_*` env vars. There is no
   config file, so every invocation must be given `--issuer` and `--client-id`
   or it errors. **[repo]**
-- Codex spawns `auth.command` **without a shell**, so commands written into
-  other tools' configs must be absolute paths. **[repo]**
+- Codex spawns `auth.command` **without a shell**, so it must be an absolute
+  executable path and its flags must be separate `auth.args` entries. **[repo]**
 
 ## Decision
 
@@ -118,11 +118,11 @@ otel_endpoint   = "https://otel.ai.camer.digital"
 otel_token_file = "/etc/governance-auth/otel-token"
 ```
 
-**`configure` keeps embedding `--issuer`/`--client-id`** in the commands it
-writes. The string that lands in someone's `settings.json` must be
-self-contained and must not change meaning when a config file is edited or
-deleted — and on Codex the failure mode of getting that wrong is silent
-unauthenticated operation.
+**`configure` keeps embedding `--issuer`/`--client-id`** in the helper
+invocations it writes. Claude Code receives one self-contained string; Codex
+receives the executable in `auth.command` and the same flags and values as
+separate `auth.args` entries. Neither depends on a config file remaining
+present, and Codex never has to parse a command line.
 
 ### 3. Credentials stay in files. No OS keychain.
 

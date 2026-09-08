@@ -113,12 +113,14 @@ one merely valid at the moment it is printed.
 |---|---|---|
 | `model_provider` | `governance` | gateway |
 | `model_providers.governance.{name,base_url,wire_api}` | `<gateway>/v1`, OpenAI-compatible | gateway |
-| `model_providers.governance.auth.command` | absolute path to `governance-auth` | gateway |
+| `model_providers.governance.auth.command` | absolute path to `governance-auth`, with no arguments | gateway |
+| `model_providers.governance.auth.args` | `--issuer`, issuer, `--client-id`, client id, `token` as separate array elements | gateway |
 | `otel.environment` | environment tag | collector |
 | `otel.{exporter,metrics_exporter}.otlp-http.{endpoint,protocol,headers.Authorization}` | collector wiring | collector |
 
-⚠️ **`auth.command` must be an absolute path** — Codex spawns it without a
-shell, so `PATH` is not consulted.
+⚠️ **`auth.command` must be an absolute path and arguments must be in
+`auth.args`** — Codex spawns the executable without a shell, so `PATH` is not
+consulted and a combined command line is interpreted as one filename.
 
 ⚠️ **Codex's `headers.Authorization` is a static string read once at start.**
 It does not refresh. That is a known limit of Codex's config surface, not a
@@ -222,8 +224,8 @@ Per tool:
 
 - **Claude Code** — a request succeeds and `ANTHROPIC_BASE_URL` in
   `~/.claude/settings.json` points at `<gateway>/anthropic`.
-- **Codex** — `model_provider = "governance"` is present and `auth.command` is
-  an absolute path that exists.
+- **Codex** — `model_provider = "governance"` is present, `auth.command` is an
+  absolute path that exists, and `auth.args` is an array ending in `"token"`.
 - **VS Code / Copilot telemetry** — read the OTLP row in `governance-auth
   status` (#217). `never applied` and `no credential` are the two ways this
   silently does nothing, and both are invisible from inside the editor.

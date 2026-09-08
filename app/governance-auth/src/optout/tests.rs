@@ -21,16 +21,19 @@ use crate::{
 const NO_CODEX: ClientOptOut = ClientOptOut {
     claude: false,
     codex: true,
+    codex_telemetry_only: false,
     vscode: false,
 };
 pub(super) const NO_VSCODE: ClientOptOut = ClientOptOut {
     claude: false,
     codex: false,
+    codex_telemetry_only: false,
     vscode: true,
 };
 const NONE_OF_THEM: ClientOptOut = ClientOptOut {
     claude: true,
     codex: true,
+    codex_telemetry_only: false,
     vscode: true,
 };
 

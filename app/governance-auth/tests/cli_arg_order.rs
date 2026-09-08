@@ -1,10 +1,9 @@
 //! `--issuer`/`--client-id` must parse regardless of whether they appear
 //! before or after the subcommand name.
 //!
-//! This matters specifically because both vendors' credential-helper hooks
-//! (`apiKeyHelper`, `auth.command`) are configured as a single command-line
-//! string, and both this repo's runbook and the vendors' own examples write
-//! the subcommand first (`"governance-auth token"`). Composing that with
+//! This matters specifically because Claude Code's `apiKeyHelper` is
+//! configured as a single command-line string, and its examples write the
+//! subcommand first (`"governance-auth token"`). Composing that with
 //! explicit flags -- the only reliable option, since a helper subprocess
 //! isn't guaranteed to inherit `GOVERNANCE_AUTH_ISSUER`/`_CLIENT_ID` from a
 //! shell profile -- naturally reads as `governance-auth token --issuer ...`.

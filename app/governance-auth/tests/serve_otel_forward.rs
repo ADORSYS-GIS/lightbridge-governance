@@ -12,6 +12,7 @@ use serde_json::json;
 use support::{
     copilot as fixture,
     harness::Harness,
+    interrupt,
     mock_collector::{Behavior, MockCollector},
     otel_payload::{jwt_session, logs_payload, metrics_payload},
     raw_collector::RawCollector,
@@ -29,10 +30,22 @@ async fn any_path_is_forwarded_by_body_signal_not_rejected() -> Result<()> {
     let collector = MockCollector::start(Behavior::Accept).await?;
 
     let daemon = Daemon::start(&harness, &collector.base_url, &[]).await?;
-    let status = daemon
-        .post("/utter-garbage", &logs_payload("any-path"))
+    let response = daemon
+        .post_response("/utter-garbage", &logs_payload("any-path"))
         .await?;
-    assert_eq!(status.as_u16(), 200);
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(response.text().await?, "{}");
+    interrupt::until("the any-path payload to reach the collector", || {
+        Ok(collector.request_count()? == 1)
+    })
+    .await?;
     assert_eq!(
         collector.paths()?,
         vec!["/v1/logs".to_owned()],
@@ -58,6 +71,11 @@ async fn metrics_and_logs_are_routed_and_stamped_with_identity() -> Result<()> {
         daemon.post("/", &logs_payload("identity")).await?.as_u16(),
         200
     );
+
+    interrupt::until("both signals to reach the collector", || {
+        Ok(collector.request_count()? == 2)
+    })
+    .await?;
 
     let payloads = collector.payloads()?;
     assert_eq!(payloads.len(), 2, "one metrics, one logs forward");
@@ -117,6 +135,11 @@ async fn a_forged_identity_attribute_is_replaced_before_forwarding() -> Result<(
         }],
     });
     assert_eq!(daemon.post("/", &forged).await?.as_u16(), 200);
+    interrupt::until(
+        "the identity-stamped payload to reach the collector",
+        || Ok(collector.request_count()? == 1),
+    )
+    .await?;
 
     let payloads = collector.payloads()?;
     assert_eq!(payloads.len(), 1);
@@ -164,18 +187,31 @@ async fn a_non_json_body_is_forwarded_verbatim_not_withheld() -> Result<()> {
 
     // A protobuf metrics body at the metrics path.
     let metrics_bytes = b"\x0a\x03log\x12\x04test\x00\x01\x02\x03".to_vec();
-    let status = daemon
-        .post_bytes(
+    let response = daemon
+        .post_bytes_response(
             "/v1/metrics",
             "application/x-protobuf",
             metrics_bytes.clone(),
         )
         .await?;
     assert_eq!(
-        status.as_u16(),
+        response.status().as_u16(),
         200,
-        "a protobuf body with a valid session must be forwarded (200), not withheld (202)"
+        "a protobuf body must be accepted into durable custody"
     );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok()),
+        Some("application/x-protobuf")
+    );
+    assert!(response.bytes().await?.is_empty());
+
+    interrupt::until("the protobuf payload to reach the collector", || {
+        Ok(collector.requests()?.len() == 1)
+    })
+    .await?;
 
     let requests = collector.requests()?;
     assert_eq!(requests.len(), 1, "one protobuf forward expected");

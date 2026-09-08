@@ -356,8 +356,8 @@ invocations lying around in config it wrote under the old scheme.
 
 **What keeps working, unaffected:**
 
-- `~/.claude/settings.json`'s `apiKeyHelper` and `~/.codex/config.toml`'s `auth.command` both
-  run `token`. `token` did not move.
+- `~/.claude/settings.json`'s `apiKeyHelper` and `~/.codex/config.toml`'s
+  `auth.command` plus `auth.args` both run `token`. `token` did not move.
 - The VS Code extension spawns `token` directly. Also unaffected — `configure` cannot reach
   into the extension's own compiled invocation, which is the whole reason `token` was frozen
   rather than folded into a scope.

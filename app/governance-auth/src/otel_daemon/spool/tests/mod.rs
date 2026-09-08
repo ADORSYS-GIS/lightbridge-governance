@@ -8,7 +8,9 @@ mod reclaim;
 use std::path::PathBuf;
 
 use super::DurableSpool;
-use crate::copilot::Signal;
+use crate::{copilot::Signal, otel_daemon::receive::WireFormat};
+
+const FORMAT: WireFormat = WireFormat::Json;
 
 struct TempDir(PathBuf);
 
@@ -47,7 +49,9 @@ fn a_retained_record_is_returned_then_gone_after_advance() {
     let mut spool = dir.spool("a");
 
     assert!(spool.next().expect("next").is_none(), "nothing yet");
-    spool.retain(Signal::Logs, b"one".to_vec()).expect("retain");
+    spool
+        .retain(Signal::Logs, b"one".to_vec(), FORMAT)
+        .expect("retain");
 
     let pending = spool.next().expect("next").expect("one record pending");
     assert_eq!(pending.signal, Signal::Logs);
@@ -65,10 +69,10 @@ fn two_records_are_delivered_in_fifo_order() {
     let dir = TempDir::new("fifo");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, b"first".to_vec())
+        .retain(Signal::Logs, b"first".to_vec(), FORMAT)
         .expect("retain");
     spool
-        .retain(Signal::Metrics, b"second".to_vec())
+        .retain(Signal::Metrics, b"second".to_vec(), FORMAT)
         .expect("retain");
 
     let first = spool.next().expect("next").expect("first pending");
@@ -93,7 +97,7 @@ fn retain_refuses_rather_than_dropping_once_full() {
     let chunk = vec![0u8; 1024 * 1024];
     let mut retained = 0;
     let error = loop {
-        match spool.retain(Signal::Logs, chunk.clone()) {
+        match spool.retain(Signal::Logs, chunk.clone(), FORMAT) {
             Ok(()) => {
                 retained += 1;
                 assert!(retained <= 32, "capacity should have refused by now");
@@ -119,7 +123,7 @@ fn the_largest_retainable_payload_is_actually_retainable() {
     let mut spool = dir.spool("a");
     let payload = vec![0u8; super::MAX_RETAINABLE_PAYLOAD];
     spool
-        .retain(Signal::Logs, payload.clone())
+        .retain(Signal::Logs, payload.clone(), FORMAT)
         .expect("the documented ceiling must fit on an empty spool");
     let pending = spool.next().expect("next").expect("pending");
     assert_eq!(pending.payload, payload);
@@ -134,7 +138,11 @@ fn the_largest_retainable_payload_stays_under_the_tail_readers_own_cap() {
     let dir = TempDir::new("max-payload-read");
     let mut spool = dir.spool("a");
     spool
-        .retain(Signal::Logs, vec![0u8; super::MAX_RETAINABLE_PAYLOAD])
+        .retain(
+            Signal::Logs,
+            vec![0u8; super::MAX_RETAINABLE_PAYLOAD],
+            FORMAT,
+        )
         .expect("retain");
     spool
         .next()
@@ -153,7 +161,7 @@ fn a_corrupt_line_is_skipped_and_counted_not_fatal() {
     // the torn-write case the module doc names.
     std::fs::write(&spool_path, b"not an envelope\n").expect("seed garbage");
     spool
-        .retain(Signal::Logs, b"good".to_vec())
+        .retain(Signal::Logs, b"good".to_vec(), FORMAT)
         .expect("retain");
 
     let pending = spool

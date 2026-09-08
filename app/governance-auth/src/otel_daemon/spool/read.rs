@@ -63,7 +63,7 @@ impl DurableSpool {
     /// `{checkpoint: offset=N (stale, large), file: truncated to 0}` -- a
     /// plain size compare reads `size <= N` as "caught up" forever, even once
     /// new records are appended starting from byte 0, wedging the drain
-    /// permanently (the agent keeps getting `202`, nothing is ever offered to
+    /// permanently (the agent keeps getting success, nothing is ever offered to
     /// the collector). [`Self::peek_at`] already detects exactly this as
     /// [`Peeked::Restarted`], which this reads as "not empty" -- `next` then
     /// adopts the restart on the very next call, self-healing.
@@ -119,9 +119,10 @@ impl DurableSpool {
             .map_or(drained.next_offset, |second| second.offset);
 
         let peeked = match envelope::decode(&first.text) {
-            Ok((signal, payload)) => Peeked::Decoded(Pending {
+            Ok((signal, payload, format)) => Peeked::Decoded(Pending {
                 signal,
                 payload,
+                format,
                 key: Quarantine::key(&first.text),
                 boundary,
             }),

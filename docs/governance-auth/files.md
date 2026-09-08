@@ -474,18 +474,17 @@ base_url = "https://api.example/v1"
 wire_api = "responses"
 
 [model_providers.governance.auth]
-command = "/abs/path/to/governance-auth token …"
+command = "/abs/path/to/governance-auth"
+args = ["--issuer", "https://auth.example", "--client-id", "governance-auth-cli", "token"]
 refresh_interval_ms = 240000
 ```
 
 Two traps, both measured live rather than inferred:
 
-- **The command must be an absolute path.** Codex spawns it directly rather than through a
-  shell, so it does not inherit the login shell's `PATH`. A bare `governance-auth` fails with
-  `No such file or directory (os error 2)` and the provider silently falls back to
-  unauthenticated. Claude Code happens to resolve a bare name because it goes through a
-  shell — which is exactly why this trap shows up on only one of the two clients, and why
-  both are built from the same absolute-path helper.
+- **`command` is only the absolute executable path; flags belong in `args`.** Codex passes
+  `command` directly to the OS rather than through a shell. A bare executable does not inherit
+  the login shell's `PATH`, while a command string containing flags asks the OS to find a file
+  whose name contains the flags. Both fail with `No such file or directory (os error 2)`.
 - **`wire_api = "responses"` is the only accepted value.** `wire_api = "chat"` is rejected
   outright at config load ("no longer supported").
 
