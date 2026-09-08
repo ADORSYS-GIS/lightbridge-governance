@@ -6,27 +6,31 @@
 //! to pass.
 //!
 //! ADR-0016 makes `Daemon` the eventual compiled default. [`Profile::default`]
-//! is `Manual` for now, deliberately diverging from the ADR, pending BOTH of:
-//! the daemon itself (`serve --otel`, #268 -- landed) and Copilot's rewiring
-//! onto it (#272 -- not yet). Defaulting to `Daemon` before both land would
-//! move every developer who upgrades and re-runs `configure` without an
-//! explicit `--profile` onto wiring this repo cannot yet fully serve -- three
-//! P0s from one review, confirmed live against a real machine, if flipped
-//! before #268: the drain that delivers telemetry today is torn down, every
-//! client's OTLP export is redirected to a port nothing listens on, and the
-//! daemon service that's supposed to replace them enters a permanent
-//! `Restart=on-failure` crash loop, all silently. #268 landing alone removes
-//! only the crash-loop third of that: with no #272, `daemon` still tears down
-//! the working Copilot drain and installs a service with no path to the
-//! Copilot spool, growing it forever with nothing to consume it (#280 review,
-//! the `schedule/daemon/mod.rs` finding). `oauth::apply_telemetry`'s
-//! chokepoint (#280 review round 2) refuses `daemon` outright when #268 is
-//! missing; nothing yet gates on #272 the same way, so the default staying
-//! `Manual` is still load-bearing on its own, not just belt-and-suspenders.
-//! There is no CLI-introspectable tripwire for "#272 has landed" the way
-//! [`crate::cli::invoke::serve_otel_is_supported`] answers "#268 has landed"
-//! -- flipping this back to `Self::Daemon` is a decision to make explicitly
-//! once #272 merges, not an automatic one.
+//! is `Manual` for now, deliberately diverging from the ADR. Both of the
+//! original preconditions have landed in code: the daemon itself
+//! (`serve --otel`, #268) and Copilot's own `otlp-http` exporter rewired onto
+//! it (#272). Defaulting to `Daemon` before #268 landed would have moved
+//! every developer who upgrades and re-runs `configure` without an explicit
+//! `--profile` onto wiring this repo could not yet serve at all -- three P0s
+//! from one review, confirmed live against a real machine: the drain that
+//! delivers telemetry today torn down, every client's OTLP export redirected
+//! to a port nothing listens on, and the daemon service entering a permanent
+//! `Restart=on-failure` crash loop, all silently.
+//!
+//! Now that both preconditions are code-complete, the reason the default
+//! still does not flip is #272's own one flagged, load-bearing assumption:
+//! whether Copilot's `otlp-http` exporter actually accepts a plain-`http://`
+//! loopback address from a real VS Code install has been verified only at
+//! the config-file level this repo can test, not against the real client.
+//! Flipping the default before that is field-confirmed would move every
+//! such developer onto the unconfirmed path silently, the same "moved before
+//! this repo can fully serve it" failure #268's own gap caused. There is no
+//! CLI-introspectable tripwire for "the otlp-http assumption is confirmed"
+//! the way [`crate::cli::invoke::serve_otel_is_supported`] answers "#268 has
+//! landed" -- there is nothing short of a real VS Code install this binary
+//! can drive to check it against -- so flipping this back to `Self::Daemon`
+//! is a decision to make explicitly once that confirmation exists, not an
+//! automatic one.
 
 use std::{fmt, str::FromStr};
 
@@ -105,12 +109,13 @@ mod tests {
         assert!(format!("{error}").contains("bogus"));
     }
 
-    /// Not `Daemon`, even though that's ADR-0016's eventual default -- see
-    /// this module's doc for why the two are deliberately out of sync right
-    /// now. `cli::invoke::tests::serve_otel_is_not_yet_a_real_command` is
-    /// what flips this back once #268 lands.
+    /// Not `Daemon`, even though that's ADR-0016's eventual default, and
+    /// even though both #268 and #272 have now landed -- see this module's
+    /// doc for the one remaining reason (Copilot's otlp-http-at-loopback
+    /// assumption, not yet field-confirmed) the two stay deliberately out
+    /// of sync.
     #[test]
-    fn the_compiled_default_is_manual_until_268_and_272_land() {
+    fn the_compiled_default_stays_manual_pending_field_confirmation() {
         assert_eq!(Profile::default(), Profile::Manual);
     }
 }

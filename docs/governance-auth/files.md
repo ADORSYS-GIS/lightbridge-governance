@@ -391,6 +391,7 @@ Keys owned, in the `env` block and at the root:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-endpoint` set | `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` set | the collector base |
 | `OTEL_RESOURCE_ATTRIBUTES` | `--otel-endpoint` set | `service.namespace=ai-cli,user.email=…,user.id=…,user.name=…` |
+| `OTEL_METRICS_INCLUDE_ENTRYPOINT` | `--otel-endpoint` set | `1` |
 | `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | helper in use | the debounce value |
 | `OTEL_EXPORTER_OTLP_HEADERS` | **only** when no helper | `Authorization=Bearer …` |
 
@@ -502,6 +503,8 @@ Flavours checked: `Code`, `Code - Insiders`, `VSCodium`. Under `~/.config/` on L
 `~/Library/Application Support/` on macOS — VS Code does not follow `XDG_CONFIG_HOME` on
 macOS.
 
+**`manual` profile** (the compiled default today):
+
 ```json
 "github.copilot.chat.otel.enabled": true,
 "github.copilot.chat.otel.exporterType": "file",
@@ -509,12 +512,12 @@ macOS.
 "github.copilot.chat.otel.captureContent": false
 ```
 
-⚠️ **The exporter is `file`, not `otlp-http`, and that is the point.** Copilot's direct HTTP
-exporter has no header this binary is willing to write. `github.copilot.chat.otel.headers`
-exists, but it is a *static* map and `settings.json` is covered by Settings Sync — writing a
-bearer there syncs it off-machine. The `otlp-http` this used to write carried no header at
-all, so an authenticating collector returned **401 on every span** while the config looked
-complete.
+⚠️ **The exporter is `file`, not `otlp-http`, under `manual`.** Copilot's direct HTTP
+exporter has no header this binary is willing to write under this profile. `github.copilot
+.chat.otel.headers` exists, but it is a *static* map and `settings.json` is covered by
+Settings Sync — writing a bearer there syncs it off-machine. The `otlp-http` this used to
+write under every profile carried no header at all, so an authenticating collector returned
+**401 on every span** while the config looked complete.
 
 The file exporter has neither problem. Copilot appends to `outfile`;
 [`copilot push`](./commands.md#copilot-push) drains it on the schedule `configure` installs,
@@ -526,10 +529,26 @@ long-lived `--otel-token`.
 to the drain as `--copilot-spool-path`. They cannot disagree — which they could, and did, when
 both were copy-pasted out of a runbook.
 
-⚠️ **Upgrading from a build that wrote `otlp-http`** leaves `github.copilot.chat.otel.otlpEndpoint`
-behind. One `configure` removes it: the key is in the managed-key manifest, so
-the managed-key manifest retracts it — but only if its value still hashes to what we
-wrote, so a developer who edited it keeps their edit.
+**`daemon` profile** (issue #272): the reasoning above no longer applies, because there is no
+credential to sync off-machine — the loopback daemon needs none.
+
+```json
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.exporterType": "otlp-http",
+"github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:17457",
+"github.copilot.chat.otel.captureContent": false
+```
+
+No `outfile`, no `headers` key of any kind: Copilot exports directly to the daemon, which
+mints its own bearer on the outbound leg (`serve --otel`, #268), so nothing here ever holds a
+credential either way. `copilot push` and its schedule are not installed under this profile —
+there is no spool file for them to drain.
+
+⚠️ **Switching profiles retracts the other one's keys**, not just stops writing new ones: the
+key set is in the managed-key manifest, and `configure` removes whichever of `outfile` /
+`otlpEndpoint` the other profile owns — but only if its value still hashes to what we wrote,
+so a developer who hand-edited it keeps their edit. The same rule already covered the older
+cutover from a plain `otlp-http` exporter with no profile axis at all.
 
 **A JSONC file is refused, not rewritten.** VS Code's `settings.json` legally contains
 comments and trailing commas, and developers really do use them. `serde_json` can't parse
@@ -556,3 +575,12 @@ trade.
 
 Attributes are rendered from a sorted map so the output is deterministic. An unstable
 ordering would make every `login` rewrite the config with a spurious diff.
+
+⚠️ **`app.entrypoint` is separate from all of the above**, and this binary does not construct
+it — `OTEL_METRICS_INCLUDE_ENTRYPOINT=1` only turns on an attribute Claude Code adds itself
+(off by default; see its own docs at
+[code.claude.com/docs/en/monitoring-usage](https://code.claude.com/docs/en/monitoring-usage)).
+Confirmed live to be the documented way to tell an interactive `cli` session apart from an
+Agent-SDK-driven one (`sdk-cli`/`sdk-ts`/`sdk-py`) or a VS Code/Cursor integration
+(`claude-vscode`) — without this flag, real traffic through this org's own collector carried
+no such distinction at all.

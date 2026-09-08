@@ -1,6 +1,6 @@
 //! The governance API: the read surface over the registry and both connectors'
-//! normalized data, plus `/internal/v1/resolve` for Authorino, `/internal/v1/ingest`
-//! for OTLP telemetry, and `/metrics` for the ServiceMonitor.
+//! normalized data, plus `/internal/v1/resolve` for Authorino and `/metrics`
+//! for the ServiceMonitor.
 //!
 //! It also OWNS the connector operational metrics (ADR-0007): a CronJob pod
 //! cannot be scraped, so the collector records run outcomes in `ingest_manifest`
@@ -8,9 +8,7 @@
 
 mod args;
 mod authn;
-mod ingest;
 mod metrics;
-mod rate_limit;
 mod resolve;
 mod router;
 
@@ -50,22 +48,10 @@ async fn main() -> Result<()> {
     };
     let db = Cratestack::builder(pool.clone()).build();
     let metrics = Arc::new(metrics::Metrics::new());
-    // Cloned before `pool` moves into `ingest_state` below -- `PgPool` is
-    // Arc-backed, so this is a refcount bump, not a new connection pool.
-    let connector_metrics_pool = pool.clone();
     let tenant_id: Arc<str> = Arc::from(args.tenant_id.as_str());
     let connector_metrics_timeout =
         std::time::Duration::from_millis(args.connector_metrics_timeout_ms);
     let org_kpi_timeout = std::time::Duration::from_millis(args.org_kpi_timeout_ms);
-    let ingest_state = ingest::IngestState {
-        pool,
-        internal_token: Arc::from(args.internal_ingest_token.as_str()),
-        rate_limiter: Arc::new(rate_limit::RateLimiter::new(
-            args.ingest_rate_max_per_window,
-            args.ingest_rate_window_secs,
-        )),
-        metrics: metrics.clone(),
-    };
 
     let app = router::build_router(db).merge(
         axum::Router::new()
@@ -74,16 +60,6 @@ async fn main() -> Result<()> {
                 axum::routing::post(resolve::resolve),
             )
             .with_state(resolve_state)
-            .route("/internal/v1/ingest", axum::routing::post(ingest::ingest))
-            // Deliberate body cap for the OTLP export batch: axum's implicit
-            // default is 2 MiB; agent telemetry batches can be larger, so the
-            // limit is raised and made explicit rather than left at an
-            // undocumented default that silently drops oversize payloads with
-            // a 413 (a permanent, non-retried failure for the collector).
-            .layer(axum::extract::DefaultBodyLimit::max(
-                ingest::MAX_OTLP_BODY_BYTES,
-            ))
-            .with_state(ingest_state)
             // Health and metrics are unauthenticated and deliberately outside
             // the registry/resolve auth paths, so an orchestrator can probe a
             // service that is otherwise refusing traffic.
@@ -93,7 +69,7 @@ async fn main() -> Result<()> {
                 "/metrics",
                 axum::routing::get(move || {
                     let metrics = Arc::clone(&metrics);
-                    let pool = connector_metrics_pool.clone();
+                    let pool = pool.clone();
                     let tenant_id = Arc::clone(&tenant_id);
                     async move {
                         // Refresh-on-scrape, bounded by a timeout well under

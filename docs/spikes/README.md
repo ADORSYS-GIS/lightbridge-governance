@@ -11,6 +11,7 @@ not an RFC (a specification); it is the evidence a later ADR or RFC is built on.
 |---|---|---|---|
 | [0007](./0007-github-app-token-on-copilot-reports.md) | GitHub App installation tokens on Copilot report endpoints | [#7](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/7) | 2026-08-02 |
 | [0008](./spike-0008-codex-otel-admin-config.md) | Codex admin config cannot pin OTel | [#34](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/34) | 2026-08-04 |
+| [0009](./spike-0009-origin-cli.md) | Origin CLI: AI coding provenance and governance | [#229](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/229) | 2026-09-02 |
 
 ## Writing one
 

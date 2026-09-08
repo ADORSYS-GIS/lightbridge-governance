@@ -35,11 +35,20 @@ pub struct Telemetry {
     /// via `otelHeadersHelper` and VS Code Copilot holds no credential at all
     /// since the file-exporter cutover (`crate::vscode`), so Codex is the only
     /// client for which this is the difference between exporting and being
-    /// rejected.
+    /// rejected -- **under `manual`**. Under `daemon` this is `false`
+    /// unconditionally by design (`TelemetryWiring::resolve`: no client ever
+    /// holds a credential when the daemon mints one per forward), so `row`
+    /// must read [`Self::profile`] before treating an absent token as a
+    /// problem -- found live (#268/#270/#271 end-to-end run): every daemon
+    /// install reported "Codex cannot export" despite Codex genuinely
+    /// exporting fine through the loopback daemon.
     pub has_static_token: bool,
     /// Whether a helper command already written into a tool's config names a
     /// command this version no longer has. See [`stale_wiring`].
     pub stale: bool,
+    /// Which telemetry profile is active -- see [`Self::has_static_token`]'s
+    /// doc for why `row` needs this.
+    pub profile: crate::profile::Profile,
 }
 
 /// Does a command line we wrote into somebody else's config still end with a
@@ -126,6 +135,7 @@ impl Telemetry {
             applied: keys.iter().any(|key| is_otel_key(key)),
             has_static_token: keys.iter().any(|key| is_token_key(key)),
             stale: home.is_some_and(stale_wiring),
+            profile: config.profile,
         }
     }
 
@@ -150,7 +160,13 @@ impl Telemetry {
                 format!("wiring was written by an older version: run {command}"),
             );
         }
-        match (&self.endpoint, self.applied, self.has_static_token) {
+        // `daemon` never carries a static token, by design -- see
+        // `Self::has_static_token`'s doc. Treating that as untokened-and-broken
+        // is what a real end-to-end run of #268/#270/#271 found: every daemon
+        // install reported "Codex cannot export" despite exporting fine.
+        let has_static_token =
+            self.has_static_token || self.profile == crate::profile::Profile::Daemon;
+        match (&self.endpoint, self.applied, has_static_token) {
             (None, _, _) => (
                 "not configured".to_owned(),
                 Colour::Yellow,
@@ -169,6 +185,7 @@ impl Telemetry {
             // fault: this is the same condition `apply_telemetry` already warns
             // about, and it now names ONE client -- Claude Code refreshes its
             // own and Copilot needs none. Naming more would be crying wolf.
+            // Reachable only under `manual` (see `has_static_token` above).
             (Some(endpoint), true, false) => (
                 endpoint.clone(),
                 Colour::Yellow,

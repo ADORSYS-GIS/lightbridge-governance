@@ -77,10 +77,12 @@ pub struct Invocation {
 
 impl Invocation {
     /// `None` when no collector is configured, or under the `daemon`
-    /// profile (ADR-0016 / #270 AC5): the daemon forwards Copilot's spool
-    /// itself once #272 rewires its exporter, so a `manual`-only timer
-    /// draining the same file would double-export. Either way there is
-    /// nothing for this timer to do, so it is removed rather than installed
+    /// profile (ADR-0016 / #270 AC5): #272 points Copilot's OWN `otlp-http`
+    /// exporter directly at the loopback daemon under this profile, rather
+    /// than having the daemon read the file this timer drains -- so under
+    /// `daemon` Copilot writes no spool file at all, and a `manual`-only
+    /// timer here would have nothing to push. Either way there is nothing
+    /// for this timer to do, so it is removed rather than installed
     /// pointing at nothing -- the same rule that already applied to a
     /// missing endpoint, now also applied to the profile that owns this
     /// path.

@@ -93,9 +93,6 @@ sha2 = "0.11"
 getrandom = "0.4"
 base64 = "0.23"
 hex = "0.4"
-# ⚠️ To be removed by #243 when the ingest endpoint is deleted. Present only
-# because ingest.rs still uses constant-time comparison.
-subtle = "2"
 # governance-auth only: parsing/building the authorization and loopback-
 # callback URLs by hand invites the exact query-string bugs a URL parser
 # exists to prevent. Already a transitive dependency of reqwest (see

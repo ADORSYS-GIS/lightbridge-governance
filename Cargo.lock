@@ -2511,7 +2511,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "subtle",
  "tokio",
  "tower-http 0.7.0",
  "tracing",

@@ -17,13 +17,12 @@ collector records run outcomes in `ingest_manifests` and this always-running pro
 
 ## `/metrics`
 
-`governance_ingest_*` (the `/internal/v1/ingest` telemetry path) is a set of plain in-process
-counters. `governance_connector_*` (ADR-0007) is different: it is derived from
-`ingest_manifests` fresh on every scrape, bounded by `CONNECTOR_METRICS_TIMEOUT_MS`, and is
-absent (not zero) for a provider that has never synced or before the first successful refresh
--- an unreachable database must never render as a healthy-looking reading. See `metrics.rs`'s
-module doc comment for exactly what each metric means, the refresh-on-scrape tradeoff, and
-what a DB outage looks like on this endpoint.
+`governance_connector_*` (ADR-0007) is derived from `ingest_manifests` fresh on every
+scrape, bounded by `CONNECTOR_METRICS_TIMEOUT_MS`, and is absent (not zero) for a provider
+that has never synced or before the first successful refresh -- an unreachable database
+must never render as a healthy-looking reading. See `metrics.rs`'s module doc comment for
+exactly what each metric means, the refresh-on-scrape tradeoff, and what a DB outage looks
+like on this endpoint.
 
 ## `/internal/v1/resolve` is fail-closed by design
 
@@ -49,15 +48,14 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/lightbridge_governance 
 KUBE_APISERVER_URL=https://kubernetes.default.svc \
 TOKEN_REVIEW_AUDIENCE=api \
 ALLOWED_SERVICE_ACCOUNTS=authorino/authorino \
-INTERNAL_INGEST_TOKEN=dev-token \
 TENANT_ID=dev-tenant \
 cargo run --bin lightbridge-governance
 ```
 
 `TENANT_ID` has no default (ADR-0001: single-tenant per deployment, and `governance_connector_*`
 scopes its `ingest_manifests` query by it, per the house rule that `tenant_id` belongs in the
-WHERE clause of every query even here) — the process will not start without it, matching
-`INTERNAL_INGEST_TOKEN`. `ALLOWED_SERVICE_ACCOUNTS` likewise has no default: an empty allowlist
+WHERE clause of every query even here) — the process will not start without it, and
+`ALLOWED_SERVICE_ACCOUNTS` likewise has no default: an empty allowlist
 rejects every caller, which is the safe startup failure. Locally there is no in-cluster CA or
 SA token, so the `TokenReviewVerifier` falls back to system roots and an empty bearer token —
 the endpoint will fail closed against a real apiserver unless you run in-cluster. See

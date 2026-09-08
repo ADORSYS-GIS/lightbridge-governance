@@ -287,10 +287,10 @@ your org pushes those, this developer needs an explicit carve-out.
 
 **No Copilot telemetry is arriving at the collector**
 
-Copilot does not export over the network at all: `configure` sets
-`github.copilot.chat.otel.exporterType` to `file` and `governance-auth copilot push` ships the
-spool on a timer. Check the two `status` rows in order, because they answer different
-questions:
+This depends on the profile. Under **`manual`** (the compiled default), Copilot does not
+export over the network at all: `configure` sets `github.copilot.chat.otel.exporterType` to
+`file` and `governance-auth copilot push` ships the spool on a timer. Check the two `status`
+rows in order, because they answer different questions:
 
 - **`copilot drain`** — is the schedule installed and running? `not scheduled` means run
   `governance-auth configure`; `installed, not running` prints the command that starts it;
@@ -299,9 +299,16 @@ questions:
   written nothing yet: **restart VS Code** (it reads these settings at window start) and send
   one chat turn.
 
-⚠️ Upgrading from a build that wrote `exporterType: "otlp-http"` needs one `configure` to
-retract it — and a **VS Code restart** after that, since the old exporter is still live in the
-running window.
+Under **`daemon`** (issue #272), there is no spool and no drain to check — Copilot's own
+`otlp-http` exporter posts directly to the loopback daemon, and both `status` rows above read
+`not applicable` rather than a warning. If telemetry still is not arriving under `daemon`,
+check `governance-auth status`'s `daemon` row instead: a stopped or unreachable daemon is
+where a `daemon`-profile export would actually fail.
+
+⚠️ Upgrading from a build that wrote `exporterType: "otlp-http"` with no profile axis at all
+needs one `configure` to retract it — and a **VS Code restart** after that, since the old
+exporter is still live in the running window. The same applies switching between `manual` and
+`daemon` today: each profile's exporter keys are retracted when the other is written.
 
 ⚠️ `configure` cannot edit a JSONC `settings.json` (see below), so on those machines the
 exporter is still whatever it was. The error names the exact keys to paste.

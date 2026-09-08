@@ -355,6 +355,28 @@ grafanaDashboard:
       name: governance
       title: "Governance"
 
+  # A second, sibling folder under the same `Governance` parent above, for
+  # the AI CLI telemetry dashboard (issue #268/#272) -- deliberately its own
+  # folder, not nested inside `folder` (Copilot's), since the daemon this
+  # dashboard visualizes serves Claude Code and Codex too, not just Copilot.
+  # Always nests under `folder.parent.name` -- there is no separate
+  # `aiCliFolder.parent.create` toggle, so the `Governance` parent is
+  # created exactly once, by `folder.parent` above.
+  #
+  # ⚠️ COUPLING: templates/grafanafolder.yaml (the `Governance` parent's
+  # only creator) is entirely gated on `folder.enabled`, not on this flag.
+  # Setting `folder.enabled: false` while leaving this `true` renders a
+  # `parentFolderRef` pointing at a `Governance` folder nothing creates --
+  # the operator's usual silent non-render (see the `instanceSelector`
+  # caveat below for what that looks like), not a `helm template` error.
+  # If you only want the AI CLI dashboard, keep `folder.enabled: true` (it
+  # only controls whether the *Copilot* dashboard's own folder is created,
+  # not the shared parent) rather than disabling it.
+  aiCliFolder:
+    enabled: true
+    nameSuffix: ai-cli
+    title: "AI CLI"
+
   # Grafana Operator v5 requires every GrafanaDashboard to carry an
   # instanceSelector (a label selector) so it knows which deployed `Grafana`
   # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a
@@ -390,12 +412,14 @@ grafanaDashboard:
   # Datasource UIDs the dashboard JSON references, substituted into
   # dashboards/copilot-connector.json at `helm template` time (Helm-side
   # string replace over literal placeholder tokens -- see
-  # templates/grafanadashboard.yaml for why this was chosen over the
-  # operator's own spec.datasources mapping field, and for what happens if a
-  # value here is wrong). Contract with the dashboard-JSON generator: the
-  # tokens are exactly `__DS_POSTGRES__` and `__DS_PROMETHEUS__`, used as the
-  # literal `uid` value of any Postgres/Prometheus datasource reference in
-  # that file.
+  # templates/grafanadashboard.yaml/templates/grafanadashboard-ai-cli.yaml
+  # for why this was chosen over the operator's own spec.datasources mapping
+  # field, and for what happens if a value here is wrong). Contract with the
+  # dashboard-JSON generators: `__DS_POSTGRES__`/`__DS_PROMETHEUS__` in
+  # dashboards/copilot-connector.json (generate_dashboards.py) and
+  # `__DS_LOKI__` in dashboards/ai-cli-telemetry.json
+  # (generate_ai_cli_dashboard.py), each used as the literal `uid` value of
+  # that datasource's reference in its own file.
   datasources:
     # ADR-0003, stated explicitly: "Expose the governance database to
     # Grafana as a read-only Postgres GrafanaDatasource (uid: governance)".
@@ -415,6 +439,17 @@ grafanaDashboard:
     # exactly the ambiguity ADR-0011 already warns about for
     # governance_copilot_*'s own 30h expiration cliff.
     prometheusUid: mimir
+    # Same gap as prometheusUid, for the same reason -- checked directly
+    # this time (kubectl get grafanadatasources -A against the live
+    # cluster), not just inferred: the ONLY GrafanaDatasource CR visible
+    # anywhere in `observability` is `lci-postgres` (unrelated). Loki and
+    # Mimir are evidently provisioned some other way (ai-helm's own Grafana
+    # values, most likely a static datasources.yaml this chart cannot see),
+    # not as separate CRs this chart could read a real UID from. "loki" is
+    # the same class of reasonable-default guess as "mimir" above -- CONFIRM
+    # AGAINST THE DEPLOYED GRAFANA before trusting the AI CLI telemetry
+    # dashboard (issue #268/#272).
+    lokiUid: loki
 
 # Cilium egress for the copilot-sync CronJob: DNS, api.github.com, the pinned
 # copilot-reports.github.com signed-download host (spike-0007), the S3
@@ -467,6 +502,45 @@ aiCliOtel:
   # Alloy is this cluster's fan-out to Tempo/Loki/Mimir (ADR-0007), so this
   # collector needs one exporter and no knowledge of the backends.
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  # Raw OTLP archive leg (lightbridge-authz #692 / #589): a third exporter,
+  # parallel to -- not behind -- the Alloy leg, writing verbatim OTLP to
+  # S3-compatible object storage so a field can later be promoted to a column
+  # with historical backfill. Independent queue/retry from Alloy: a blocked S3
+  # sink alarms but never blocks the governed/observability path (D10).
+  s3:
+    # Enabled in prod. D9 decisions (the gate for turning this on):
+    #   - Access control: this is the SHARED cluster bucket (also LibreChat,
+    #     CNPG backups, copilot raw archive) and the creds are the shared
+    #     backup creds. Raw OTLP carries identity attributes, so anyone who can
+    #     read this bucket / these creds can read raw telemetry. Accepted for
+    #     now because the same creds already gate the copilot raw archive; a
+    #     dedicated telemetry bucket is the escape hatch if that ever changes.
+    #   - Retention: no bucket lifecycle rule yet. Apply one on the
+    #     `raw/otlp/` prefix (recommended: 90 days) before treating the archive
+    #     as anything but a short-window backfill source. The archive is
+    #     best-effort (D10): a blocked S3 sink drops after the queue fills and
+    #     never blocks the Alloy/observability path.
+    enabled: true
+    # Shared Hetzner Object Storage -- same material as copilot.s3 and the CNPG
+    # backups. Creds come from the lightbridge-governance-env ExternalSecret
+    # (externalSecret.s3AccessKeyProperty / s3SecretKeyProperty).
+    bucket: ssegning-k8s-state
+    endpoint: https://nbg1.your-objectstorage.com
+    region: us-east-1
+    forcePathStyle: true
+    # Root prefix inside the bucket; the per-source prefix and date partition
+    # are appended below -> <basePrefix>/<source>/<yyyy>/<mm>/<dd>/...
+    basePrefix: raw/otlp
+    # Archive format (D11 -- verify the round-trip through the authz-usage
+    # ingest before changing). otlp_json is the exporter default and the ingest
+    # handler already parses OTLP-JSON.
+    format: otlp_json
+    compression: gzip
+    partitionFormat: "%Y/%m/%d"
+    partitionTimezone: UTC
+    # Independent queue/retry from the Alloy leg (D10).
+    queueSize: 100
+    numConsumers: 10
   oidc:
     # The lightbridge-authz issuer -- it already serves OIDC discovery and JWKS
     # publicly (both confirmed 200), so the collector validates callers itself
@@ -565,6 +639,23 @@ opencodeOtel:
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
+  # Raw OTLP archive leg -- same shape as aiCliOtel.s3 (shared collector body).
+  # Enabled in prod; the D9 access-control and retention decisions are recorded
+  # on aiCliOtel.s3 and apply identically here (same shared bucket, same creds,
+  # same `raw/otlp/` prefix family).
+  s3:
+    enabled: true
+    bucket: ssegning-k8s-state
+    endpoint: https://nbg1.your-objectstorage.com
+    region: us-east-1
+    forcePathStyle: true
+    basePrefix: raw/otlp
+    format: otlp_json
+    compression: gzip
+    partitionFormat: "%Y/%m/%d"
+    partitionTimezone: UTC
+    queueSize: 100
+    numConsumers: 10
   oidc:
     # Same issuer as aiCliOtel -- authz-idp. Only the audience differs.
     issuerUrl: "https://auth.ai.camer.digital"
@@ -613,12 +704,14 @@ networkPolicy:
 # absent -- but the "waits in ContainerCreating until ESO has synced" behaviour
 # depends on that Kubernetes default rather than on an explicit chart setting.
 #
-# NOTE: `dbPasswordProperty`/`internalIngestTokenProperty` name properties
-# inside `remoteKey` that this chart assumes but has not verified live against
-# the actual secret store entry (unlike redact-gateway's `saltProperty`,
-# which was) -- confirm they match before relying on this in a real
-# environment. The resolve-token property (`governance_internal_resolve_token`)
-# was removed in ADR-0017; TokenReview replaces the shared secret.
+# NOTE: `dbPasswordProperty` names a property inside `remoteKey` that this
+# chart assumes but has not verified live against the actual secret store
+# entry (unlike redact-gateway's `saltProperty`, which was) -- confirm it
+# matches before relying on this in a real environment. The resolve-token
+# property (`governance_internal_resolve_token`) was removed in ADR-0017
+# (TokenReview replaces the shared secret) and the ingest-token property
+# (`governance_internal_ingest_token`) was removed with the ingest endpoint
+# (#243).
 externalSecret:
   enabled: true
   storeRef: ssegning-aws
@@ -627,13 +720,6 @@ externalSecret:
   # NOT a full connection string -- see the comment on .Values.databaseUrl
   # above for why that would be redundant.
   dbPasswordProperty: governance_db_password
-  # Shared secret the OpenTelemetry Collector presents on `/internal/v1/ingest`
-  # (#30, RFC-0002). Wired as an ExternalSecret `data` entry below and a
-  # required (never-optional) secretKeyRef in the
-  # `app-template.controllers.api` container env.
-  # Required -- main.rs has no default, so a pod started without it never
-  # comes up (clap errors "required argument missing").
-  internalIngestTokenProperty: governance_internal_ingest_token
   # Copilot collector credentials. The GitHub App id + PEM live on `remoteKey`;
   # the S3 keys live on `s3RemoteKey` (the shared material the platform's S3
   # users all read). Property names must be created in the remote entries when
@@ -768,11 +854,6 @@ app-template:
             KUBE_APISERVER_URL: "https://kubernetes.default.svc"
             TOKEN_REVIEW_AUDIENCE: "api"
             ALLOWED_SERVICE_ACCOUNTS: "{{ .Values.global.allowedServiceAccounts }}"
-            INTERNAL_INGEST_TOKEN:
-              valueFrom:
-                secretKeyRef:
-                  name: lightbridge-governance-env
-                  key: governance_internal_ingest_token
             # Both have safe defaults in the binary (60s / 10000 entries) --
             # exposed here as ordinary, always-optional values.
             RESOLVE_CACHE_TTL_SECS: "60"
@@ -787,7 +868,8 @@ app-template:
           # clause of the `ingest_manifests` freshness query /metrics derives
           # from (ADR-0007). Drop this envFrom and the pod CrashLoopBackOffs
           # on every start during clap parsing, which is exactly how
-          # INTERNAL_INGEST_TOKEN was broken before it was wired.
+          # INTERNAL_INGEST_TOKEN (since removed) was broken before it was
+          # wired.
           #
           # It cannot be a `{{ .Values.copilot.tenantId }}` literal in this
           # block: app-template does run `tpl` on env values, but in the

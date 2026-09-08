@@ -38,12 +38,6 @@ pub struct Args {
     #[arg(long, env = "ALLOWED_SERVICE_ACCOUNTS", value_parser = parse_allowed_accounts)]
     pub allowed_service_accounts: HashSet<String>,
 
-    /// Shared secret the OpenTelemetry Collector presents as
-    /// `X-Internal-Token` on `/internal/v1/ingest` (#30). Never logged --
-    /// only its presence/absence is, via the request outcome.
-    #[arg(long, env = "INTERNAL_INGEST_TOKEN")]
-    pub internal_ingest_token: String,
-
     /// Upper bound on `/internal/v1/resolve`'s credential lookup, in
     /// milliseconds. Deliberately far below sqlx's own 30s pool default --
     /// this is Authorino's ext_authz hot path, and a dependency's own
@@ -67,15 +61,6 @@ pub struct Args {
     /// why this also carries a `default_value_t`.
     #[arg(long, env = "RESOLVE_CACHE_MAX_CAPACITY", default_value_t = 10_000)]
     pub resolve_cache_max_capacity: u64,
-
-    /// Max `/internal/v1/ingest` requests per integration per
-    /// `INGEST_RATE_WINDOW_SECS`. A throttle, not a billing meter.
-    #[arg(long, env = "INGEST_RATE_MAX_PER_WINDOW", default_value_t = 600)]
-    pub ingest_rate_max_per_window: u64,
-
-    /// Fixed window length for the `/internal/v1/ingest` rate limiter.
-    #[arg(long, env = "INGEST_RATE_WINDOW_SECS", default_value_t = 60)]
-    pub ingest_rate_window_secs: u64,
 
     /// Single-tenant deployment (ADR-0001). Scopes the `governance_connector_*`
     /// freshness query `/metrics` derives from `ingest_manifests` (ADR-0007) --

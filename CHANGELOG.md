@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.4.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.0...v2.4.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **ci:** stop push+pull_request double-triggering CI on branches with an open PR ([#307](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/307)) ([be8bd06](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/be8bd06e9c05362cc213e9ee0918623a247ce34b))
+
+## [2.4.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.3.0...v2.4.0) (2026-09-08)
+
+
+### Features
+
+* **governance:** stamp real client.address from X-Forwarded-For on accepted telemetry (issue [#284](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/284)) ([#305](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/305)) ([05a06a8](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/05a06a845148dd5b2f042a3e3505d467b8b3694c))
+* **ticket 692:** raw otlp archive leg on the edge collector ([a0d7735](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/a0d7735c2b47942d53eb09aabe2b1924ed6711ba))
+
+## [2.3.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.1...v2.3.0) (2026-09-07)
+
+
+### Features
+
+* **governance-auth,governance:** app.entrypoint attribute + broaden dashboard's Claude Code job filter ([#304](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/304)) ([048f6ab](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/048f6abbbee2dec87eda3972a3787ea18e19f158))
+* **governance-auth:** configure --profile daemon|manual ([#280](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/280)) ([0969eae](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0969eaebc5de32f7daccfab569e0f6f6547d61bd))
+* **governance-auth:** Copilot rewired onto the daemon, no long-lived credential (issue [#272](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/272)) ([#302](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/302)) ([74cc540](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/74cc540a71ab0165f4237b13b9c65822c350cf17))
+* **governance-auth:** durable spool for serve --otel (issue [#269](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/269)) ([#299](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/299)) ([5a1f066](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/5a1f066d572d186bcdd0627de5c06464a51ebaa4))
+* **governance-auth:** pin OTEL loopback port and client URL (contract) ([c66e4fd](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c66e4fd8f7f4cbae541fe54e136772144e10ec69))
+* **governance-auth:** serve otel loopback collector daemon (issue [#268](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/268)) ([#290](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/290)) ([2d2c155](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2d2c155c3a5dbe08854ff19b4619eea127c6e409))
+* **governance-auth:** status carries a daemon row ([#271](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/271)) ([#295](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/295)) ([f22a107](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/f22a107d220e2f284de00e56270135602b01b084))
+* **governance:** AI CLI telemetry Grafana dashboard ([#303](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/303)) ([ad2e499](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/ad2e499d59bfcc54acd5af7687535a9069f4afd8))
+
+
+### Bug Fixes
+
+* **governance-auth:** address otel_port review - fail-closed, drop baseline, derive URL. ([0b00525](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0b00525605843c511da09b9ffd75721084e23a19))
+* **governance-auth:** telemetry row is daemon-profile-blind (found in live E2E) ([#296](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/296)) ([6e8f863](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6e8f863615f6dc6e4aa208f05d900904c338c350))
+
 ## [2.2.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.2.0...v2.2.1) (2026-09-02)
 
 

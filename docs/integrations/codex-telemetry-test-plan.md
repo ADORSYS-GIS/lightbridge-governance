@@ -1,5 +1,13 @@
 # Codex Telemetry Rollout - Test Plan
 
+> **Status: not runnable as written.** Tests 4 - 10 below assert against
+> `executions` / `model_calls` / `tool_calls` rows and a mismatch warning that are written only
+> by `governance_core::ingest::ingest_telemetry`, whose sole production caller was the
+> `/internal/v1/ingest` push endpoint removed in #243. That endpoint has not been redesigned
+> (see `docs/rfc/0002-microsoft-foundry-otlp-ingestion.md`). Until a replacement push-ingest
+> endpoint exists, the DB-row and mismatch-warning expectations here are unsatisfiable; treat
+> this plan as a design reference, not a runnable checklist.
+
 ## Critical Tests
 
 ### 1. Verify Statsig is Disabled
@@ -69,8 +77,8 @@ SELECT span_id, tool_name FROM tool_calls WHERE execution_id = '<exec-id>';
 ### 10. Verify Mismatch Alert
 1. Issue token for `alice@example.com`
 2. Simulate payload with different `user.email`
-3. Check logs and metrics
-**Expected**: Warning logged, `governance_ingest_identity_mismatch_total` increments
+3. Check logs
+**Expected**: Warning logged
 
 ## Success Criteria
 - ✅ All 10 tests pass

@@ -108,6 +108,7 @@ fn claude_code_settings_still_carry_the_whole_telemetry_set() {
             "OTEL_EXPORTER_OTLP_HEADERS",
             "Authorization=Bearer ingest-token",
         ),
+        ("OTEL_METRICS_INCLUDE_ENTRYPOINT", "1"),
     ] {
         assert_eq!(
             env.get(key).map(String::as_str),

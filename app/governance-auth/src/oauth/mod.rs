@@ -180,6 +180,7 @@ fn apply_telemetry(
         // `crate::copilot::resolve_spool_path`.
         copilot_spool: crate::copilot::resolve_spool_path(config)?,
         copilot_drain_available: wiring.copilot_drain_available,
+        copilot_otlp_direct: wiring.copilot_otlp_direct,
         // `None` under `daemon` regardless of `--otel-token`: loopback needs
         // no client credential (see `TelemetryWiring::resolve`), and writing
         // one anyway would be exactly the long-lived secret ADR-0016 exists

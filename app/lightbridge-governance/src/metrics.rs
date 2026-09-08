@@ -5,9 +5,6 @@
 //!   The query itself lives in `governance_core::connector_metrics` -- this
 //!   module owns turning it into series, bounding it with a timeout, and
 //!   deciding what a query failure looks like on `/metrics`.
-//! - `governance_ingest_*` for the `/internal/v1/ingest` telemetry path, so an
-//!   ingest outage (auth failures, malformed OTLP, storage errors, rate
-//!   limiting) is observable, not a silent 500 in a log that nobody reads.
 //! - `governance_org_*`, a small set of org-level KPI gauges (active/engaged
 //!   users, cost, seats) derived from `copilot_org_dailys`/
 //!   `copilot_seat_snapshots`, for alerting. The queries live in
@@ -63,7 +60,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use cratestack::sqlx::PgPool;
-use prometheus::{IntCounter, IntCounterVec, IntGaugeVec, Registry, opts};
+use prometheus::{IntCounterVec, IntGaugeVec, Registry, opts};
 
 /// Provider strings this family covers today. `connector_freshness` already
 /// discovers providers dynamically from `ingest_manifests` (`GROUP BY
@@ -79,19 +76,6 @@ const KNOWN_PROVIDERS: &[&str] = &["github_copilot"];
 
 pub struct Metrics {
     registry: Registry,
-    /// Total requests to `/internal/v1/ingest`, keyed by outcome. `total` is
-    /// used by Prometheus rate() dashboards, so the counter must never reset
-    /// across a redeploy in a way that corrupts the series -- the same
-    /// counter is registered once at startup, never rebuilt.
-    pub ingest_requests_total: IntCounterVec,
-    /// Executions, model calls and tool calls persisted by ingest.
-    pub ingest_executions_total: IntCounter,
-    pub ingest_model_calls_total: IntCounter,
-    pub ingest_tool_calls_total: IntCounter,
-    /// Identity mismatch detection failures (best-effort query failures).
-    pub ingest_identity_mismatch_failures_total: IntCounter,
-    /// Executions whose payload email contradicted the token-derived identity.
-    pub ingest_identity_mismatches_total: IntCounter,
     /// Unix timestamp (seconds) of the most recent report day `{provider}`
     /// has successfully ingested at least one report. Absent for a
     /// provider that has never synced, or before the first successful
@@ -171,39 +155,6 @@ impl Metrics {
                   invalid help text, and both are compile-time string literals here"
     )]
     pub fn new() -> Self {
-        let ingest_requests_total = IntCounterVec::new(
-            opts!(
-                "governance_ingest_requests_total",
-                "ingest requests by outcome"
-            ),
-            &["outcome"],
-        )
-        .expect("static metric definition, name/help are fixed strings");
-        let ingest_executions_total = IntCounter::new(
-            "governance_ingest_executions_total",
-            "executions upserted by /internal/v1/ingest",
-        )
-        .expect("static metric definition");
-        let ingest_model_calls_total = IntCounter::new(
-            "governance_ingest_model_calls_total",
-            "model calls upserted by /internal/v1/ingest",
-        )
-        .expect("static metric definition");
-        let ingest_tool_calls_total = IntCounter::new(
-            "governance_ingest_tool_calls_total",
-            "tool calls upserted by /internal/v1/ingest",
-        )
-        .expect("static metric definition");
-        let ingest_identity_mismatch_failures_total = IntCounter::new(
-            "governance_ingest_identity_mismatch_failures_total",
-            "identity mismatch detection failures (best-effort query failures)",
-        )
-        .expect("static metric definition");
-        let ingest_identity_mismatches_total = IntCounter::new(
-            "governance_ingest_identity_mismatches_total",
-            "executions whose payload email contradicted the token-derived identity",
-        )
-        .expect("static metric definition");
         let connector_last_success_timestamp_seconds = IntGaugeVec::new(
             opts!(
                 "governance_connector_last_success_timestamp_seconds",
@@ -298,13 +249,6 @@ impl Metrics {
 
         let metrics = Self {
             registry: Registry::new(),
-            ingest_requests_total: ingest_requests_total.clone(),
-            ingest_executions_total: ingest_executions_total.clone(),
-            ingest_model_calls_total: ingest_model_calls_total.clone(),
-            ingest_tool_calls_total: ingest_tool_calls_total.clone(),
-            ingest_identity_mismatch_failures_total: ingest_identity_mismatch_failures_total
-                .clone(),
-            ingest_identity_mismatches_total: ingest_identity_mismatches_total.clone(),
             connector_last_success_timestamp_seconds: connector_last_success_timestamp_seconds
                 .clone(),
             connector_has_synced: connector_has_synced.clone(),
@@ -322,13 +266,7 @@ impl Metrics {
         // registered collector -- impossible here since each is registered
         // exactly once. Logged, not fatal: a missing metric is worse than a
         // 500 on startup.
-        let collectors: [Box<dyn prometheus::core::Collector>; 16] = [
-            Box::new(ingest_requests_total),
-            Box::new(ingest_executions_total),
-            Box::new(ingest_model_calls_total),
-            Box::new(ingest_tool_calls_total),
-            Box::new(ingest_identity_mismatch_failures_total),
-            Box::new(ingest_identity_mismatches_total),
+        let collectors: [Box<dyn prometheus::core::Collector>; 10] = [
             Box::new(connector_last_success_timestamp_seconds),
             Box::new(connector_has_synced),
             Box::new(connector_metrics_scrape_errors_total),
@@ -578,18 +516,15 @@ mod tests {
     fn counters_render_after_recording() {
         let metrics = Metrics::new();
         metrics
-            .ingest_requests_total
-            .with_label_values(&["success"])
+            .connector_metrics_scrape_errors_total
+            .with_label_values(&["timeout"])
             .inc();
-        metrics.ingest_executions_total.inc();
-        metrics.ingest_identity_mismatch_failures_total.inc();
-        metrics.ingest_identity_mismatches_total.inc();
 
         let out = metrics.render();
-        assert!(out.contains("governance_ingest_requests_total{outcome=\"success\"} 1"));
-        assert!(out.contains("governance_ingest_executions_total 1"));
-        assert!(out.contains("governance_ingest_identity_mismatch_failures_total 1"));
-        assert!(out.contains("governance_ingest_identity_mismatches_total 1"));
+        assert!(
+            out.contains("governance_connector_metrics_scrape_errors_total{reason=\"timeout\"} 1"),
+            "scrape error counter must render after incrementing -- got:\n{out}"
+        );
     }
 
     #[test]

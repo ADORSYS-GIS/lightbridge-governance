@@ -17,10 +17,9 @@ mod survey;
 mod targets;
 mod telemetry;
 
-/// [`render`] with the two Copilot rows fixed at "nothing surveyed", so the
-/// tests that predate them keep asserting on exactly what they did before and
-/// never touch `$HOME` -- which for the drain row also means never running
-/// `systemctl`. Their own states are covered in [`spool`] and [`drain`].
+/// [`render`] with the two Copilot rows fixed at "nothing surveyed", so tests
+/// predating them assert exactly what they did before and never touch `$HOME`
+/// (never running `systemctl` for the drain row). Covered in [`spool`]/[`drain`].
 fn table(
     issuer: &str,
     client_id: &str,
@@ -40,6 +39,7 @@ fn table(
                 last_push_age: None,
                 last_discard_age: None,
                 held_age: None,
+                profile: crate::profile::Profile::Manual,
             },
             drain: &unsurveyed_drain(),
         },
@@ -82,6 +82,11 @@ fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
         applied: endpoint.is_some(),
         has_static_token,
         stale: false,
+        // `manual`: every existing caller of this helper is asserting on
+        // `has_static_token` meaning something, which is only true under
+        // `manual` (`Telemetry::row`'s doc) -- a `daemon` fixture belongs in
+        // `dashboard/tests/telemetry.rs`'s own daemon-specific test instead.
+        profile: crate::profile::Profile::Manual,
     }
 }
 

@@ -1,11 +1,36 @@
 name: CI
 
 on:
-  push: {}
+  push:
+    branches: [main]
   pull_request: {}
 
-# A branch with an open PR fires both events; collapse duplicate runs so the
-# self-hosted runners are not starved by two identical in-flight builds.
+# ⚠️ `push` is scoped to `main` ON PURPOSE -- this is the actual fix, not the
+# concurrency group below. `pull_request` stays UNSCOPED deliberately: this
+# repo has real stacked PRs targeting a non-`main` base (e.g. #292 into
+# #271's branch, #281 into #270's) and those still need this correctness
+# gate (fmt/clippy/tests) on every push, same as any PR into `main` -- unlike
+# docker.yml's `pull_request: branches: [main]`, which only builds images for
+# PRs headed at `main` and already accepts not running on a stacked PR.
+#
+# Un-scoped `push` (i.e. `push: {}` alongside `pull_request: {}`, the
+# previous shape here) fires BOTH events for every push to a branch with an
+# open PR: the push event AND `pull_request: synchronize`, landing two full
+# runs on the same commit. `cancel-in-progress` below still cancels the
+# older one, but it has already started and gets recorded as a
+# cancelled/failed check -- observed live on lightbridge-governance#305,
+# where the PR's checks list showed a handful of "fail"ed jobs from a run
+# that was simply superseded a few seconds after starting, with nothing
+# actually broken. Scoping `push` to `main` means only `pull_request` ever
+# fires for a feature branch, so there is nothing left to collapse for that
+# case; `main` pushes (post-merge) still get their own single run via
+# `push`, and `pull_request` never fires for those (it fires for the PR's
+# HEAD branch, not commits landing on main).
+#
+# The concurrency group stays anyway: it still collapses rapid successive
+# pushes to the SAME PR branch (each a fresh `synchronize` event) so only the
+# latest commit's run is ever in flight, which is a real and distinct case
+# from the one above.
 concurrency:
   group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
@@ -183,3 +208,13 @@ jobs:
       # manifest. Uses the mikefarah `yq` installed above.
       - name: Assert aiCliOtel OIDC auth gate renders
         run: charts/lightbridge-governance/tests/assert-oidc-auth.sh charts/lightbridge-governance
+
+      # lightbridge-governance#284 AC1's reachable half: telemetry that gets
+      # PAST auth is attributed to the real client, not the Traefik pod IP,
+      # and a spoofed X-Forwarded-For entry never survives. Unlike the OIDC
+      # gate above, this logic (Split/Trim/Len-index to the rightmost entry)
+      # is OTTL this chart authors, so it's asserted at runtime against the
+      # real pinned image (otel/opentelemetry-collector-contrib:0.158.0) via
+      # `docker run`, not just structurally. ubuntu-latest ships Docker.
+      - name: Assert client.address resolves from X-Forwarded-For, spoof-proof
+        run: charts/lightbridge-governance/tests/assert-client-address-xff.sh charts/lightbridge-governance

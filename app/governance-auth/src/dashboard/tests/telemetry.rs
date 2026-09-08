@@ -41,9 +41,10 @@ fn a_configured_endpoint_is_shown() {
 /// no hook to refresh it, so without a token its exports are rejected --
 /// silently. It is the ONLY client in that position since the Copilot
 /// file-exporter cutover, and naming any other would send someone to the wrong
-/// place.
+/// place. `manual` specifically: under `daemon` no token is ever expected --
+/// see the test below.
 #[test]
-fn an_endpoint_without_a_token_names_the_one_client_it_breaks() {
+fn an_endpoint_without_a_token_names_the_one_client_it_breaks_under_manual() {
     let out = table(
         "i",
         "c",
@@ -59,6 +60,34 @@ fn an_endpoint_without_a_token_names_the_one_client_it_breaks() {
     assert!(
         !line.contains("Claude") && !line.contains("VS Code"),
         "only Codex is affected: {line}"
+    );
+}
+
+/// Found live, on a real end-to-end run of #268/#270/#271 together: every
+/// `daemon`-profile install reported "Codex cannot export" despite Codex
+/// exporting fine through the loopback daemon. `TelemetryWiring::resolve`
+/// never writes a static token under `daemon` -- the daemon mints one per
+/// forward -- so `has_static_token: false` there is the *expected* steady
+/// state, not a problem, and the row must read green, not yellow.
+#[test]
+fn a_daemon_profile_endpoint_with_no_token_is_not_a_warning() {
+    let daemon = Telemetry {
+        endpoint: Some("https://otel.example".to_owned()),
+        applied: true,
+        has_static_token: false,
+        stale: false,
+        profile: crate::profile::Profile::Daemon,
+    };
+    let out = table("i", "c", &session(true, true), &daemon, &[]);
+    let line = row(&out);
+    assert!(line.contains("https://otel.example"), "{line}");
+    assert!(
+        !line.contains("Codex"),
+        "daemon needs no static token; this must not read as broken: {line}"
+    );
+    assert!(
+        !line.to_lowercase().contains("no otlp token"),
+        "daemon needs no static token; this must not read as broken: {line}"
     );
 }
 
@@ -113,6 +142,7 @@ fn a_configured_but_unapplied_endpoint_says_so() {
         applied: false,
         has_static_token: false,
         stale: false,
+        profile: crate::profile::Profile::Manual,
     };
     let out = table("i", "c", &session(true, true), &unapplied, &[]);
     let line = row(&out);

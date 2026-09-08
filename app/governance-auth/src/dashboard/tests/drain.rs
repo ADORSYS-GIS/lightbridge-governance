@@ -16,8 +16,7 @@ use std::path::PathBuf;
 use super::*;
 use crate::{dashboard::style::Colour, profile::Profile, schedule::Schedule};
 
-/// `manual`, matching every test below written before the profile split --
-/// see [`daemon_profile_drain`] for the `daemon`-profile fixtures.
+/// `manual`; see [`daemon_profile_drain`] for the `daemon` fixtures.
 fn drain(installed: bool, active: Option<bool>, collector: bool) -> Drain {
     stale_drain(installed, active, collector, Some(false), Profile::Manual)
 }
@@ -156,29 +155,33 @@ fn no_collector_and_no_schedule_is_plain_information() {
     assert_eq!(note, "no collector configured");
 }
 
-/// Found running #270+#271 together against a real machine, not by any unit
-/// test: every fixture above predates the profile split, so `collector:
-/// true, schedule.installed: false` only ever meant "`configure` failed" to
-/// them. #270 AC5 made it also mean "working as designed, under `daemon`" --
-/// this pins that the row tells the two apart, and -- as important -- that
-/// the note stops telling the reader to run `configure`, which does nothing
-/// under `daemon` (the timer is deliberately never installed there).
+/// Found running #270+#271 against a real machine: `collector: true,
+/// schedule.installed: false` used to only mean "`configure` failed", but
+/// #270 AC5 made it also mean "working as designed, under `daemon`" -- the
+/// note must not tell the reader to run `configure`, which does nothing here.
+///
+/// #272 landed Copilot's own otlp-http path onto the daemon (#302 review
+/// round 2): this row used to advise switching back to `manual` for Copilot
+/// telemetry, which is now wrong -- Copilot exports fine directly, and that
+/// advice would undo the security property #272 delivers. `Colour::None`:
+/// nothing to drain under `daemon` any more, not a gap pending a fix.
 #[test]
-fn daemon_profile_with_no_schedule_is_yellow_not_red_and_names_the_real_fix() {
+fn daemon_profile_with_no_schedule_is_informational_not_a_warning() {
     let (value, colour, note) = daemon_profile_drain(false, None).row();
     assert_eq!(value, "not scheduled");
     assert_eq!(
         colour,
-        Colour::Yellow,
-        "not a `configure` failure -- #270 AC5 removes this timer under `daemon` on purpose"
+        Colour::None,
+        "not a `configure` failure, and not a gap either now that #272 gives Copilot its own \
+         daemon path -- just nothing to schedule"
     );
     assert!(
         !note.contains("governance-auth configure"),
         "must not suggest a fix that does nothing under `daemon`: {note}"
     );
     assert!(
-        note.contains("manual"),
-        "must name the fix that actually works: {note}"
+        !note.contains("switch to") && !note.contains("manual"),
+        "must not advise undoing #272's security property by switching back to `manual`: {note}"
     );
 }
 
