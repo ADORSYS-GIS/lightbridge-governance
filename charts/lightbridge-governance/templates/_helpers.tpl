@@ -257,6 +257,24 @@ credential helper reads out of `@vymalo/opencode-oauth2`'s cache. Neither is a
             # the endpoint is on the public internet.
             auth:
               authenticator: oidc
+{{- /*
+lightbridge-governance#284 AC1, CORRECTED before landing: this does NOT make
+`oidcauthextension` log the real client address on a REFUSAL. Verified against
+the exact pinned image (extension.go's Authenticate() reads only
+client.FromContext(ctx).Addr, which confighttp's clientinfohandler.go sets
+from req.RemoteAddr alone -- unconditionally, on this version and on
+opentelemetry-collector's main branch today) and against the open, unfixed
+upstream gap (open-telemetry/opentelemetry-collector#4901, filed 2022): no
+version of this extension reads X-Forwarded-For, gated by include_metadata or
+otherwise. The refusal log's `client_ip` stays the Traefik pod IP regardless
+of this setting -- that half of AC1 is out of reach without a fork of the
+extension and is NOT attempted here.
+
+What this DOES do: populate client.Info.Metadata (separate from .Addr) so the
+`resource` processor's `from_context` reads below can see request headers at
+all. Without it those reads silently produce nothing, not an error.
+*/}}
+            include_metadata: true
 
     processors:
       # MUST be first: it sheds load before an OOM, and an OOM loses data
@@ -278,6 +296,55 @@ values field, not a literal, so do not invent a new one per collector.
           - action: upsert
             key: governance.source
             value: {{ $otel.sourceAttribute }}
+{{- /*
+lightbridge-governance#284 AC1, the half that IS reachable: attribute the real
+client on telemetry that gets PAST auth (a refusal never reaches this
+processor at all -- oidcauthextension runs at the receiver, before any
+pipeline processor). Staged into a scratch key first because this processor
+can only copy the raw header verbatim; picking the trustworthy entry out of it
+needs the `transform` processor below, which runs immediately after.
+*/}}
+          - action: insert
+            key: client.address.xff_raw
+            from_context: "metadata.x-forwarded-for"
+{{- /*
+⚠️ SPOOFABILITY, decided not defaulted (ai-helm#1081 AC4's requirement,
+carried over here because this is where the header is actually consumed):
+Traefik's entrypoints APPEND the peer address it observed to any
+X-Forwarded-For it received -- confirmed live on hetzner-prod
+(daemonset.apps/traefik's `--entryPoints.web(secure).forwardedHeaders.
+trustedIPs=10.0.0.0/16` matches the Hetzner LB's PROXY-protocol CIDR, and
+Traefik's own default behaviour is append, not replace, unless
+`notAppendXForwardedFor` is set -- it is not, here). So a caller CAN put
+anything it wants in the header it sends; what it cannot do is control what
+Traefik appends after it. The transform processor below therefore reads only
+the RIGHTMOST entry and discards everything to its left as untrusted --
+never the first, never "the whole header". A single-hop push (the normal
+case: no upstream proxy the caller controls) still works because Split on a
+one-element string returns that one element.
+
+This was verified end-to-end against the exact pinned image
+(otel/opentelemetry-collector-contrib:0.158.0, via `docker run` locally, not
+just rendered): a push carrying `X-Forwarded-For: 6.6.6.6, 10.42.2.109`
+produced `client.address: 10.42.2.109` on the resulting ResourceSpans /
+ResourceLogs -- the spoofed leading entry never survives.
+*/}}
+      transform/client_address_from_xff:
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - delete_key(attributes, "client.address.xff_raw")
+        trace_statements:
+          - context: resource
+            statements:
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - delete_key(attributes, "client.address.xff_raw")
+        metric_statements:
+          - context: resource
+            statements:
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - delete_key(attributes, "client.address.xff_raw")
       batch:
         send_batch_size: 512
         timeout: 5s
@@ -329,18 +396,23 @@ values field, not a literal, so do not invent a new one per collector.
 {{- /*
 OpenCode is request-grain too (RFC-0003 §2), so the `opencodeOtel` instance
 wants the same three pipelines and gets them from this same body.
+
+`transform/client_address_from_xff` runs immediately after `resource`, not
+before it (it consumes the scratch key `resource` just staged) and not last
+(it deletes that scratch key before `batch` -- a batched, multi-resource
+payload past this point must never carry it forward).
 */}}
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         metrics:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
 {{- end -}}
 
