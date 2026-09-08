@@ -46,7 +46,10 @@ The resolve endpoint no longer uses a shared secret (ADR-0017): caller authentic
 Kubernetes TokenReview, so there is no `internalResolveTokenProperty` anymore. The
 `ALLOWED_SERVICE_ACCOUNTS` value (which ServiceAccounts may call `/internal/v1/resolve`) is
 a plain, non-secret value set per-environment in `ai-helm-values`, not an ExternalSecret
-property.
+property. It lives under `global.allowedServiceAccounts` — not a plain top-level key — for
+the same reason `global.databaseUrl` does (see below): `app-template`'s env-string
+templating runs against that subchart's own scoped `.Values`, so a top-level value would
+render as empty inside the container.
 
 ## `DATABASE_URL` is assembled from parts, not a single opaque secret
 

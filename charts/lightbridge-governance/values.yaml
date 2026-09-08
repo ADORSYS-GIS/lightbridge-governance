@@ -13,8 +13,8 @@ rbac:
 
 # Comma-separated list of permitted ServiceAccount identities that may call
 # `/internal/v1/resolve` (ADR-0017). Authorino's own SA must be in this list.
-# Each entry is in `namespace/name` format.
-allowedServiceAccounts: "authorino/authorino"
+# Each entry is in `namespace/name` format. Defined under `global.` below so
+# it reaches the container (see the `global.databaseUrl` note).
 
 # ADR-0057: deployment-specific (the CNPG cluster's Service DNS name, the
 # database name) -- empty here, supplied per-environment in ai-helm-values.
@@ -52,6 +52,10 @@ allowedServiceAccounts: "authorino/authorino"
 # as the top of this file.
 global:
   databaseUrl: ""
+  # Comma-separated list of permitted ServiceAccount identities that may call
+  # `/internal/v1/resolve` (ADR-0017). Authorino's own SA must be in this list.
+  # Each entry is in `namespace/name` format.
+  allowedServiceAccounts: "authorino/authorino"
 
 # GitHub publishes daily; six-hourly with a 3-day lookback means a late report is
 # picked up without operator action.
@@ -763,7 +767,7 @@ app-template:
             # lists the ServiceAccounts permitted to call /internal/v1/resolve.
             KUBE_APISERVER_URL: "https://kubernetes.default.svc"
             TOKEN_REVIEW_AUDIENCE: "api"
-            ALLOWED_SERVICE_ACCOUNTS: "{{ .Values.allowedServiceAccounts }}"
+            ALLOWED_SERVICE_ACCOUNTS: "{{ .Values.global.allowedServiceAccounts }}"
             INTERNAL_INGEST_TOKEN:
               valueFrom:
                 secretKeyRef:
