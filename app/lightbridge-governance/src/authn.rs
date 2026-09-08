@@ -17,13 +17,18 @@
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_token;
 mod types;
 
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use reqwest::Client;
 pub use types::VerifyError;
 use types::{TokenReviewRequest, TokenReviewResponse, TokenReviewSpec};
+
+/// Standard projected-token mount for the pod's own ServiceAccount token.
+const IN_CLUSTER_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
 /// Verifies Bearer tokens via Kubernetes TokenReview (ADR-0017).
 ///
@@ -35,10 +40,9 @@ pub struct TokenReviewVerifier {
     /// Full URL to the kube-apiserver TokenReview endpoint, e.g.
     /// `https://kubernetes.default.svc/apis/authentication.k8s.io/v1/tokenreviews`.
     review_url: String,
-    /// The pod's own ServiceAccount token, used to authenticate the
-    /// TokenReview call to the kube-apiserver. Loaded from the in-cluster
-    /// projected-token mount. Empty in local dev / tests.
-    bearer_token: String,
+    /// Path to the pod's own SA token, re-read on every call so a rotated
+    /// token (the kubelet rewrites the file before ~1h expiry) is picked up.
+    token_path: PathBuf,
     /// Audiences the token must carry (typically `["api"]`).
     audiences: Vec<String>,
     /// Permitted ServiceAccount identities in `namespace/name` format.
@@ -48,16 +52,13 @@ pub struct TokenReviewVerifier {
 impl TokenReviewVerifier {
     /// Builds a verifier from explicit configuration.
     ///
-    /// `apiserver_url` is the base URL of the kube-apiserver (e.g.
-    /// `https://kubernetes.default.svc`). The `/tokenreviews` path is
-    /// appended internally.
+    /// `apiserver_url` is the kube-apiserver base URL; the `/tokenreviews`
+    /// path is appended internally.
     ///
-    /// The in-cluster CA bundle is loaded from the standard projected-token
-    /// mount (`ca.crt`) so the apiserver's self-signed cert is trusted; if
-    /// absent (local dev), the client falls back to system/webpki roots.
+    /// The in-cluster CA bundle is loaded from the projected-token mount
+    /// (`ca.crt`); if absent (local dev), the client uses system roots.
     ///
-    /// Returns `Err` only if `reqwest::Client` construction fails — which
-    /// indicates a broken TLS backend, not a caller error.
+    /// Returns `Err` only if `reqwest::Client` construction fails.
     pub fn new(
         apiserver_url: String,
         audiences: Vec<String>,
@@ -92,19 +93,12 @@ impl TokenReviewVerifier {
             VerifyError::Unreachable
         })?;
 
-        // The pod's own SA token authenticates the TokenReview call; local
-        // dev / tests have no such file and the token stays empty.
-        const IN_CLUSTER_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-        let bearer_token = std::fs::read_to_string(IN_CLUSTER_TOKEN)
-            .map(|s| s.trim().to_owned())
-            .unwrap_or_default();
-
         let review_url = format!("{apiserver_url}/apis/authentication.k8s.io/v1/tokenreviews");
 
         Ok(Self {
             client,
             review_url,
-            bearer_token,
+            token_path: PathBuf::from(IN_CLUSTER_TOKEN),
             audiences,
             allowed_accounts,
         })
@@ -112,8 +106,8 @@ impl TokenReviewVerifier {
 
     /// Verifies a Bearer token via Kubernetes TokenReview.
     ///
-    /// - Sends the token to the kube-apiserver with the configured audiences.
-    /// - Checks `authenticated`, the returned `audiences`, and the allowlist.
+    /// - Sends the token with the configured audiences; checks `authenticated`,
+    ///   the returned `audiences`, and the allowlist.
     /// - Every non-happy path returns `Err(VerifyError)`.
     pub async fn verify(&self, bearer_token: &str) -> Result<(), VerifyError> {
         // Test-only bypass for DB-backed integration tests.
@@ -121,6 +115,12 @@ impl TokenReviewVerifier {
         if self.review_url.is_empty() {
             return Ok(());
         }
+
+        // Re-read the pod's own SA token each call: the projected-token
+        // volume rewrites the file before ~1h expiry, so don't cache it.
+        let own_token = std::fs::read_to_string(&self.token_path)
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
 
         let request = TokenReviewRequest {
             api_version: "authentication.k8s.io/v1",
@@ -134,7 +134,7 @@ impl TokenReviewVerifier {
         let response = self
             .client
             .post(&self.review_url)
-            .bearer_auth(&self.bearer_token)
+            .bearer_auth(&own_token)
             .json(&request)
             .send()
             .await

@@ -22,7 +22,7 @@ impl TokenReviewVerifier {
         Self {
             client: reqwest::Client::new(),
             review_url: String::new(),
-            bearer_token: String::new(),
+            token_path: std::path::PathBuf::new(),
             audiences: Vec::new(),
             allowed_accounts: HashSet::new(),
         }
