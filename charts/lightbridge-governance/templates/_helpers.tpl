@@ -303,8 +303,33 @@ processor at all -- oidcauthextension runs at the receiver, before any
 pipeline processor). Staged into a scratch key first because this processor
 can only copy the raw header verbatim; picking the trustworthy entry out of it
 needs the `transform` processor below, which runs immediately after.
+
+⚠️ CALLER-INJECTABLE ATTRIBUTES, found in PR review (#305) and fixed before
+merge -- `resourceSpans[].resource.attributes` is literal, fully
+caller-controlled JSON on this public endpoint (the request BODY, nothing to
+do with headers). Two `delete` actions immediately below wipe BOTH
+`client.address` and this scratch key unconditionally, before anything else
+runs, so a caller cannot pre-seed either one and have it survive:
+  - Without the `client.address` delete: a caller submits
+    `resource.attributes: [{"key":"client.address","value":{"stringValue":
+    "6.6.6.6"}}]` directly, with NO X-Forwarded-For at all -- the transform
+    processor's `where` guard below never fires (no real header means no
+    scratch value), so the caller's own value is never overwritten. Verified
+    live: reproduced, then fixed by this delete.
+  - Without the `client.address.xff_raw` delete: `action: insert` (the
+    original code here) only writes when the key does NOT already exist, so
+    a caller who also submits `client.address.xff_raw` in the same request
+    keeps their own value even alongside a completely legitimate
+    X-Forwarded-For header -- `upsert` alone does not fully fix this either:
+    upsert still only ACTS when `from_context` has something to write, so a
+    caller-seeded value survives untouched whenever there is no real header
+    at all. Verified live, both variants, before landing this delete.
 */}}
-          - action: insert
+          - action: delete
+            key: client.address
+          - action: delete
+            key: client.address.xff_raw
+          - action: upsert
             key: client.address.xff_raw
             from_context: "metadata.x-forwarded-for"
 {{- /*
@@ -328,22 +353,33 @@ This was verified end-to-end against the exact pinned image
 just rendered): a push carrying `X-Forwarded-For: 6.6.6.6, 10.42.2.109`
 produced `client.address: 10.42.2.109` on the resulting ResourceSpans /
 ResourceLogs -- the spoofed leading entry never survives.
+
+⚠️ EMPTY/BLANK ENTRY, also found in review: a present-but-empty header (or a
+trailing comma, e.g. `X-Forwarded-For: 1.2.3.4,`) is not `nil` -- the `!= nil`
+guard alone let `client.address` get set to `""`, a fabricated "attribution is
+present" signal that isn't one. The second `where` clause below re-derives the
+same rightmost/trimmed value and requires it non-empty; verbose (the whole
+Split/Len/Trim chain repeated) rather than a temp variable, because OTTL has
+no intermediate-variable binding across a `where` clause and a `set()`'s value
+expression -- each is evaluated independently. Verified live: a bare
+`X-Forwarded-For:` and a trailing-comma `X-Forwarded-For: 1.2.3.4,` both now
+produce no `client.address` attribute at all, not an empty one.
 */}}
       transform/client_address_from_xff:
         log_statements:
           - context: resource
             statements:
-              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil and Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1]) != ""
               - delete_key(attributes, "client.address.xff_raw")
         trace_statements:
           - context: resource
             statements:
-              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil and Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1]) != ""
               - delete_key(attributes, "client.address.xff_raw")
         metric_statements:
           - context: resource
             statements:
-              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil
+              - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil and Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1]) != ""
               - delete_key(attributes, "client.address.xff_raw")
       batch:
         send_batch_size: 512
