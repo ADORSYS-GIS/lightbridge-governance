@@ -5,7 +5,18 @@ name: VS Code extension
 # and its own asset. This is the first workflow in the repository that runs
 # npm; see the note in ide/vscode/.gitignore and CLAUDE.md.
 on:
+  # `push` scoped to `main` -- same fix as ci.yml (lightbridge-governance#305):
+  # unscoped, a push to a PR branch touching these paths fires BOTH this and
+  # `pull_request: synchronize` for the same commit, and the concurrency
+  # group below only cancels the redundant run after it's already started and
+  # recorded as a cancelled/failed check. Scoping `push` to `main` means only
+  # `pull_request` fires for a feature branch; `main` pushes (post-merge)
+  # still get their own run via `push`, and `pull_request` never fires there.
+  # `pull_request` itself stays UNSCOPED by base branch (no `branches:`) --
+  # this repo has real stacked PRs targeting a non-`main` base, and those
+  # still need this build if they touch these paths.
   push:
+    branches: [main]
     paths: ['ide/vscode/**', '.github/workflows/vscode-extension.yml']
   pull_request:
     paths: ['ide/vscode/**', '.github/workflows/vscode-extension.yml']
