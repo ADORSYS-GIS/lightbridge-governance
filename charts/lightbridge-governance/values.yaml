@@ -393,6 +393,23 @@ grafanaDashboard:
     title: "OpenCode"
 
   # A fourth sibling folder under the same `Governance` parent, for the
+  # Codex telemetry dashboard (RFC-0003's Codex row). Its own folder rather
+  # than folding into `aiCliFolder`: Codex rides the SAME aiCliOtel
+  # collector Claude Code uses (governance.source=ai-cli on every sampled
+  # line), but it is its own taxonomy row with its own engineer-facing
+  # story (real per-user identity under ChatGPT sign-in, tool-approval
+  # activity, no cost figure) -- worth its own folder for the same reason
+  # OpenCode got one rather than being folded into `aiCliFolder`. Same
+  # coupling as the other two: always nests under `folder.parent.name`, no
+  # separate parent-create toggle of its own -- see `aiCliFolder`'s own
+  # comment above for the `folder.enabled` gotcha, which applies identically
+  # here.
+  codexFolder:
+    enabled: true
+    nameSuffix: codex
+    title: "Codex"
+
+  # A fifth sibling folder under the same `Governance` parent, for the
   # Claude Code telemetry dashboard -- a dedicated, deeper replacement for
   # the Claude Code section `generate_ai_cli_dashboard.py`'s own dashboard
   # already carries (that dashboard is left in place -- it's still the only

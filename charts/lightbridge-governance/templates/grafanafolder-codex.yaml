@@ -1,0 +1,29 @@
+{{- if and .Values.grafanaDashboard.enabled .Values.grafanaDashboard.codexFolder.enabled }}
+# A sibling of templates/grafanafolder-opencode.yaml's (and
+# templates/grafanafolder-ai-cli.yaml's, templates/grafanafolder.yaml's
+# Copilot) folder, all nested under the same `Governance` parent -- see
+# values.yaml's grafanaDashboard.codexFolder for why this is its own folder
+# (Codex telemetry rides the SAME aiCliOtel collector Claude Code uses, but
+# is its own RFC-0003 taxonomy row and its own audience/engineer-facing
+# story, not a sub-case of either Copilot's or the AI CLI daemon's own
+# dashboards), and for the `folder.enabled` coupling this depends on.
+#
+# This template ONLY creates the child folder; the `Governance` parent is
+# templates/grafanafolder.yaml's responsibility (`folder.parent.create`), not
+# duplicated here.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.name }}-{{ .Values.grafanaDashboard.codexFolder.nameSuffix }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.codexFolder.title | quote }}
+  parentFolderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+{{- end }}
