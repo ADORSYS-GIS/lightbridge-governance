@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.4](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.3...v2.4.4) (2026-09-09)
+
+
+### Performance Improvements
+
+* **auth:** mint once per lookahead walk, not once per probe ([#314](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/314)) ([66055ef](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/66055ef5d5aeb861b4ed5f08fcf52e79b06c0df4))
+
 ## [2.4.3](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.2...v2.4.3) (2026-09-09)
 
 
