@@ -33,13 +33,26 @@
 //! from turning into "retry the entire remaining spool on every wake" --
 //! past that many consecutive refusals, this reads as outage, not a run of
 //! bad records, and holds exactly as it always has.
+//!
+//! ## One mint per walk, not one per probe
+//!
+//! [`mint::mint`] is minted ONCE below, before the loop, and reused across
+//! every probe in this walk (PR #312 review, P2) -- it is `&self`-independent
+//! and a wedged pass trying the full [`MAX_LOOKAHEAD`] would otherwise pay
+//! for it up to 20 times. Safe even if the bearer goes stale partway through
+//! a long walk: a collector that then answers 401 is not `is_permanent`, so
+//! [`crate::otel_daemon::forward::post`] returns `Err`, which
+//! [`probe::probe_outcome`] reports as [`ProbeOutcome::Unknown`] -- the walk
+//! just holds early and the next pump tick re-mints fresh, the same
+//! fail-safe outcome an expired token already produces anywhere else in this
+//! daemon.
 
 use super::{
     Outcome,
-    probe::{ProbeOutcome, probe_outcome},
+    probe::{self, ProbeOutcome},
     with_spool,
 };
-use crate::otel_daemon::{DaemonState, spool::Pending};
+use crate::otel_daemon::{DaemonState, mint, spool::Pending};
 
 /// How many records ahead of a stuck one this is willing to try before
 /// concluding the collector itself is the problem, not a short run of bad
@@ -57,6 +70,19 @@ pub(super) async fn walk(
     pending: Pending,
     status: axum::http::StatusCode,
 ) -> Outcome {
+    // Minted once, up front, and reused for every probe below -- see the
+    // module doc's "One mint per walk, not one per probe". A failure here is
+    // exactly as uninformative as it would be per-probe: hold, don't discard.
+    let Ok(minted) = mint::mint(&state.http, &state.config).await else {
+        tracing::warn!(
+            %status,
+            "the collector refused this record on enough separate attempts, but no session was \
+             available to probe the collector with -- held, not discarded, until it can be \
+             tried again"
+        );
+        return Outcome::Stopped;
+    };
+
     let mut cursor = pending.clone();
     let mut lost: u64 = 1;
     for _ in 0..MAX_LOOKAHEAD {
@@ -83,7 +109,7 @@ pub(super) async fn walk(
             }
         };
 
-        match probe_outcome(state, &probe).await {
+        match probe::probe_outcome(state, &minted, &probe).await {
             ProbeOutcome::Accepted => {
                 let discarded = with_spool(state, {
                     let pending = pending.clone();
