@@ -1,5 +1,3 @@
-//! Tests for [`super`].
-
 use std::path::Path;
 
 use super::{
@@ -14,6 +12,7 @@ mod hints;
 mod spool;
 mod spool_held;
 mod survey;
+mod survey_support;
 mod targets;
 mod telemetry;
 

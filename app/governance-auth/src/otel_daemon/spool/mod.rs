@@ -15,9 +15,6 @@
 //! is in practice only this module's own reclaim ([`commit`]) -- the
 //! identity check runs anyway, at zero cost, as the same defence in depth.
 //!
-//! What is **not** reused is `copilot::checkpoint`/`copilot::journal`: see
-//! [`super::checkpoint`]'s doc for why the shapes diverge too much to share.
-//!
 //! ## The envelope, and why base64
 //!
 //! Each retained payload is one JSON line: `{"signal":"Metrics","body":
@@ -28,8 +25,7 @@
 //! line splitting. Base64 costs ~33% on disk; the alternative
 //! (a length-prefixed binary frame) would need its own reader instead of
 //! reusing the text tailer, for a spool whose whole purpose is to be a
-//! short-lived bridge across an outage, not a compact long-term store.
-//! Simplicity and reuse win here.
+//! short-lived bridge across an outage.
 //!
 //! ## The one thing this format is not proof against
 //!
@@ -69,8 +65,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use super::checkpoint::{self, Checkpoint};
-use super::receive::WireFormat;
+use super::{
+    checkpoint::{self, Checkpoint},
+    receive::WireFormat,
+};
 use crate::copilot::{Signal, spool as tail, spool::Identity};
 
 /// The file name under the state directory. No CLI override exists for it

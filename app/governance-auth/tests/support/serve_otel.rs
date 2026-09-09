@@ -21,10 +21,7 @@
 //! ## Why `until` and never the clock
 //!
 //! "Sleep 300 ms, then POST" is a race against an already-loaded CI runner. The
-//! readiness wait below polls the one fact that must be true before a POST can
-//! be meaningful -- that the daemon has bound the port -- and the drain test
-//! polls the collector's request count, so the assertion lands at the same
-//! point on an idle laptop and a busy runner.
+//! readiness waits poll the bound port and collector request count.
 
 use std::{
     net::TcpStream,
