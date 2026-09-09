@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.5.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.4...v2.5.0) (2026-09-09)
+
+
+### Features
+
+* **charts:** add Claude Code telemetry Grafana dashboard ([#317](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/317)) ([c5ee850](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c5ee850f52b48c71bc2d7634bf022d85e5a8b921))
+* **charts:** add Codex telemetry Grafana dashboard ([#316](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/316)) ([006e8a5](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/006e8a54949a94cd23808e0f9b9b3329c097efab))
+
+
+### Bug Fixes
+
+* **charts:** stat panels use instant queries, not range, to stop loki-0 OOMKilling ([#318](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/318)) ([d7fcc15](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d7fcc153fbc0832a384693a6e7afaad0bfbf69f7))
+
 ## [2.4.4](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.3...v2.4.4) (2026-09-09)
 
 
