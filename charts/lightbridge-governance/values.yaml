@@ -392,6 +392,25 @@ grafanaDashboard:
     nameSuffix: opencode
     title: "OpenCode"
 
+  # A fourth sibling folder under the same `Governance` parent, for the
+  # Claude Code telemetry dashboard -- a dedicated, deeper replacement for
+  # the Claude Code section `generate_ai_cli_dashboard.py`'s own dashboard
+  # already carries (that dashboard is left in place -- it's still the only
+  # place Copilot Chat's Mimir metrics live -- but its 2-event-type Claude
+  # Code section is a fraction of what scripts/generate_claude_code_
+  # dashboard.py's own investigation found live: 13 event types, hooks, MCP
+  # servers, plugins, data-retention hygiene, none of which the older
+  # dashboard touches). Its own folder for the same reason OpenCode and
+  # Codex got their own rather than folding into `aiCliFolder`. Same
+  # coupling as the other three: always nests under `folder.parent.name`, no
+  # separate parent-create toggle of its own -- see `aiCliFolder`'s own
+  # comment above for the `folder.enabled` gotcha, which applies identically
+  # here.
+  claudeCodeFolder:
+    enabled: true
+    nameSuffix: claude-code
+    title: "Claude Code"
+
   # Grafana Operator v5 requires every GrafanaDashboard to carry an
   # instanceSelector (a label selector) so it knows which deployed `Grafana`
   # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a
