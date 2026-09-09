@@ -160,7 +160,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\".+\"}[24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -230,7 +231,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_user_email) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} | json [24h])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -418,7 +420,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code-desktop\"} |= \"api_request\" | json | unwrap attributes_cost_usd [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
