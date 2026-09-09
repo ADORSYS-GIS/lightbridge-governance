@@ -132,6 +132,66 @@ counts live on span/log attributes, not the `codex.turn.token_usage` metric
 (upstream bug openai/codex#33668) -- consistent with what a Loki-only
 dashboard can see.
 
+## Benchmarked against Grafana's own official Codex integration dashboard
+
+grafana.com/grafana/dashboards/25266 ("Codex", downloaded and inspected
+panel-by-panel at the user's request) queries a DIFFERENT backend entirely
+(Azure Monitor / Log Analytics KQL over `customMetrics`, real OTLP metrics --
+`codex.thread.started`, `codex.turn.token_usage`, `codex.tool.call`,
+`codex.approval.requested`, etc.) that this org's Codex traffic does not
+emit into (see "Why Loki" above); its "Summary KPIs" layout (8 compact h=4
+stats, 2 rows of 4) and per-section structure (Token Usage / Latency / Usage
+Over Time / Tool Health / Safety & Access) were still worth matching, and
+this revision does, filling in what our own live-confirmed fields can
+support:
+
+  - **Prompt cache hit rate** -- 25266 computes this from `token_type in
+    (input, cached_input)`; ours is `cached_token_count / input_token_count`,
+    both already-confirmed `codex.sse_event` fields. Same question, our data.
+  - **Tokens by model** (piechart) -- `attributes_model` is confirmed
+    present on `codex.sse_event` itself (the same event token counts come
+    from), so no extra join is needed.
+  - **TTFT percentiles** (p50/p90/p95), not just the single average this
+    revision shipped before -- LogQL's `quantile_over_time(...) by ()`
+    pools every matching line's unwrapped value into ONE true percentile.
+    ⚠️ Caught by direct comparison, not assumed: `quantile_over_time(0.95,
+    ...)` WITHOUT an explicit `by ()` returns one result PER STREAM, and
+    because every line here carries several per-line-unique fields
+    (`call_id`, `conversation.id`, ...) that `| json` promotes into that
+    stream's label set, "per stream" in practice means "per log line" --
+    i.e. the trivial 1-sample "percentile" of a single point, not a real
+    percentile over the population. `by ()` is what actually pools them.
+  - **Sessions by client** (25266's own name for its `originator`-grouped
+    piechart) -- simplified here to an EVENT COUNT by `attributes_originator`
+    (`sum by (...) (count_over_time(...))`), not a distinct-session count:
+    the distinct-session version needs a nested `count by (originator,
+    conversation_id) (count by (originator) (...))` shape that could not be
+    independently round-tripped before Loki's backend (see below) went
+    down -- the simpler, already-proven `sum by (...) (count_over_time(...))`
+    shape (identical to every other breakdown panel in this file) was used
+    instead rather than ship an unverified construct.
+  - **What 25266 has that this revision still doesn't**: `codex.tool.call`
+    carries a `success` dimension Azure-side that gives a real "Tool Failure
+    Rate" KPI -- Codex's Loki `tool_result` line has no such field (confirmed
+    absent, unlike Claude Code's own `tool_result`, which does -- see
+    `generate_claude_code_dashboard.py`), so no failure-rate panel is built
+    here; and `codex.turn.e2e_duration_ms` gives a true per-turn latency --
+    no equivalent duration spans a whole turn in what this dashboard reads,
+    only the narrower time-to-first-token (`codex.turn_ttft`).
+
+⚠️ **This revision's own new panels were validated against a mix of live
+round-trips and already-proven patterns, not all fresh round-trips**: the
+cache-hit-rate and tokens-by-model exprs reuse fields/shapes already
+confirmed live earlier in this file's own history; the TTFT percentile
+`by ()` shape was confirmed live moments before writing this revision
+(against Claude Code's own `tool_result.duration_ms`, the identical LogQL
+construct, same Loki instance); `loki-0` then hit the SAME pre-existing
+OOMKilled crash loop this session flagged separately (kubelet readiness
+failures predating this session by over 2 days, not caused by it alone) and
+stayed down for the rest of this revision's own verification window -- the
+sessions-by-client panel's simplification above is a direct consequence of
+that outage, not a design preference.
+
 ## What is NOT confirmed
 
   - The Loki datasource UID -- same `__DS_LOKI__` / values.yaml
@@ -344,15 +404,234 @@ def loki_table_panel(
     }
 
 
+def loki_piechart_panel(
+    ids: Ids,
+    *,
+    title: str,
+    description: str,
+    expr: str,
+    grid: dict[str, int],
+    legend: str = "__auto",
+) -> dict[str, Any]:
+    """Same shape as `generate_claude_code_dashboard.py`'s own
+    `loki_piechart_panel` -- an instant, grouped breakdown, for "share of
+    total by category" rather than a trend or a ranked list."""
+    return {
+        "id": ids.take(),
+        "type": "piechart",
+        "title": title,
+        "description": description,
+        "datasource": LOKI_DS,
+        "gridPos": grid,
+        "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+        "options": {
+            "legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]},
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+            "pieType": "pie",
+        },
+        "targets": [
+            {
+                "datasource": LOKI_DS,
+                "expr": expr,
+                "queryType": "instant",
+                "instant": True,
+                "legendFormat": legend,
+                "refId": "A",
+            }
+        ],
+    }
+
+
 def build_dashboard() -> dict[str, Any]:
     ids = Ids()
     panels: list[dict[str, Any]] = []
     y = 0
 
     # ---------------------------------------------------------------
-    # Section 1 -- Volume & adoption. Confirmed live 2026-09-09: 85
-    # conversations, 5 distinct hosts, 2 distinct ChatGPT-signed-in
-    # engineers over the trailing 7d (a small pilot group, not a bug).
+    # Section 1 -- Summary KPIs. Mirrors 25266's own top strip (h=4 stats,
+    # not this repo's usual h=8, 2 rows of 4) -- the layout the user
+    # specifically asked to match. Two of 25266's own 8 KPIs (Tool Failure
+    # Rate, p95 Turn Latency) have no equivalent here -- see the module
+    # docstring's benchmark section for exactly why -- and are replaced with
+    # KPIs this dashboard CAN back with confirmed live data: auto-approved
+    # share (this dashboard's own headline finding) and real per-engineer
+    # identity (which 25266 has no dimension for at all).
+    # ---------------------------------------------------------------
+    panels.append(row(ids, "Summary KPIs", y))
+    y += 1
+
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Conversations (7d)",
+            description=(
+                "count(count by (attributes_conversation_id) (count_over_time({...} | "
+                'attributes_event_name="codex.conversation_starts" [7d]))). Confirmed live: 85 '
+                "over a real 7d window."
+            ),
+            expr=(
+                "count(count by (attributes_conversation_id) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.conversation_starts" [7d])))'
+            ),
+            unit="none",
+            grid={"h": 4, "w": 6, "x": 0, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Turns (response.completed, 24h)",
+            description=(
+                'sum(count_over_time({...} | attributes_event_name="codex.sse_event" | '
+                'attributes_event_kind="response.completed" [24h])). The closest analogue to '
+                "25266's `codex.conversation.turn.count` metric this dashboard's log-only data "
+                "can offer: one completed model response is one turn."
+            ),
+            expr=(
+                "sum(count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                '| attributes_event_kind="response.completed" [24h]))'
+            ),
+            unit="none",
+            grid={"h": 4, "w": 6, "x": 6, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Total tokens (24h)",
+            description=(
+                "input + output token_count, both sum_over_time({...} | unwrap ... [24h]) from "
+                "codex.sse_event, added client-side via two targets on one query -- Grafana's "
+                "stat panel sums its targets by default when both share the same field."
+            ),
+            expr=(
+                "sum(sum_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                "| unwrap attributes_input_token_count [24h])) "
+                "+ sum(sum_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                "| unwrap attributes_output_token_count [24h]))"
+            ),
+            unit="none",
+            grid={"h": 4, "w": 6, "x": 12, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Tool calls (24h)",
+            description=f'sum(count_over_time({CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [24h])).',
+            expr=f'sum(count_over_time({CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [24h]))',
+            unit="none",
+            grid={"h": 4, "w": 6, "x": 18, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    y += 4
+
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Prompt cache hit rate (24h)",
+            description=(
+                "cached_token_count / input_token_count, both sum_over_time({...} | unwrap "
+                "... [24h]) from codex.sse_event. 25266's own analogue "
+                "(`token_type in (input, cached_input)`) asks the same question of the "
+                "Azure-side metric this org's Codex traffic doesn't emit into; this is the "
+                "same ratio from the fields this dashboard actually has. Confirmed live: "
+                "cached ~23.2M / input ~24.7M in a real 24h window -- heavy cache reuse."
+            ),
+            expr=(
+                "sum(sum_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                "| unwrap attributes_cached_token_count [24h])) "
+                "/ sum(sum_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                "| unwrap attributes_input_token_count [24h]))"
+            ),
+            unit="percentunit",
+            grid={"h": 4, "w": 6, "x": 0, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Auto-approved share of decisions (7d)",
+            description=(
+                "(count with source != User) / (count total), both restricted to "
+                "codex.tool_decision over 7d. This dashboard's own headline finding, promoted "
+                "into the KPI strip: 25266 has no `source`-style split on its own "
+                "`codex.approval.requested` metric at all."
+            ),
+            expr=(
+                "sum(count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" '
+                '| attributes_source!="User" [7d])) '
+                "/ sum(count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [7d]))'
+            ),
+            unit="percentunit",
+            grid={"h": 4, "w": 6, "x": 6, "y": y},
+            mappings=[NO_DATA_MAPPING],
+            thresholds_steps=[
+                {"color": "green", "value": None},
+                {"color": "orange", "value": 0.5},
+                {"color": "red", "value": 0.9},
+            ],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="p95 time to first token (24h)",
+            description=(
+                "quantile_over_time(0.95, {...} | unwrap attributes_duration_ms [24h]) by () -- "
+                "see the module docstring's ⚠️ on why the explicit `by ()` is load-bearing here, "
+                "not decorative. Upgrades the previous single-average stat to a real "
+                "percentile, matching 25266's own p95 framing."
+            ),
+            expr=(
+                "quantile_over_time(0.95, "
+                f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" '
+                "| unwrap attributes_duration_ms [24h]) by ()"
+            ),
+            unit="ms",
+            grid={"h": 4, "w": 6, "x": 12, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Engineers active (24h, ChatGPT sign-in only)",
+            description=(
+                "count(count by (attributes_user_email) (count_over_time(...[24h]))). "
+                "user.email is populated ONLY under ChatGPT sign-in (confirmed live -- every "
+                "sampled line carries auth_mode=Chatgpt); a developer on API-key auth is "
+                "invisible here, not counted as zero -- there is no row to see at all. 25266 "
+                "has no per-engineer dimension whatsoever."
+            ),
+            expr=(
+                "count(count by (attributes_user_email) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_user_email=~".+" [24h])))'
+            ),
+            unit="none",
+            grid={"h": 4, "w": 6, "x": 18, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    y += 4
+
+    # ---------------------------------------------------------------
+    # Section 2 -- Volume & adoption (RFC-0003 Codex row). Confirmed live
+    # 2026-09-09: 85 conversations, 5 distinct hosts, 2 distinct
+    # ChatGPT-signed-in engineers over the trailing 7d (a small pilot group,
+    # not a bug).
     # ---------------------------------------------------------------
     panels.append(row(ids, "Volume & adoption (RFC-0003 Codex row)", y))
     y += 1
@@ -384,48 +663,12 @@ def build_dashboard() -> dict[str, Any]:
             description=f'sum(count_over_time({CODEX_JOB} | json | attributes_event_name=~".+" [24h])).',
             expr=f'sum(count_over_time({CODEX_JOB} | json | attributes_event_name=~".+" [24h]))',
             unit="none",
-            grid={"h": 8, "w": 5, "x": 14, "y": y},
-            mappings=[NO_DATA_MAPPING],
-        )
-    )
-    panels.append(
-        loki_stat_panel(
-            ids,
-            title="Engineers active (24h, ChatGPT sign-in only)",
-            description=(
-                "count(count by (attributes_user_email) (count_over_time(...[24h]))). "
-                "user.email is populated ONLY under ChatGPT sign-in (confirmed live -- every "
-                "sampled line carries auth_mode=Chatgpt); a developer on API-key auth is "
-                "invisible here, not counted as zero -- there is no row to see at all."
-            ),
-            expr=(
-                "count(count by (attributes_user_email) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_user_email=~".+" [24h])))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 5, "x": 19, "y": y},
+            grid={"h": 8, "w": 10, "x": 14, "y": y},
             mappings=[NO_DATA_MAPPING],
         )
     )
     y += 8
 
-    panels.append(
-        loki_stat_panel(
-            ids,
-            title="Conversations started (7d)",
-            description=(
-                "count(count by (attributes_conversation_id) (count_over_time({...} | "
-                'attributes_event_name="codex.conversation_starts" [7d]))).'
-            ),
-            expr=(
-                "count(count by (attributes_conversation_id) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.conversation_starts" [7d])))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 4, "x": 0, "y": y},
-            mappings=[NO_DATA_MAPPING],
-        )
-    )
     panels.append(
         loki_stat_panel(
             ids,
@@ -439,7 +682,7 @@ def build_dashboard() -> dict[str, Any]:
                 f"{CODEX_JOB} | json [7d])))"
             ),
             unit="none",
-            grid={"h": 8, "w": 4, "x": 4, "y": y},
+            grid={"h": 8, "w": 4, "x": 0, "y": y},
             mappings=[NO_DATA_MAPPING],
         )
     )
@@ -449,14 +692,14 @@ def build_dashboard() -> dict[str, Any]:
             title="Top engineers by events (24h, ChatGPT sign-in only)",
             description=(
                 "topk(10, sum by (attributes_user_email) (count_over_time(...[24h]))). Same "
-                "ChatGPT-sign-in caveat as the stat panel above."
+                "ChatGPT-sign-in caveat as the KPI strip above."
             ),
             expr=(
                 "topk(10, sum by (attributes_user_email) (count_over_time("
                 f'{CODEX_JOB} | json | attributes_user_email=~".+" [24h])))'
             ),
             unit="none",
-            grid={"h": 8, "w": 8, "x": 8, "y": y},
+            grid={"h": 8, "w": 10, "x": 4, "y": y},
         )
     )
     panels.append(
@@ -466,156 +709,17 @@ def build_dashboard() -> dict[str, Any]:
             description="topk(10, sum by (resources_host_name) (count_over_time(...[7d]))).",
             expr=f"topk(10, sum by (resources_host_name) (count_over_time({CODEX_JOB} | json [7d])))",
             unit="none",
-            grid={"h": 8, "w": 8, "x": 16, "y": y},
+            grid={"h": 8, "w": 10, "x": 14, "y": y},
         )
     )
     y += 8
 
     # ---------------------------------------------------------------
-    # Section 2 -- Tool activity & approvals. See the module docstring's ⚠️
-    # section -- "approved" is 98% policy auto-approval, not a human
-    # decision, and every panel here makes that split explicit rather than
-    # reporting a single misleading "acceptance rate".
+    # Section 3 -- Token Usage. Renamed from "Tokens" to match 25266's own
+    # row name; adds the tokens-by-model piechart 25266 has and this
+    # dashboard's earlier revision didn't.
     # ---------------------------------------------------------------
-    panels.append(
-        row(
-            ids,
-            "Tool activity & approvals -- decision vs source (codex.tool_decision)",
-            y,
-        )
-    )
-    y += 1
-
-    panels.append(
-        loki_timeseries_panel(
-            ids,
-            title="Tool call decisions, by decision AND source",
-            description=(
-                "sum by (attributes_decision, attributes_source) (count_over_time({...} | "
-                'attributes_event_name="codex.tool_decision" [$__interval])). `source` is the '
-                "load-bearing dimension: Config/AutomatedReviewer are policy/bot auto-approval, "
-                "NOT an engineer's decision. Confirmed live over 7d: 713 approved/Config, 6 "
-                "approved/AutomatedReviewer, 14 approved_with_amendment/User -- 98% of "
-                "'approved' never reached a human."
-            ),
-            expr=(
-                "sum by (attributes_decision, attributes_source) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [$__interval]))'
-            ),
-            legend="{{attributes_decision}} / {{attributes_source}}",
-            unit="ops",
-            grid={"h": 8, "w": 12, "x": 0, "y": y},
-        )
-    )
-    panels.append(
-        loki_table_panel(
-            ids,
-            title="Human-reviewed decisions only (source=User, 7d)",
-            description=(
-                'sum by (attributes_decision) (count_over_time({...} | attributes_source="User" '
-                "[7d])), restricted to source=User. THIS is the actual rate at which an "
-                "engineer accepted/amended/rejected what the agent proposed -- everything else "
-                "in this dashboard's `decision` field is a policy default, not a person."
-            ),
-            expr=(
-                "sum by (attributes_decision) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" '
-                '| attributes_source="User" [7d]))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 12, "x": 12, "y": y},
-        )
-    )
-    y += 8
-
-    panels.append(
-        loki_stat_panel(
-            ids,
-            title="Auto-approved share of all decisions (7d)",
-            description=(
-                "(count with source != User) / (count total), both restricted to "
-                "codex.tool_decision over 7d. High is expected when approval_policy=never "
-                "(seen live in codex.conversation_starts) -- this stat exists so nobody reads "
-                "the decision breakdown above as pure engineer behaviour."
-            ),
-            expr=(
-                "sum(count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" '
-                '| attributes_source!="User" [7d])) '
-                "/ sum(count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [7d]))'
-            ),
-            unit="percentunit",
-            grid={"h": 8, "w": 6, "x": 0, "y": y},
-            mappings=[NO_DATA_MAPPING],
-        )
-    )
-    panels.append(
-        loki_table_panel(
-            ids,
-            title="Tools invoked (7d)",
-            description=(
-                "sum by (attributes_tool_name) (count_over_time({...} | "
-                'attributes_event_name="codex.tool_decision" [7d])). Confirmed live values: '
-                "apply_patch (the code-editing tool) and exec_command."
-            ),
-            expr=(
-                "sum by (attributes_tool_name) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [7d]))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 6, "x": 6, "y": y},
-        )
-    )
-    panels.append(
-        loki_stat_panel(
-            ids,
-            title="Patch applications (7d) -- proxy for code edits, NOT lines changed",
-            description=(
-                'sum(count_over_time({...} | attributes_event_name="codex.tool_result" | '
-                'attributes_tool_name="apply_patch" [7d])). Codex\'s OTel emission carries no '
-                "lines-added/removed field at all (confirmed absent across the full sampled "
-                "vocabulary) -- this counts apply_patch CALLS, the closest available signal for "
-                "\"how much code the agent changed\", not a line count."
-            ),
-            expr=(
-                "sum(count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_result" '
-                '| attributes_tool_name="apply_patch" [7d]))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 6, "x": 12, "y": y},
-            mappings=[NO_DATA_MAPPING],
-        )
-    )
-    panels.append(
-        loki_table_panel(
-            ids,
-            title="Sandbox denials, by outcome (7d)",
-            description=(
-                "sum by (attributes_outcome) (count_over_time({...} | "
-                'attributes_event_name="codex.sandbox_outcome" [7d])). A DIFFERENT gate than '
-                "tool_decision above -- the sandbox blocking a call outright (confirmed live "
-                'value: "denied" on exec_command), not an approval policy allowing or refusing '
-                "it. Low volume (3 in the confirmed sample) but a real signal, not noise."
-            ),
-            expr=(
-                "sum by (attributes_outcome) (count_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.sandbox_outcome" [7d]))'
-            ),
-            unit="none",
-            grid={"h": 8, "w": 6, "x": 18, "y": y},
-        )
-    )
-    y += 8
-
-    # ---------------------------------------------------------------
-    # Section 3 -- Tokens (self-reported by Codex; NO cost -- RFC-0003
-    # confirms "none emitted" and nothing in the confirmed vocabulary
-    # contradicts that). See the module docstring for the full token
-    # breakdown confirmed live.
-    # ---------------------------------------------------------------
-    panels.append(row(ids, "Tokens -- codex.sse_event (no cost figure: RFC-0003 confirms none emitted)", y))
+    panels.append(row(ids, "Token Usage -- codex.sse_event (no cost figure: RFC-0003 confirms none emitted)", y))
     y += 1
 
     panels.append(
@@ -635,7 +739,7 @@ def build_dashboard() -> dict[str, Any]:
             ),
             legend="input",
             unit="none",
-            grid={"h": 8, "w": 14, "x": 0, "y": y},
+            grid={"h": 8, "w": 16, "x": 0, "y": y},
         )
     )
     panels[-1]["targets"].extend(
@@ -698,26 +802,84 @@ def build_dashboard() -> dict[str, Any]:
         ]
     )
     panels.append(
-        loki_stat_panel(
+        loki_piechart_panel(
             ids,
-            title="Avg time to first token (24h)",
+            title="Tokens by model (24h)",
             description=(
-                'avg(avg_over_time({...} | attributes_event_name="codex.turn_ttft" | unwrap '
-                "attributes_duration_ms [24h])). Confirmed live: ~5.2s average in a real 24h "
-                "window."
+                "sum by (attributes_model) (sum_over_time({...} | unwrap "
+                "attributes_input_token_count [24h])) -- input tokens as the volume proxy. "
+                "attributes_model is confirmed present directly on codex.sse_event, the same "
+                "event token counts come from -- no join needed."
             ),
             expr=(
-                "avg(avg_over_time("
-                f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" '
-                "| unwrap attributes_duration_ms [24h]))"
+                "sum by (attributes_model) (sum_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sse_event" '
+                "| unwrap attributes_input_token_count [24h]))"
             ),
-            unit="ms",
-            grid={"h": 8, "w": 10, "x": 14, "y": y},
-            mappings=[NO_DATA_MAPPING],
+            grid={"h": 8, "w": 8, "x": 16, "y": y},
+            legend="{{attributes_model}}",
         )
     )
     y += 8
 
+    # ---------------------------------------------------------------
+    # Section 4 -- Latency. A dedicated row, matching 25266's own -- the
+    # earlier revision folded a single avg-TTFT stat into the tokens
+    # section; this revision gives latency its own row and a real
+    # percentile trend, not just the KPI strip's single p95 number.
+    # ---------------------------------------------------------------
+    panels.append(row(ids, "Latency", y))
+    y += 1
+
+    panels.append(
+        loki_timeseries_panel(
+            ids,
+            title="Time to first token percentiles (p50/p90/p95)",
+            description=(
+                "quantile_over_time(0.5|0.9|0.95, {...} | unwrap attributes_duration_ms "
+                "[$__interval]) by (), three targets on one panel. See the module docstring's "
+                "⚠️ on why `by ()` (pooling every matching line together) is required here -- "
+                "without it, quantile_over_time returns a trivial 1-sample \"percentile\" per "
+                "stream, not a real one over the population. 25266's own equivalent panel is "
+                "`codex.turn.ttft.duration_ms` percentiles; same question, this dashboard's "
+                "log-derived duration_ms field."
+            ),
+            expr=(
+                "quantile_over_time(0.5, "
+                f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" '
+                "| unwrap attributes_duration_ms [$__interval]) by ()"
+            ),
+            legend="p50",
+            unit="ms",
+            grid={"h": 8, "w": 12, "x": 0, "y": y},
+        )
+    )
+    panels[-1]["targets"].extend(
+        [
+            {
+                "datasource": LOKI_DS,
+                "expr": (
+                    "quantile_over_time(0.9, "
+                    f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" '
+                    "| unwrap attributes_duration_ms [$__interval]) by ()"
+                ),
+                "queryType": "range",
+                "legendFormat": "p90",
+                "refId": "B",
+            },
+            {
+                "datasource": LOKI_DS,
+                "expr": (
+                    "quantile_over_time(0.95, "
+                    f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" '
+                    "| unwrap attributes_duration_ms [$__interval]) by ()"
+                ),
+                "queryType": "range",
+                "legendFormat": "p95",
+                "refId": "C",
+            },
+        ]
+    )
     panels.append(
         loki_timeseries_panel(
             ids,
@@ -736,7 +898,173 @@ def build_dashboard() -> dict[str, Any]:
             ),
             legend="{{attributes_model}}",
             unit="short",
+            grid={"h": 8, "w": 12, "x": 12, "y": y},
+        )
+    )
+    y += 8
+
+    # ---------------------------------------------------------------
+    # Section 5 -- Tool Health & Safety/Access. Merges the earlier "Tool
+    # activity & approvals" section with a "Safety & Access"-named block
+    # matching 25266's own row, adding the two piecharts (sessions by
+    # client, sessions by approval policy) that row is built around. See
+    # the module docstring's ⚠️ section -- "approved" is 98% policy
+    # auto-approval, not a human decision, and every panel here makes that
+    # split explicit rather than reporting a single misleading "acceptance
+    # rate".
+    # ---------------------------------------------------------------
+    panels.append(
+        row(
+            ids,
+            "Tool Health & Safety/Access -- decision vs source (codex.tool_decision)",
+            y,
+        )
+    )
+    y += 1
+
+    panels.append(
+        loki_timeseries_panel(
+            ids,
+            title="Tool call decisions, by decision AND source",
+            description=(
+                "sum by (attributes_decision, attributes_source) (count_over_time({...} | "
+                'attributes_event_name="codex.tool_decision" [$__interval])). `source` is the '
+                "load-bearing dimension: Config/AutomatedReviewer are policy/bot auto-approval, "
+                "NOT an engineer's decision. Confirmed live over 7d: 713 approved/Config, 6 "
+                "approved/AutomatedReviewer, 14 approved_with_amendment/User -- 98% of "
+                "'approved' never reached a human."
+            ),
+            expr=(
+                "sum by (attributes_decision, attributes_source) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [$__interval]))'
+            ),
+            legend="{{attributes_decision}} / {{attributes_source}}",
+            unit="ops",
             grid={"h": 8, "w": 12, "x": 0, "y": y},
+        )
+    )
+    panels.append(
+        loki_table_panel(
+            ids,
+            title="Human-reviewed decisions only (source=User, 7d)",
+            description=(
+                'sum by (attributes_decision) (count_over_time({...} | attributes_source="User" '
+                "[7d])), restricted to source=User. THIS is the actual rate at which an "
+                "engineer accepted/amended/rejected what the agent proposed -- everything else "
+                "in this dashboard's `decision` field is a policy default, not a person."
+            ),
+            expr=(
+                "sum by (attributes_decision) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" '
+                '| attributes_source="User" [7d]))'
+            ),
+            unit="none",
+            grid={"h": 8, "w": 12, "x": 12, "y": y},
+        )
+    )
+    y += 8
+
+    panels.append(
+        loki_table_panel(
+            ids,
+            title="Tools invoked (7d)",
+            description=(
+                "sum by (attributes_tool_name) (count_over_time({...} | "
+                'attributes_event_name="codex.tool_decision" [7d])). Confirmed live values: '
+                "apply_patch (the code-editing tool) and exec_command."
+            ),
+            expr=(
+                "sum by (attributes_tool_name) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_decision" [7d]))'
+            ),
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 0, "y": y},
+        )
+    )
+    panels.append(
+        loki_stat_panel(
+            ids,
+            title="Patch applications (7d) -- proxy for code edits, NOT lines changed",
+            description=(
+                'sum(count_over_time({...} | attributes_event_name="codex.tool_result" | '
+                'attributes_tool_name="apply_patch" [7d])). Codex\'s OTel emission carries no '
+                "lines-added/removed field at all (confirmed absent across the full sampled "
+                "vocabulary) -- this counts apply_patch CALLS, the closest available signal for "
+                "\"how much code the agent changed\", not a line count."
+            ),
+            expr=(
+                "sum(count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.tool_result" '
+                '| attributes_tool_name="apply_patch" [7d]))'
+            ),
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 6, "y": y},
+            mappings=[NO_DATA_MAPPING],
+        )
+    )
+    panels.append(
+        loki_table_panel(
+            ids,
+            title="Sandbox denials, by outcome (7d)",
+            description=(
+                "sum by (attributes_outcome) (count_over_time({...} | "
+                'attributes_event_name="codex.sandbox_outcome" [7d])). A DIFFERENT gate than '
+                "tool_decision above -- the sandbox blocking a call outright (confirmed live "
+                'value: "denied" on exec_command), not an approval policy allowing or refusing '
+                "it. Low volume (3 in the confirmed sample) but a real signal, not noise."
+            ),
+            expr=(
+                "sum by (attributes_outcome) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.sandbox_outcome" [7d]))'
+            ),
+            unit="none",
+            grid={"h": 8, "w": 6, "x": 12, "y": y},
+        )
+    )
+    panels.append(
+        loki_piechart_panel(
+            ids,
+            title="Sessions by client (originator, 7d)",
+            description=(
+                "sum by (attributes_originator) (count_over_time({...} | "
+                'attributes_event_name="codex.turn_ttft" [7d])) -- an EVENT count, not a '
+                "distinct-session count (see the module docstring's ⚠️ on why the simpler shape "
+                "was used here). 25266's own analogue groups its `codex.thread.started` metric "
+                "by the same `originator` dimension; confirmed live value so far: "
+                '"Codex_Desktop" only -- unfiltered so a CLI-originated value shows up the '
+                "moment one exists, no dashboard change required."
+            ),
+            expr=(
+                "sum by (attributes_originator) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.turn_ttft" [7d]))'
+            ),
+            grid={"h": 8, "w": 6, "x": 18, "y": y},
+            legend="{{attributes_originator}}",
+        )
+    )
+    y += 8
+
+    panels.append(
+        loki_piechart_panel(
+            ids,
+            title="Sessions by approval policy (7d)",
+            description=(
+                "sum by (attributes_approval_policy) (count_over_time({...} | "
+                'attributes_event_name="codex.conversation_starts" [7d])). 25266\'s own '
+                '"Tool calls by sandbox policy" panel groups individual tool-call events by a '
+                "per-call sandbox_policy dimension this dashboard's tool_decision/tool_result "
+                "events do not carry (confirmed absent) -- this is the closest available "
+                "analogue: session-level approval_policy from conversation_starts, the same "
+                'field the "Session config" table already reads. approval_policy="never" means '
+                "no human is ever asked, at the sandbox's own config level -- context for the "
+                "approvals panels above."
+            ),
+            expr=(
+                "sum by (attributes_approval_policy) (count_over_time("
+                f'{CODEX_JOB} | json | attributes_event_name="codex.conversation_starts" [7d]))'
+            ),
+            grid={"h": 8, "w": 8, "x": 0, "y": y},
+            legend="{{attributes_approval_policy}}",
         )
     )
     panels.append(
@@ -746,9 +1074,7 @@ def build_dashboard() -> dict[str, Any]:
             description=(
                 "sum by (attributes_reasoning_effort, attributes_approval_policy) "
                 '(count_over_time({...} | attributes_event_name="codex.conversation_starts" '
-                "[7d])). Context for the approvals section above: "
-                'approval_policy="never" means no human is ever asked, at the sandbox\'s own '
-                "config level, independent of anything an engineer did in that session."
+                "[7d])). The same two dimensions as the piechart above, cross-tabulated."
             ),
             expr=(
                 "sum by (attributes_reasoning_effort, attributes_approval_policy) "
@@ -756,13 +1082,13 @@ def build_dashboard() -> dict[str, Any]:
                 f'{CODEX_JOB} | json | attributes_event_name="codex.conversation_starts" [7d]))'
             ),
             unit="none",
-            grid={"h": 8, "w": 12, "x": 12, "y": y},
+            grid={"h": 8, "w": 16, "x": 8, "y": y},
         )
     )
     y += 8
 
     # ---------------------------------------------------------------
-    # Section 4 -- Reliability (codex.api_request / .websocket_request /
+    # Section 6 -- Reliability (codex.api_request / .websocket_request /
     # .auth_recovery / .sse_event). What breaks, not what the agent did.
     # ---------------------------------------------------------------
     panels.append(row(ids, "Reliability (codex.api_request / .auth_recovery / .sse_event)", y))
