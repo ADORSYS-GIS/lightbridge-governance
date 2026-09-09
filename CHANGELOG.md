@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.4.3](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.2...v2.4.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **auth:** bounded lookahead in otel quarantine so consecutive refusals don't wedge the drain ([#312](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/312)) ([d66c369](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d66c3695becd801303e81c0198ea783c91693005))
+* **charts:** bump otelcol-contrib to 0.160.0, honor AWS checksum-calc env ([0c1fbfb](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/0c1fbfbeef7898570e77599298da8bd7926ecec5))
+* **charts:** move awss3 exporter compression key under s3uploader ([65cb444](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/65cb444bae1122ebb622ba69c947fb01b20fa1e0))
+
 ## [2.4.2](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.1...v2.4.2) (2026-09-09)
 
 
