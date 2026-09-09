@@ -1,0 +1,28 @@
+{{- if and .Values.grafanaDashboard.enabled .Values.grafanaDashboard.opencodeFolder.enabled }}
+# A sibling of templates/grafanafolder-ai-cli.yaml's (and
+# templates/grafanafolder.yaml's Copilot) folder, all three nested under the
+# same `Governance` parent -- see values.yaml's grafanaDashboard.opencodeFolder
+# for why this is its own folder rather than reusing either existing one
+# (OpenCode is its own connector/collector, not a sub-case of the AI CLI
+# daemon's Claude Code/Codex/Copilot-Chat telemetry), and for the
+# `folder.enabled` coupling this depends on.
+#
+# This template ONLY creates the child folder; the `Governance` parent is
+# templates/grafanafolder.yaml's responsibility (`folder.parent.create`), not
+# duplicated here.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.name }}-{{ .Values.grafanaDashboard.opencodeFolder.nameSuffix }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.opencodeFolder.title | quote }}
+  parentFolderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+{{- end }}
