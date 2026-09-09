@@ -38,9 +38,10 @@ removed starts at a byte offset >= 4096, editing it can never change that
 digest, so the daemon will not treat the edited file as "replaced" and reset
 to byte 0 (which would re-send the entire spool as first-attempt records,
 carrying no idempotency key -- see otel_daemon/normalize/mod.rs's module doc
--- and risking duplicate rows downstream). This script refuses to run
-(without --force) when the stuck offset is inside that first 4096 bytes,
-because the safety argument above does not apply there.
+-- and risking duplicate rows downstream). This script refuses to run at all,
+unconditionally, when the stuck offset is inside that first 4096 bytes,
+because the safety argument above does not apply there and there is no way
+to make it apply without risking that exact mass-resend outcome.
 
 `mv`-ing a replacement file onto the original path changes its inode (a
 rename creates a new directory entry pointing at the NEW inode, at the
@@ -182,12 +183,6 @@ def main() -> int:
         help="actually rewrite the spool and checkpoint (default: dry-run, report only)",
     )
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="proceed even if the stuck run starts inside the first 4096 bytes "
-        "(the head-digest safety argument in the module doc does not hold there)",
-    )
-    parser.add_argument(
         "--max-scan",
         type=int,
         default=20,
@@ -236,11 +231,26 @@ def main() -> int:
         )
         return 1
 
-    if offset < HEAD_BYTES and not args.force:
+    if offset < HEAD_BYTES:
+        # No override exists for this, on purpose (PR #312 review, P1: an
+        # earlier version offered --force here, but removing bytes starting
+        # inside the digested head window ALWAYS changes that digest by
+        # construction -- there is no way to edit the file here and still
+        # have the daemon's own identity check agree it's the same file, so
+        # a "proceed anyway" flag could only ever fail later, having already
+        # walked the operator through the whole scan first. Recomputing and
+        # writing a new head digest instead of refusing is deliberately not
+        # done here either: getting that wrong reproduces the exact
+        # mass-resend outcome this whole check exists to prevent, and this
+        # case does not arise in practice (see the module doc: reaching this
+        # bug requires enough accumulated backlog that the stuck run is never
+        # this close to byte 0).
         print(
             f"::error::checkpoint offset ({offset}) is inside the first {HEAD_BYTES} bytes -- "
-            "editing there WOULD change the head digest and force a from-scratch restart. "
-            "Pass --force only if you understand and accept that (re-sends the whole spool).",
+            "editing there would change the head digest and make the daemon treat the file as "
+            "replaced on its next start (a full restart at byte 0, re-sending everything as "
+            "first-attempt records with no idempotency key). There is no safe automated fix for "
+            "this case; if you hit it, stop and think before editing anything by hand.",
             file=sys.stderr,
         )
         return 1

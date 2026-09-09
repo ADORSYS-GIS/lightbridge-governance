@@ -108,8 +108,8 @@ Use `--otel-endpoint`/`--issuer`/`--client-id` matching whichever public collect
 machine's daemon actually points at — `otel.ai.camer.digital` /
 `governance-auth-cli` for the AI-CLI fleet (Claude Code, Codex, VS Code Copilot),
 `otel-opencode.ai.camer.digital` / `opencode-cli` for OpenCode. `--state-dir` defaults to the
-right OS-specific location (see the paths above); override it if `GOVERNANCE_AUTH_STATE_DIR`
-or `$XDG_STATE_HOME` puts it somewhere else. Pass `--token <access-token>` instead of
+right OS-specific location (see the paths above); override it if `$XDG_STATE_HOME` puts it
+somewhere else. Pass `--token <access-token>` instead of
 `--issuer`/`--client-id` if you already have one (e.g. from `governance-auth token`).
 
 The script never prints spool or response body content — only signal names, byte lengths,
@@ -132,8 +132,9 @@ digest, so the daemon will not mistake the edited file for a different one and r
 whole drain to byte 0 (which would re-send everything as first-attempt records, no
 idempotency key, risking duplicate rows downstream — see
 [`normalize/mod.rs`](../../app/governance-auth/src/otel_daemon/normalize/mod.rs)'s module doc).
-The script checks this and refuses to run without `--force` if the stuck run starts inside
-that first 4096 bytes.
+The script checks this and refuses to run at all, unconditionally, if the stuck run starts
+inside that first 4096 bytes — there is no override, because there is no way to edit there
+and still have the digest agree.
 
 ⚠️ **If you ever do this by hand instead of with the script:** replacing the spool file (a
 temp-file-then-rename, same pattern this binary itself uses everywhere else) changes its
