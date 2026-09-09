@@ -410,10 +410,15 @@ produce no `client.address` attribute at all, not an empty one.
           s3_partition_timezone: {{ $otel.s3.partitionTimezone | quote }}
           s3_force_path_style: {{ $otel.s3.forcePathStyle }}
           endpoint: {{ $otel.s3.endpoint | quote }}
+          # awss3exporter.Config has no top-level `compression` key -- it lives
+          # under s3uploader as configcompression.Type (gzip/zstd/unset). A
+          # top-level `compression` here fails config validation at startup
+          # ("has invalid keys: compression"), which crashes both otel
+          # collector pods identically (D10/D11's third exporter leg).
+          compression: {{ $otel.s3.compression | quote }}
         resource_attrs_to_s3:
           s3_prefix: "governance.source"
         marshaler: {{ $otel.s3.format | quote }}
-        compression: {{ $otel.s3.compression | quote }}
         sending_queue:
           enabled: true
           num_consumers: {{ $otel.s3.numConsumers }}

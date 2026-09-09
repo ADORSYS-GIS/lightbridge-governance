@@ -218,3 +218,13 @@ jobs:
       # `docker run`, not just structurally. ubuntu-latest ships Docker.
       - name: Assert client.address resolves from X-Forwarded-For, spoof-proof
         run: charts/lightbridge-governance/tests/assert-client-address-xff.sh charts/lightbridge-governance
+
+      # The xff assertion above deliberately strips `.exporters` down to a
+      # bare `file` exporter so its unauthenticated probe can run -- so it
+      # never decodes the real `awss3` exporter block. This does, via the
+      # same pinned image's own `validate` subcommand (no OIDC discovery, no
+      # S3 credentials, no egress needed): it caught a top-level `compression`
+      # key on `awss3exporter.Config` (belongs under `s3uploader`) that
+      # crashed both public collectors in production before this existed.
+      - name: Assert rendered otel collector configs decode under the pinned image
+        run: charts/lightbridge-governance/tests/assert-otel-config-validates.sh charts/lightbridge-governance
