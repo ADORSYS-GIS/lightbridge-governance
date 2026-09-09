@@ -208,14 +208,33 @@ spec:
       value: "when_required"
     - name: AWS_RESPONSE_CHECKSUM_VALIDATION
       value: "when_required"
+{{- end }}
+{{- if or $otel.s3.enabled $otel.refusalCapture.enabled }}
   # The awss3 exporter stages each upload in a temp file before PUT; the
   # collector runs readOnlyRootFilesystem, so give it a writable /tmp.
+  # The refusal-capture emptyDir (lightbridge-governance#275) is a second
+  # writable mount for the same reason -- see the `logs/refusals` pipeline.
   volumes:
+{{- if $otel.s3.enabled }}
     - name: tmp
       emptyDir: {}
+{{- end }}
+{{- if $otel.refusalCapture.enabled }}
+    - name: refusal-logs
+      emptyDir:
+        # Safety valve, not a sizing knob: refusals are low-volume, but a log
+        # burst (or a misbehaving filter) must not fill the node disk.
+        sizeLimit: {{ $otel.refusalCapture.volumeSizeLimit | quote }}
+{{- end }}
   volumeMounts:
+{{- if $otel.s3.enabled }}
     - name: tmp
       mountPath: /tmp
+{{- end }}
+{{- if $otel.refusalCapture.enabled }}
+    - name: refusal-logs
+      mountPath: {{ $otel.refusalCapture.logDir | quote }}
+{{- end }}
 {{- end }}
   podSecurityContext:
     runAsNonRoot: true
@@ -293,6 +312,21 @@ What this DOES do: populate client.Info.Metadata (separate from .Addr) so the
 all. Without it those reads silently produce nothing, not an error.
 */}}
             include_metadata: true
+{{- if $otel.refusalCapture.enabled }}
+      # Reads back the collector's OWN logs (written by `service.telemetry.logs`
+      # below) and keeps only the oidc-extension refusals. `file_log`, not the
+      # deprecated `filelog` alias (0.158.0 warns on the latter). `start_at: end`
+      # seeks past pre-existing content so a container restart never replays old
+      # lines. `parse_to: attributes` (NOT body) because OTTL cannot address
+      # sub-paths of `body` -- verified live in the Phase 1a spike.
+      file_log/refusals:
+        include: [{{ $otel.refusalCapture.logPath | quote }}]
+        start_at: end
+        operators:
+          - type: json_parser
+            parse_from: body
+            parse_to: attributes
+{{- end }}
 
     processors:
       # MUST be first: it sheds load before an OOM, and an OOM loses data
@@ -402,6 +436,45 @@ produce no `client.address` attribute at all, not an empty one.
             statements:
               - set(attributes["client.address"], Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1])) where attributes["client.address.xff_raw"] != nil and Trim(Split(attributes["client.address.xff_raw"], ",")[Len(Split(attributes["client.address.xff_raw"], ",")) - 1]) != ""
               - delete_key(attributes, "client.address.xff_raw")
+{{- if $otel.refusalCapture.enabled }}
+      # ⚠️ lightbridge-governance#275: classify refused-ingest reasons. The
+      # `file_log/refusals` receiver reads the collector's own logs; this pair
+      # keeps only the oidc-extension refusals and stamps a `refusal.reason`.
+      #
+      # ⚠️ The filter DROPS records that MATCH the condition -- so it is negated
+      # to keep refusals. It discriminates on `otelcol.component.id == "oidc"`,
+      # NOT just the msg: a substring IsMatch on msg alone matches the debug
+      # exporter's serialization of a refusal too, which re-exports it and loops
+      # exponentially (observed live in the Phase 1a spike: file 8KB -> 3.1MB in
+      # seconds). The oidc extension tags its warn lines with
+      # otelcol.component.id="oidc"; every other component (incl. the debug
+      # exporter, "debug") is dropped. This is also the correct production
+      # discriminator -- only the oidc extension emits refusals.
+      filter/refusals:
+        logs:
+          log_record:
+            - 'not (attributes["otelcol.component.id"] == "oidc" and IsMatch(attributes["msg"], "Authentication failed"))'
+      # ⚠️ The reason strings below must match the upstream `oidcauthextension`
+      # warn messages byte-for-byte (extension.go:174/194). They were verified
+      # against the exact pinned image in the Phase 1a spike -- live for
+      # missing_credential/malformed_token, and in the exact upstream zap format
+      # for the rest. `verification_failed` is the generic catch-all for a
+      # signature/verification error that is not expired or wrong-audience;
+      # `unknown` is the fallback for any unrecognised msg (a future upstream
+      # message degrades here, never to a wrong reason).
+      transform/classify_refusal:
+        log_statements:
+          - context: log
+            statements:
+              - 'set(attributes["refusal.reason"], "missing_credential") where attributes["msg"] == "Authentication failed: missing or empty header"'
+              - 'set(attributes["refusal.reason"], "malformed_token") where attributes["msg"] == "Authentication failed: invalid header format" or attributes["msg"] == "Authentication failed: could not parse issuer from token"'
+              - 'set(attributes["refusal.reason"], "unknown_issuer") where attributes["msg"] == "Authentication failed: could not resolve provider"'
+              - 'set(attributes["refusal.reason"], "expired") where attributes["msg"] == "Authentication failed: token verification failed" and IsMatch(attributes["error"], "token is expired")'
+              - 'set(attributes["refusal.reason"], "wrong_audience") where attributes["msg"] == "Authentication failed: token verification failed" and IsMatch(attributes["error"], "expected audience")'
+              - 'set(attributes["refusal.reason"], "verification_failed") where attributes["msg"] == "Authentication failed: token verification failed" and attributes["refusal.reason"] == nil'
+              - 'set(attributes["refusal.reason"], "unknown") where attributes["refusal.reason"] == nil'
+              - 'set(attributes["refusal.issuer"], attributes["issuer"]) where attributes["issuer"] != nil'
+{{- end }}
       batch:
         send_batch_size: 512
         timeout: 5s
@@ -451,6 +524,18 @@ produce no `client.address` attribute at all, not an empty one.
 
     service:
       extensions: [oidc]
+{{- if $otel.refusalCapture.enabled }}
+      # ⚠️ lightbridge-governance#275: the collector writes its OWN logs to the
+      # refusal file so `file_log/refusals` can read them back. `encoding: json`
+      # is required for the json_parser to work -- and it also switches the
+      # collector's stderr to JSON (a deliberate format change, and better for
+      # Loki). `output_paths` keeps stderr AND adds the file, so existing
+      # stderr-based log collection is unaffected.
+      telemetry:
+        logs:
+          encoding: json
+          output_paths: [stderr, {{ $otel.refusalCapture.logPath | quote }}]
+{{- end }}
       pipelines:
         # All three signals: Claude Code emits metrics + logs, Codex emits
         # logs + traces, VS Code Copilot emits traces + metrics + events.
@@ -476,6 +561,17 @@ payload past this point must never carry it forward).
           receivers: [otlp]
           processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
+{{- if $otel.refusalCapture.enabled }}
+        # ⚠️ lightbridge-governance#275: classified refusals go to Alloy/Loki.
+        # No feedback loop here: the otlp/alloy exporter is a network export and
+        # does NOT write back into the collector's own log file (unlike the
+        # debug exporter used in the Phase 1a spike). memory_limiter first, per
+        # the house rule (ADR-0034).
+        logs/refusals:
+          receivers: [file_log/refusals]
+          processors: [memory_limiter, filter/refusals, transform/classify_refusal, batch]
+          exporters: [otlp/alloy]
+{{- end }}
 {{- end -}}
 
 {{- /*

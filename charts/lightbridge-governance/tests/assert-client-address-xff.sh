@@ -128,12 +128,24 @@ printf '%s\n' "${cfg}" \
 
 mkdir -p "${WORKDIR}/out"
 chmod 777 "${WORKDIR}/out"
+# The rendered config now carries refusal capture (lightbridge-governance#275):
+# `service.telemetry.logs.output_paths` writes the collector's own logs to
+# /var/log/collector/refusals.log, which the `file_log/refusals` receiver reads
+# back. The distroless image has no /var/log/collector, so mount a writable
+# dir there exactly as the chart's emptyDir does -- otherwise the collector
+# fails to boot ("open /var/log/collector/refusals.log: no such file or
+# directory"). The refusal pipeline is inert here (OIDC auth is stripped, so
+# no oidc-extension refusals are ever produced) and does not touch the XFF
+# assertions below.
+mkdir -p "${WORKDIR}/refusals"
+chmod 777 "${WORKDIR}/refusals"
 
 docker rm -f otel-xff-assert >/dev/null 2>&1 || true
 docker run -d --name otel-xff-assert \
   -p "${PORT}:4318" \
   -v "${WORKDIR}/collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro" \
   -v "${WORKDIR}/out:/out" \
+  -v "${WORKDIR}/refusals:/var/log/collector" \
   "${IMAGE}" >/dev/null
 
 for _ in $(seq 1 30); do

@@ -658,6 +658,34 @@ aiCliOtel:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Capture refused-ingest reasons (lightbridge-governance#275). The collector
+  # writes its own oidc-extension warn lines to a file on an emptyDir volume, a
+  # `file_log` receiver reads them back, and a `filter`/`transform` pair
+  # classifies the reason (missing_credential, malformed_token, unknown_issuer,
+  # expired, wrong_audience, verification_failed, unknown) before exporting to
+  # Alloy/Loki. See the `logs/refusals` pipeline in _helpers.tpl.
+  refusalCapture:
+    enabled: true
+    # Directory the emptyDir is mounted at. Must be writable: the collector runs
+    # readOnlyRootFilesystem, so this cannot be on the root filesystem.
+    logDir: /var/log/collector
+    # Full path of the refusal log file inside logDir. `output_paths` writes the
+    # collector's own logs here; `file_log` reads it back.
+    logPath: /var/log/collector/refusals.log
+    # Cap on the emptyDir so a log burst (or a misbehaving filter) can't fill
+    # the node disk. Refusals are low-volume; this is a safety valve, not a
+    # sizing knob.
+    #
+    # ⚠️ KNOWN TRADEOFF (reviewed, accepted): the file is append-only -- zap
+    # writes it and `file_log` reads it but never truncates, so it grows
+    # monotonically. At the observed production refusal cadence (~1 per 5-20 s,
+    # ~400 B/line) 10Mi fills in roughly 1.5-6 days, after which the kubelet
+    # EVICTS the pod (emptyDir over sizeLimit) and the emptyDir resets. That is
+    # the reset mechanism, not a bug -- but it means a long-running pod is
+    # expected to restart periodically, and a refusal flood is a self-inflicted
+    # availability risk on a public endpoint. Raise this if that cadence is
+    # ever sustained; a rotation/truncation mechanism is a follow-up if needed.
+    volumeSizeLimit: 10Mi
 
 # Second public OTLP collector, for OpenCode laptops.
 #
@@ -753,6 +781,15 @@ opencodeOtel:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Capture refused-ingest reasons -- same shape and defaults as aiCliOtel's
+  # block (shared collector body in _helpers.tpl). See that block for the
+  # rationale; the two must move together.
+  refusalCapture:
+    enabled: true
+    logDir: /var/log/collector
+    logPath: /var/log/collector/refusals.log
+    # Same append-only / pod-eviction tradeoff as aiCliOtel's block -- see there.
+    volumeSizeLimit: 10Mi
 
 networkPolicy:
   enabled: true
