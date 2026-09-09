@@ -128,7 +128,7 @@ fn a_record_refused_twice_with_a_confirmed_probe_is_discarded() {
     assert_eq!(probe.payload, b"probe");
 
     spool
-        .discard_confirmed(&stuck_again, &probe)
+        .discard_confirmed(&stuck_again, 1, &probe)
         .expect("discard, delivering the probe in the same commit");
 
     assert!(

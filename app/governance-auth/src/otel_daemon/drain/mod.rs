@@ -28,6 +28,7 @@
 //! the timer, so the boundary does not impose a throughput ceiling.
 
 mod advance;
+mod probe;
 mod quarantine;
 
 use std::time::Duration;
