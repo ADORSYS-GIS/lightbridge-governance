@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.2](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.1...v2.4.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **charts:** ALLOWED_SERVICE_ACCOUNTS must live under global to reach the container. ([2aa116a](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2aa116a030692fe5e8ca0c6b6cbdaad382925fa0))
+* **governance-auth:** harden daemon export and Codex wiring ([d926f62](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d926f621a9eebf0fb800676c6368d73b7b8f80eb))
+* **governance-auth:** satisfy daemon CI gates ([50b08e6](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/50b08e6ec523dc982b59b5b4cf6159bdf46721e4))
+
+
+### Code Refactoring
+
+* remove unused /internal/v1/ingest endpoint ([#243](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/243)) ([e8e0b09](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/e8e0b09b091fb3c8fa6cd10704342bd785db31e3))
+
 ## [2.4.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.0...v2.4.1) (2026-09-08)
 
 
