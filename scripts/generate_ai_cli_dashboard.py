@@ -280,14 +280,27 @@ def loki_stat_panel(
 ) -> dict[str, Any]:
     """⚠️ `reduce_calc` default is `lastNotNull`, not `sum` (review finding:
     every stat panel here embeds its OWN window in `expr` itself, e.g. a
-    literal `[24h]` bracket -- the target still runs as a **range** query
-    over the dashboard's own (now-7d) time range, so Loki returns one
+    literal `[24h]` bracket -- the target still ran as a **range** query
+    over the dashboard's own (now-7d) time range, so Loki returned one
     sample per step, each ALREADY the full trailing-24h aggregate.
     Reducing those samples with `sum` multiplies the true value by the
     number of steps (~100-1000x on a 7d/1m-refresh dashboard), not
     "total over 24h". `lastNotNull` reads the one number that's actually
     correct -- the most recent already-fully-aggregated sample -- which is
-    what every current caller of this function wants."""
+    what every current caller of this function wants.
+
+    That fixed the DISPLAYED value; it did not fix the QUERY COST, and the
+    2026-09-09 loki-0 OOM investigation traced the crash to exactly that
+    other half: this sibling dashboard's own `governance-opencode-telemetry`
+    twin was caught live re-evaluating an embedded `[7d]`/`[24h]`
+    `count_over_time`/`sum_over_time` at every ~30m step across a `now-7d`
+    range (~336 redundant re-computations per `refresh: "1m"` cycle,
+    `total_bytes` up to 99MB per sub-query) -- this dashboard's `loki_stat_panel`
+    is the identical helper, so it carries the identical risk the moment its
+    time range is widened or it's left open with auto-refresh on. `graphMode`
+    is always `"none"` (no sparkline ever renders), so nothing here actually
+    needs a multi-sample range query. Switched to `instant`: same single
+    already-fully-aggregated value, none of the amplification."""
     return {
         "id": ids.take(),
         "type": "stat",
@@ -308,7 +321,8 @@ def loki_stat_panel(
             {
                 "datasource": LOKI_DS,
                 "expr": expr,
-                "queryType": "range",
+                "queryType": "instant",
+                "instant": True,
                 "legendFormat": "__auto",
                 "refId": "A",
             }

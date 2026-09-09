@@ -160,7 +160,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=\"opencode\"} | json | attributes_event_name=~\".+\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -230,7 +231,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (resources_host_name) (count_over_time({job=\"opencode\"} | json | attributes_event_name=~\".+\" [24h])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -300,7 +302,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_gen_ai_conversation_id) (count_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.session_start\" [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -370,7 +373,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (resources_vcs_repository_name) (count_over_time({job=\"opencode\"} | json | attributes_event_name=~\".+\" [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -607,7 +611,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.assistant_response\" | unwrap attributes_opencode_cost_usage [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1052,7 +1057,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.tool_decision\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1199,7 +1205,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.api_error\" [24h])) / (sum(count_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.api_error\" [24h])) + sum(count_over_time({job=\"opencode\"} | json | attributes_event_name=\"opencode.assistant_response\" [24h])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
