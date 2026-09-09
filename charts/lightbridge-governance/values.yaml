@@ -479,7 +479,23 @@ aiCliOtel:
   # ships only in contrib. Verified by running the rendered config under this
   # exact image -- the oidc extension started against the real issuer, and
   # unauthenticated and malformed-token POSTs both returned 401.
-  image: "otel/opentelemetry-collector-contrib:0.158.0"
+  #
+  # ⚠️ Bumped from 0.158.0 (2026-09-09): the awss3 exporter's S3 transfer
+  # manager builds its own client config without inheriting
+  # AWS_REQUEST_CHECKSUM_CALCULATION, so it always attached a CRC32
+  # checksum header/signed-header entry to every PutObject -- Hetzner's
+  # Ceph RGW backend (nbg1-prod1-ceph4) rejected that shape with 403
+  # SignatureDoesNotMatch on 100% of uploads, dropping the entire raw-OTLP
+  # archive leg (D10/D11) in production. Fixed upstream in
+  # open-telemetry/opentelemetry-collector-contrib#50627 (merged
+  # 2026-09-01), first released in 0.160.0. Re-verified live on 0.160.0
+  # before this bump: OIDC discovery against the real issuer, 401 on both
+  # an unauthenticated and a malformed-bearer POST, same as the 0.158.0
+  # verification above. See the `AWS_REQUEST_CHECKSUM_CALCULATION` env var
+  # in the `awss3.enabled` block below -- the version bump alone does
+  # nothing without it (the fix only makes the exporter *honor* that
+  # variable; it does not change the default).
+  image: "otel/opentelemetry-collector-contrib:0.160.0"
   # Init container that retry-loops OIDC discovery before the collector
   # starts -- see the `initContainers` block in otelcollector-ai-cli.yaml for
   # why this exists (a real prod incident: 0/2 replicas, 100% CrashLoopBackOff,
@@ -625,8 +641,9 @@ opencodeOtel:
   replicas: 2
   # `-contrib`: `oidcauthextension` ships only there. Same image and pin as
   # aiCliOtel -- these two move together or the audience-vs-issuer behaviour
-  # verified on one stops being evidence for the other.
-  image: "otel/opentelemetry-collector-contrib:0.158.0"
+  # verified on one stops being evidence for the other. See aiCliOtel.image's
+  # comment for why this is 0.160.0, not 0.158.0.
+  image: "otel/opentelemetry-collector-contrib:0.160.0"
   # See the `initContainers` block in _helpers.tpl for why this exists (a real
   # prod incident: 0/2 replicas, 100% CrashLoopBackOff, ai-helm-values#216).
   initContainerImage: "curlimages/curl:8.11.1"

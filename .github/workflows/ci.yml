@@ -214,7 +214,7 @@ jobs:
       # and a spoofed X-Forwarded-For entry never survives. Unlike the OIDC
       # gate above, this logic (Split/Trim/Len-index to the rightmost entry)
       # is OTTL this chart authors, so it's asserted at runtime against the
-      # real pinned image (otel/opentelemetry-collector-contrib:0.158.0) via
+      # real pinned image (otel/opentelemetry-collector-contrib:0.160.0) via
       # `docker run`, not just structurally. ubuntu-latest ships Docker.
       - name: Assert client.address resolves from X-Forwarded-For, spoof-proof
         run: charts/lightbridge-governance/tests/assert-client-address-xff.sh charts/lightbridge-governance

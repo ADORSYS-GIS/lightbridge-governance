@@ -20,7 +20,7 @@
 # chart, strips only the OIDC gate (already covered by assert-oidc-auth.sh)
 # so the pipeline can run unauthenticated locally, and runs the exact
 # rendered `processors`/`receivers` config under the SAME pinned image
-# (otel/opentelemetry-collector-contrib:0.158.0) production runs, via
+# (otel/opentelemetry-collector-contrib:0.160.0) production runs, via
 # `docker run` -- then pushes real HTTP requests at it and reads back what
 # actually landed.
 #
@@ -41,7 +41,7 @@ set -euo pipefail
 
 CHART="${1:-charts/lightbridge-governance}"
 YQ="${YQ_BIN:-yq}"
-IMAGE="otel/opentelemetry-collector-contrib:0.158.0"
+IMAGE="otel/opentelemetry-collector-contrib:0.160.0"
 FRAGMENT="ai-cli-otel" # opencodeOtel shares the same body verbatim -- see below.
 PORT=$(( (RANDOM % 20000) + 20000 ))
 

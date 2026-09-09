@@ -5,7 +5,7 @@
 # CrashLoopBackOff: "'awss3exporter.Config' has invalid keys: compression".
 #
 # assert-client-address-xff.sh already runs a rendered config under the real
-# pinned image (otel/opentelemetry-collector-contrib:0.158.0), but it
+# pinned image (otel/opentelemetry-collector-contrib:0.160.0), but it
 # DELIBERATELY replaces `.exporters` with a `file` exporter and deletes
 # `.extensions` so the OTTL probe can run unauthenticated against a
 # `docker run` with no live OIDC issuer to reach -- that swap is exactly what
@@ -20,11 +20,25 @@
 # a sibling of it (the original shape) makes this fail with exactly the
 # production error above, exit code 1 -- confirmed by hand before writing
 # this script, not assumed.
+#
+# 2026-09-09: also asserts the AWS_REQUEST_CHECKSUM_CALCULATION /
+# AWS_RESPONSE_CHECKSUM_VALIDATION env vars, added alongside the 0.158.0 ->
+# 0.160.0 bump. Neither is expressible in `.spec.config` (they're plain pod
+# env, not exporter config), so `validate` can't catch a missing one --
+# `helm template` would render happily and the config would decode fine, it
+# would just start silently re-attaching the checksum header that made
+# Hetzner's Ceph RGW backend reject every PutObject with 403
+# SignatureDoesNotMatch in production. `validate` still can't exercise the
+# actual S3 call (confirmed live, by hand, against a local capture server
+# comparing 0.158.0 vs 0.160.0+these-vars: the checksum header and its
+# SignedHeaders entry disappear -- not repeatable here without a second
+# S3-compatible backend and real credentials), so this is deliberately a
+# structural check, same tier as assert-oidc-auth.sh's.
 set -euo pipefail
 
 CHART="${1:-charts/lightbridge-governance}"
 YQ="${YQ_BIN:-yq}"
-IMAGE="otel/opentelemetry-collector-contrib:0.158.0"
+IMAGE="otel/opentelemetry-collector-contrib:0.160.0"
 
 WORKDIR="${TMPDIR:-/tmp}/assert-otel-config-validates.$$"
 rm -rf "${WORKDIR}"
@@ -55,6 +69,14 @@ for fragment in ai-cli-otel opencode-otel; do
   # exporter-less document would "validate" trivially having decoded nothing.
   awss3_present="$(printf '%s\n' "${cfg}" | "${YQ}" 'has("exporters") and (.exporters | has("awss3"))')"
   [ "${awss3_present}" = "true" ] || fail "${fragment}: rendered config has no exporters.awss3 -- refusing to report a validation that checked nothing"
+
+  # Structural: the checksum env vars live on the CR's pod spec, not inside
+  # `.spec.config` -- `validate` below has no way to see them.
+  manifest="$("${YQ}" eval-all "select(.kind == \"OpenTelemetryCollector\") | select(.metadata.name | contains(\"${fragment}\"))" "${WORKDIR}/rendered.yaml")"
+  for var in AWS_REQUEST_CHECKSUM_CALCULATION AWS_RESPONSE_CHECKSUM_VALIDATION; do
+    val="$(printf '%s\n' "${manifest}" | "${YQ}" ".spec.env[] | select(.name == \"${var}\") | .value")"
+    [ "${val}" = "when_required" ] || fail "${fragment}: env ${var} = \"${val}\", want \"when_required\" (0.158.0's transfer manager ignored this entirely; 0.160.0 honors it, but only if it's actually set)"
+  done
 
   printf '%s\n' "${cfg}" > "${WORKDIR}/${fragment}.yaml"
 

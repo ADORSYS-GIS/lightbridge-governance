@@ -115,7 +115,9 @@ spec:
   # below for real), an unauthenticated POST /v1/traces returned 401
   # "authentication didn't succeed", and a malformed bearer token returned
   # 401 "failed to parse the token". Fail-closed confirmed before this
-  # template was written, not after.
+  # template was written, not after. Re-verified identically on 0.160.0
+  # (2026-09-09, values.yaml's aiCliOtel.image comment has the reason for
+  # that bump) before it replaced 0.158.0 as the pin.
   image: {{ $otel.image | quote }}
   # ⚠️ PRODUCTION INCIDENT, ai-helm-values#216 (2026-08-10): enabling this
   # collector shipped it broken -- 0/2 replicas, 100% CrashLoopBackOff, every
@@ -190,6 +192,22 @@ spec:
         secretKeyRef:
           name: {{ $root.Values.name }}-env
           key: {{ $root.Values.externalSecret.s3SecretKeyProperty }}
+    # ⚠️ PRODUCTION INCIDENT (2026-09-09): without these, the awss3
+    # exporter's S3 transfer manager defaults to
+    # RequestChecksumCalculation=WhenSupported and attaches an
+    # `x-amz-checksum-crc32` header (plus a matching SignedHeaders entry)
+    # to every PutObject -- Hetzner's Ceph RGW backend rejected that shape
+    # with 403 SignatureDoesNotMatch on 100% of uploads, silently dropping
+    # the entire raw-OTLP archive leg. `when_required` is the pre-checksum
+    # behavior: plain SigV4-signed requests, no extra header. Only takes
+    # effect on 0.160.0+ -- open-telemetry/opentelemetry-collector-
+    # contrib#50184/#50627, the transfer manager on 0.158.0 built its own
+    # client config and never read these vars at all, so setting them
+    # there would have been silently ignored, not a smaller fix.
+    - name: AWS_REQUEST_CHECKSUM_CALCULATION
+      value: "when_required"
+    - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+      value: "when_required"
   # The awss3 exporter stages each upload in a temp file before PUT; the
   # collector runs readOnlyRootFilesystem, so give it a writable /tmp.
   volumes:
@@ -352,7 +370,10 @@ This was verified end-to-end against the exact pinned image
 (otel/opentelemetry-collector-contrib:0.158.0, via `docker run` locally, not
 just rendered): a push carrying `X-Forwarded-For: 6.6.6.6, 10.42.2.109`
 produced `client.address: 10.42.2.109` on the resulting ResourceSpans /
-ResourceLogs -- the spoofed leading entry never survives.
+ResourceLogs -- the spoofed leading entry never survives. Re-run
+identically by assert-client-address-xff.sh against 0.160.0 (2026-09-09,
+same bump as values.yaml's aiCliOtel.image comment) before that became
+the pin -- this OTTL is untouched by that bump, only re-verified on it.
 
 ⚠️ EMPTY/BLANK ENTRY, also found in review: a present-but-empty header (or a
 trailing comma, e.g. `X-Forwarded-For: 1.2.3.4,`) is not `nil` -- the `!= nil`
