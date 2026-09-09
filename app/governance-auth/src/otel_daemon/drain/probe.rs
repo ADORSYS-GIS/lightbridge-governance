@@ -10,18 +10,27 @@ use crate::otel_daemon::{
 
 /// What offering `probe` to the collector, on its own, established.
 ///
-/// Three outcomes, not two (PR #312 review, P1): a mint failure or a network
-/// error is NOT the same evidence as an explicit refusal, even though both
-/// once collapsed to a single `bool`. That collapse was safe for the
-/// original one-hop design -- either one just meant "hold, try again later",
-/// nothing was ever discarded on the strength of it. It stopped being safe
-/// once [`super::quarantine::handle`]'s lookahead started walking PAST a
+/// Three outcomes, not two (PR #312 review, P1): an inconclusive attempt is
+/// NOT the same evidence as an explicit refusal, even though both once
+/// collapsed to a single `bool`. That collapse was safe for the original
+/// one-hop design -- either one just meant "hold, try again later", nothing
+/// was ever discarded on the strength of it. It stopped being safe once
+/// [`super::quarantine::handle`]'s lookahead started walking PAST a
 /// non-acceptance and discarding everything up to the record that finally
-/// succeeds: an intermediate record whose probe merely timed out or hit a
-/// mint hiccup would be swept into that discard with zero evidence it was
-/// ever actually bad -- "unknown" reading as the *permissive* branch, which
-/// `AGENTS.md`'s house rule on failure modes names as the exact thing to
-/// never do.
+/// succeeds: an intermediate record whose probe was merely inconclusive
+/// would be swept into that discard with zero evidence it was ever actually
+/// bad -- "unknown" reading as the *permissive* branch, which `AGENTS.md`'s
+/// house rule on failure modes names as the exact thing to never do.
+///
+/// `minted` is fetched once, by the caller, before any of this runs (PR #314
+/// review, P2 doc nit) -- a mint failure can no longer occur *inside* this
+/// function at all; [`super::lookahead::walk`] returns early on that before
+/// ever calling this. What is left to make `Unknown` reachable from in here
+/// is narrower than the paragraph above once implied: a normalize failure,
+/// or [`crate::otel_daemon::forward::post`] returning `Err` -- an
+/// unreachable collector, a timeout, or a `minted` bearer that went stale
+/// mid-walk (a 401 is not in [`crate::copilot::is_permanent`]'s 400/413/422,
+/// so it lands here, not in [`ProbeOutcome::Refused`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProbeOutcome {
     /// The collector took it -- proof it works.
@@ -31,12 +40,11 @@ pub(super) enum ProbeOutcome {
     /// evidence this record is ALSO bad, safe to fold into a multi-record
     /// discard alongside the one already proven eligible.
     Refused,
-    /// A normalize failure or the collector being unreachable (including a
-    /// `minted` bearer that went stale mid-walk -- see `lookahead::walk`'s
-    /// doc on why minting once per walk rather than once per probe is safe)
-    /// -- uninformative, exactly like the original design treated ANY
-    /// non-acceptance. Never safe to discard on; only ever safe to hold and
-    /// let a later attempt re-establish.
+    /// A normalize failure, or [`crate::otel_daemon::forward::post`]
+    /// returning `Err` -- uninformative, exactly like the original design
+    /// treated ANY non-acceptance. Never safe to discard on; only ever safe
+    /// to hold and let a later attempt re-establish. See this enum's own doc
+    /// for exactly what can and cannot land here since PR #314's mint hoist.
     Unknown,
 }
 
