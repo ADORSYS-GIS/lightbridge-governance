@@ -1,0 +1,73 @@
+{{- if .Values.grafanaDashboard.enabled }}
+{{- /*
+Ships dashboards/opencode-telemetry.json to Grafana as a GrafanaDashboard CR --
+the sibling of templates/grafanadashboard-ai-cli.yaml and
+templates/grafanadashboard.yaml (Copilot's), same mechanism, same Grafana
+Operator v5 API and reasoning. See templates/grafanadashboard.yaml's own
+header comment for the full CRD-shape verification note and the
+datasource-token substitution rationale ((b): Helm-side string replace over
+literal placeholder tokens, resolved entirely at `helm template` time); this
+file only restates what differs.
+
+This dashboard has no `templating` variables, same as ai-cli-telemetry --
+Loki's own label selectors (`job="opencode"`, and the JSON-parsed
+`attributes_*`/`resources_*` fields) are this dashboard's filtering surface,
+not a Grafana template variable. There is no per-tenant scoping here at all
+(unlike copilot-connector's Postgres `$tenant_id`): OpenCode's payload
+carries no tenant/org identity field, single collector, single job.
+
+ONE datasource token: `__DS_LOKI__`, reusing the SAME `lokiUid` value
+ai-cli-telemetry.json already substitutes -- same Grafana instance, same
+unconfirmed provisioning path (see values.yaml's own loud caveat on that),
+not a second guess to confirm.
+*/}}
+{{- $dashboardPath := "dashboards/opencode-telemetry.json" }}
+{{- $rawJson := .Files.Get $dashboardPath }}
+{{- if not $rawJson }}
+{{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/opencode-telemetry.json (scripts/generate_opencode_dashboard.py generates it)." $dashboardPath) }}
+{{- end }}
+{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid }}
+{{- if contains "__DS_LOKI__" $dashboardJson }}
+{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from that contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every affected panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
+{{- end }}
+{{- /*
+Same broader, pattern-based guard as templates/grafanadashboard.yaml's and
+templates/grafanadashboard-ai-cli.yaml's -- see either file's own comment for
+why this catches a renamed token (e.g. `__DS_LOKI__` -> some other spelling)
+that the exact-string check above cannot.
+*/}}
+{{- if regexMatch "__DS_[A-Z0-9_]+__" $dashboardJson }}
+{{- fail (printf "%s still contains an unrecognized __DS_..._..__-shaped placeholder token after substitution -- this doesn't match the contracted __DS_LOKI__ token by name, but its shape strongly suggests it's an unreplaced datasource placeholder from a token spelling this template doesn't know about. Fix the token spelling in the dashboard JSON (or this template's replace call) to match the __DS_LOKI__ contract -- do not ship an unsubstituted placeholder, it becomes a literal invalid datasource UID with no error anywhere in Grafana." $dashboardPath) }}
+{{- end }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ .Values.name }}-opencode-telemetry
+  # Created alongside Grafana, not in the release namespace -- see
+  # values.yaml's grafanaDashboard.namespace.
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  # ⚠️ IMMUTABLE -- see values.yaml's grafanaDashboard.instanceSelector for
+  # the full caveat and the deployed-cluster evidence for its current value.
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.opencodeFolder.enabled }}
+  # `folderRef` references the GrafanaFolder CR in
+  # templates/grafanafolder-opencode.yaml BY NAME, requiring it in the SAME
+  # namespace as this dashboard -- both are created in
+  # grafanaDashboard.namespace, so that holds.
+  folderRef: {{ .Values.name }}-{{ .Values.grafanaDashboard.opencodeFolder.nameSuffix }}
+  {{- end }}
+  # ⚠️ Load-bearing whenever Grafana runs in a different namespace than this
+  # chart -- see templates/grafanadashboard.yaml's own comment for the exact
+  # failure mode (`status.NoMatchingInstances`) this guards against.
+  allowCrossNamespaceImport: {{ .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  # A literal block scalar, not a quoted string -- see
+  # templates/grafanadashboard.yaml's comment for why (`spec.json` is a
+  # plain string field on this CRD, and a block scalar avoids re-escaping
+  # every `"`/`\` a JSON blob is full of).
+  json: |
+{{ $dashboardJson | indent 4 }}
+{{- end }}

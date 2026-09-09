@@ -3,6 +3,7 @@
 //! -- both split out for the LoC gate.
 
 mod quarantine;
+mod quarantine_lookahead;
 mod reclaim;
 
 use std::path::PathBuf;

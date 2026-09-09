@@ -60,17 +60,27 @@ impl DurableSpool {
     /// Durably discards `stuck` -- once a caller has confirmed BOTH
     /// quarantine conditions: refused on its own across enough separate
     /// attempts ([`Self::record_refusal`]), and the collector shown to accept
-    /// something else, which for the daemon's stream is `probe`, the next
-    /// record after `stuck` that was just offered on its own and accepted
-    /// (#269/#291 review, P1-3; mirrors `copilot::export::isolate`'s same two
-    /// conditions for a batched drain). Commits through `probe`'s boundary in
-    /// one write, so its own delivery is recorded in the same commit that
-    /// discards `stuck` -- no separate `advance` call needed, and no window
-    /// where the probe is "delivered but not yet durable" while `stuck` is
-    /// still pending.
-    pub fn discard_confirmed(&mut self, stuck: &Pending, probe: &Pending) -> Result<()> {
+    /// something else, which for the daemon's stream is `probe`, a *later*
+    /// record that was just offered on its own and accepted (#269/#291
+    /// review, P1-3; mirrors `copilot::export::isolate`'s same two conditions
+    /// for a batched drain). Commits through `probe`'s boundary in one write,
+    /// so its own delivery is recorded in the same commit that discards
+    /// `stuck` -- no separate `advance` call needed, and no window where the
+    /// probe is "delivered but not yet durable" while `stuck` is still
+    /// pending.
+    ///
+    /// `lost` is how many records this commit is giving up on: `stuck`
+    /// itself, plus any records the bounded lookahead in
+    /// [`super::super::drain::quarantine`] tried and found ALSO permanently
+    /// refused before reaching `probe` -- `peek_next` only ever looks one
+    /// record ahead per call, so proving the collector past a run of two or
+    /// more consecutive bad records means walking that chain and discarding
+    /// all of it in the one commit that finally succeeds, not just `stuck`.
+    /// Callers with the original single-record case (still the common one)
+    /// pass `1`.
+    pub fn discard_confirmed(&mut self, stuck: &Pending, lost: u64, probe: &Pending) -> Result<()> {
         self.checkpoint.quarantine.forget(&stuck.key);
-        self.commit_past(probe.boundary, 1)
+        self.commit_past(probe.boundary, lost)
     }
 
     /// Durably advances the offset to `boundary`, charging `lost` records to

@@ -377,6 +377,21 @@ grafanaDashboard:
     nameSuffix: ai-cli
     title: "AI CLI"
 
+  # A third sibling folder under the same `Governance` parent, for the
+  # OpenCode telemetry dashboard (RFC-0003's OpenCode row, `opencodeOtel`
+  # collector). Its own folder rather than reusing `aiCliFolder`: OpenCode is
+  # a separate collector/audience (values.yaml's `opencodeOtel`, RFC-0003's
+  # 2026-09-02 amendment explaining why it needed a second public endpoint),
+  # not a sub-case of the AI CLI daemon's own Claude Code/Codex/Copilot-Chat
+  # telemetry. Same `aiCliFolder` coupling: always nests under
+  # `folder.parent.name`, no separate parent-create toggle of its own -- see
+  # that field's own comment above for the `folder.enabled` gotcha, which
+  # applies identically here.
+  opencodeFolder:
+    enabled: true
+    nameSuffix: opencode
+    title: "OpenCode"
+
   # Grafana Operator v5 requires every GrafanaDashboard to carry an
   # instanceSelector (a label selector) so it knows which deployed `Grafana`
   # CR to push the dashboard into. That `Grafana` CR lives in ai-helm, a

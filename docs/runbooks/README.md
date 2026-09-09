@@ -10,6 +10,7 @@ user complaint -- not with the subsystem name, because at 3am you know the sympt
 | [onboard-a-foundry-integration.md](./onboard-a-foundry-integration.md) | Someone needs an OTLP endpoint and token for a hosted agent |
 | [revoke-an-integration-token.md](./revoke-an-integration-token.md) | A token leaked, or an integration is being retired |
 | [replay-from-the-raw-archive.md](./replay-from-the-raw-archive.md) | Normalized data is wrong or missing and the source objects are intact |
+| [otel-daemon-wedged.md](./otel-daemon-wedged.md) | The local `serve --otel` daemon stops forwarding telemetry, logging repeated "collector refused ... held, not discarded" |
 
 ## House rules
 

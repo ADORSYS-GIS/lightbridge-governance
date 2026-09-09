@@ -27,12 +27,14 @@
 //! waiting behind the stuck one, and it is offered **on its own**, purely to
 //! find out whether the collector accepts anything:
 //!
-//! - **Accepted** -- the collector works. The stuck record is discarded, and
-//!   the probe's own delivery is committed in the same write
-//!   ([`super::spool::DurableSpool::discard_confirmed`]), so it is never
-//!   re-offered as if it were still pending.
-//! - **Refused, or the collector is unreachable** -- not proof. Nothing is
-//!   discarded, nothing advances.
+//! - **Accepted** -- the collector works. Every record between the stuck one
+//!   and this probe, inclusive, is discarded, and the probe's own delivery is
+//!   committed in the same write ([`super::spool::DurableSpool::discard_confirmed`]),
+//!   so it is never re-offered as if it were still pending.
+//! - **Refused, or the collector is unreachable** -- not proof by itself.
+//!   See [`super::lookahead`]'s own module doc for how this now walks PAST
+//!   more than one such refusal before giving up, and why a network/mint
+//!   error is never treated the same as an explicit one.
 //! - **Nothing exists yet past the stuck record** -- there is nothing to
 //!   prove the collector with. Held, not discarded; this is the one stall
 //!   that does not resolve itself on `pump`'s timer -- it clears once a new
@@ -43,12 +45,13 @@
 //! case condition 2 exists for: a collector that worked a minute ago and
 //! refuses everything now.
 
-use super::{Outcome, with_spool};
-use crate::otel_daemon::{DaemonState, checkpoint, forward, mint, normalize, spool::Pending};
+use super::{Outcome, lookahead, with_spool};
+use crate::otel_daemon::{DaemonState, checkpoint, spool::Pending};
 
 /// Handles a `Verdict::Refused` outcome for `pending`: records the refusal,
-/// and -- only once it is both eligible AND confirmed, per the module doc --
-/// discards it.
+/// and -- only once it is eligible, per the module doc -- hands off to
+/// [`lookahead::walk`] for condition 2 (the collector shown to accept
+/// something else).
 pub(super) async fn handle(
     state: &DaemonState,
     pending: Pending,
@@ -82,91 +85,5 @@ pub(super) async fn handle(
         return Outcome::Stopped;
     }
 
-    let probe = match with_spool(state, {
-        let pending = pending.clone();
-        move |spool| spool.peek_next(&pending)
-    })
-    .await
-    {
-        Ok(Some(probe)) => probe,
-        Ok(None) => {
-            tracing::warn!(
-                %status,
-                "the collector has refused this record on enough separate attempts to discard \
-                 it, but nothing later exists yet to prove the collector accepts anything else \
-                 -- held, not discarded, until a new record arrives"
-            );
-            return Outcome::Stopped;
-        }
-        Err(error) => {
-            tracing::error!(error = %error, "could not look for a record to probe the collector with");
-            return Outcome::Stopped;
-        }
-    };
-
-    if !probe_accepted(state, &probe).await {
-        tracing::warn!(
-            %status,
-            "the collector refused this record on enough separate attempts, but also refused \
-             the probe meant to confirm it accepts anything else -- held, not discarded"
-        );
-        return Outcome::Stopped;
-    }
-
-    let discarded = with_spool(state, move |spool| {
-        spool.discard_confirmed(&pending, &probe)
-    })
-    .await;
-    match discarded {
-        Ok(()) => {
-            tracing::warn!(
-                %status,
-                "the collector has now refused this record on separate attempts and accepted a \
-                 later one; discarding it"
-            );
-            Outcome::Advanced
-        }
-        Err(error) => {
-            tracing::error!(
-                error = %error,
-                "confirmed a record was safe to discard but could not durably commit it -- it \
-                 will be retried next attempt"
-            );
-            Outcome::Stopped
-        }
-    }
-}
-
-/// Offers `probe` to the collector on its own, purely to learn whether it
-/// accepts anything. `true` only on a clean `Accepted` -- a network error or
-/// a mint failure is exactly as uninformative here as an explicit refusal:
-/// none of them is evidence the collector works.
-async fn probe_accepted(state: &DaemonState, probe: &Pending) -> bool {
-    let Ok(minted) = mint::mint(&state.http, &state.config).await else {
-        return false;
-    };
-    let is_json = probe.format == super::super::receive::WireFormat::Json;
-    let parsed: Option<serde_json::Value> = is_json
-        .then(|| serde_json::from_slice(&probe.payload).ok())
-        .flatten();
-    let Ok(stamped) = normalize::stamp(
-        parsed,
-        &probe.payload,
-        &minted.access_token,
-        Some(&probe.key),
-    ) else {
-        return false;
-    };
-    matches!(
-        forward::post(
-            &state.http,
-            &state.config,
-            &minted.bearer,
-            probe.signal,
-            &stamped,
-            is_json,
-        )
-        .await,
-        Ok(crate::copilot::Verdict::Accepted)
-    )
+    lookahead::walk(state, pending, status).await
 }
