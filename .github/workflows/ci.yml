@@ -228,3 +228,18 @@ jobs:
       # crashed both public collectors in production before this existed.
       - name: Assert rendered otel collector configs decode under the pinned image
         run: charts/lightbridge-governance/tests/assert-otel-config-validates.sh charts/lightbridge-governance
+
+      # `transform/classify_refusal`'s 7 branches match the upstream
+      # `oidcauthextension`'s exact warn-log text, verified only once,
+      # manually, when #275 landed -- nothing before this re-ran that check,
+      # so a future otelcol-contrib bump that rewords any of those strings
+      # would silently degrade classification to "unknown" with zero signal
+      # (review finding, #321, left open when that review's other findings
+      # were fixed). PyJWT + cryptography back a throwaway local OIDC issuer
+      # (tests/support/mock_oidc_issuer.py) so this can mint real
+      # signed/expired/wrong-audience/bad-signature tokens without a real IDP.
+      - name: Install Python deps for refusal-classification test
+        run: pip install --break-system-packages --quiet pyjwt cryptography
+
+      - name: Assert refusal-capture classifies real oidc-extension refusals correctly
+        run: charts/lightbridge-governance/tests/assert-refusal-classification.sh charts/lightbridge-governance
