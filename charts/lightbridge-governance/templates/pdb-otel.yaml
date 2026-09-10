@@ -1,0 +1,37 @@
+{{- /*
+PodDisruptionBudget for the public OTLP collectors (lightbridge-governance#275,
+review finding): the refusal-capture emptyDir can be filled by an attacker
+driving auth failures on this public, unauthenticated-by-definition endpoint,
+which evicts the pod (emptyDir over sizeLimit). With `replicas: 2` and no PDB,
+a sustained flood can evict BOTH replicas near-simultaneously, dropping real
+Claude Code / Codex / Copilot / OpenCode telemetry for the reschedule window.
+`minAvailable: 1` guarantees at least one replica stays up through any
+voluntary disruption (including the emptyDir-eviction path).
+*/}}
+{{- if .Values.aiCliOtel.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lightbridge-governance.aiCliOtelName" . }}-collector
+  labels:
+    app: {{ .Values.name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lightbridge-governance.aiCliOtelName" . }}-collector
+---
+{{- end }}
+{{- if .Values.opencodeOtel.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lightbridge-governance.opencodeOtelName" . }}-collector
+  labels:
+    app: {{ .Values.name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lightbridge-governance.opencodeOtelName" . }}-collector
+{{- end }}

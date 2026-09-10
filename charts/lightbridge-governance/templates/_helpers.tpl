@@ -320,7 +320,7 @@ all. Without it those reads silently produce nothing, not an error.
       # lines. `parse_to: attributes` (NOT body) because OTTL cannot address
       # sub-paths of `body` -- verified live in the Phase 1a spike.
       file_log/refusals:
-        include: [{{ $otel.refusalCapture.logPath | quote }}]
+        include: [{{ printf "%s/refusals.log" $otel.refusalCapture.logDir | quote }}]
         start_at: end
         operators:
           - type: json_parser
@@ -471,7 +471,12 @@ produce no `client.address` attribute at all, not an empty one.
               - 'set(attributes["refusal.reason"], "unknown_issuer") where attributes["msg"] == "Authentication failed: could not resolve provider"'
               - 'set(attributes["refusal.reason"], "expired") where attributes["msg"] == "Authentication failed: token verification failed" and IsMatch(attributes["error"], "token is expired")'
               - 'set(attributes["refusal.reason"], "wrong_audience") where attributes["msg"] == "Authentication failed: token verification failed" and IsMatch(attributes["error"], "expected audience")'
-              - 'set(attributes["refusal.reason"], "verification_failed") where attributes["msg"] == "Authentication failed: token verification failed" and attributes["refusal.reason"] == nil'
+              # ⚠️ Self-contained on purpose: this must NOT depend on statement
+              # order relative to the two above it. All three match the same
+              # `msg`; the explicit `not IsMatch(...)` exclusions mean a future
+              # reorder cannot silently swallow the expired/wrong_audience
+              # classifications (review finding, lightbridge-governance#275).
+              - 'set(attributes["refusal.reason"], "verification_failed") where attributes["msg"] == "Authentication failed: token verification failed" and not IsMatch(attributes["error"], "token is expired") and not IsMatch(attributes["error"], "expected audience")'
               - 'set(attributes["refusal.reason"], "unknown") where attributes["refusal.reason"] == nil'
               - 'set(attributes["refusal.issuer"], attributes["issuer"]) where attributes["issuer"] != nil'
 {{- end }}
@@ -531,10 +536,19 @@ produce no `client.address` attribute at all, not an empty one.
       # collector's stderr to JSON (a deliberate format change, and better for
       # Loki). `output_paths` keeps stderr AND adds the file, so existing
       # stderr-based log collection is unaffected.
+      #
+      # ⚠️ `level: warn` (review finding, lightbridge-governance#275): this is
+      # the process-wide zap logger, so without a level it would write every
+      # component's INFO+ line to the file -- including awss3 retry/queue logs
+      # during an outage, and it compounds the disk-fill DoS on this public
+      # endpoint (an attacker drives the write rate). warn+ keeps the file to
+      # refusals and genuine warnings. This also drops INFO lines from stderr;
+      # nothing in this chart parses the collector's stderr programmatically.
       telemetry:
         logs:
+          level: warn
           encoding: json
-          output_paths: [stderr, {{ $otel.refusalCapture.logPath | quote }}]
+          output_paths: [stderr, {{ printf "%s/refusals.log" $otel.refusalCapture.logDir | quote }}]
 {{- end }}
       pipelines:
         # All three signals: Claude Code emits metrics + logs, Codex emits

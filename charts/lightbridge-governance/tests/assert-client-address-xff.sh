@@ -148,12 +148,23 @@ docker run -d --name otel-xff-assert \
   -v "${WORKDIR}/refusals:/var/log/collector" \
   "${IMAGE}" >/dev/null
 
+# Wait for the collector to accept connections. NOT a log-grep on "Everything
+# is ready": that line is INFO, and the rendered config sets
+# `service.telemetry.logs.level: warn` (lightbridge-governance#275), so it is
+# suppressed. Polling the OTLP endpoint is more robust anyway -- it proves the
+# receiver is actually serving, not just that the process logged a line.
 for _ in $(seq 1 30); do
-  docker logs otel-xff-assert 2>&1 | grep -q "Everything is ready" && break
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+    -X POST "http://localhost:${PORT}/v1/traces" \
+    -H "Content-Type: application/json" -d '{"resourceSpans":[]}' 2>/dev/null || true)"
+  [ -n "${code}" ] && [ "${code}" != "000" ] && break
   sleep 1
 done
-docker logs otel-xff-assert 2>&1 | grep -q "Everything is ready" \
-  || fail "otel collector never became ready -- see docker logs otel-xff-assert"
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+  -X POST "http://localhost:${PORT}/v1/traces" \
+  -H "Content-Type: application/json" -d '{"resourceSpans":[]}' 2>/dev/null || true)"
+[ -n "${code}" ] && [ "${code}" != "000" ] \
+  || fail "otel collector never became ready (endpoint did not respond) -- see docker logs otel-xff-assert"
 
 trace_body() {
   local trace_id="$1"

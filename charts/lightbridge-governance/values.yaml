@@ -668,23 +668,37 @@ aiCliOtel:
     enabled: true
     # Directory the emptyDir is mounted at. Must be writable: the collector runs
     # readOnlyRootFilesystem, so this cannot be on the root filesystem.
+    #
+    # ⚠️ The log FILE is derived from this in _helpers.tpl as
+    # `<logDir>/refusals.log` -- there is deliberately NO separate `logPath`
+    # value, because two independently-settable paths could desync and point
+    # `output_paths` outside the mounted emptyDir, crashing the whole collector
+    # at boot (reproduced live: readOnlyRootFilesystem leaves no writable
+    # fallback outside the mount). Change only `logDir`.
     logDir: /var/log/collector
-    # Full path of the refusal log file inside logDir. `output_paths` writes the
-    # collector's own logs here; `file_log` reads it back.
-    logPath: /var/log/collector/refusals.log
     # Cap on the emptyDir so a log burst (or a misbehaving filter) can't fill
     # the node disk. Refusals are low-volume; this is a safety valve, not a
     # sizing knob.
     #
     # ⚠️ KNOWN TRADEOFF (reviewed, accepted): the file is append-only -- zap
     # writes it and `file_log` reads it but never truncates, so it grows
-    # monotonically. At the observed production refusal cadence (~1 per 5-20 s,
-    # ~400 B/line) 10Mi fills in roughly 1.5-6 days, after which the kubelet
-    # EVICTS the pod (emptyDir over sizeLimit) and the emptyDir resets. That is
-    # the reset mechanism, not a bug -- but it means a long-running pod is
-    # expected to restart periodically, and a refusal flood is a self-inflicted
-    # availability risk on a public endpoint. Raise this if that cadence is
-    # ever sustained; a rotation/truncation mechanism is a follow-up if needed.
+    # monotonically. This is a PUBLIC, unauthenticated-by-definition endpoint,
+    # so an attacker controls the write rate directly (an auth failure is
+    # exactly what's captured): at ~400 B/line, 10Mi (~26k lines) fills in
+    # under ~5 minutes at a trivial ~87 req/s of bare/garbage-auth requests.
+    # When the emptyDir exceeds sizeLimit the kubelet EVICTS the pod and the
+    # emptyDir resets. Mitigations in this chart: `level: warn` on the logger
+    # (only warn+ lines reach the file, not INFO), and a PodDisruptionBudget
+    # (minAvailable: 1) so a flood cannot evict both replicas at once. A
+    # rotation/truncation mechanism and a per-IP ingress rate limit are
+    # follow-ups if this is ever sustained.
+    #
+    # ⚠️ Data loss on eviction: whatever is buffered in the `batch` processor
+    # (~512 items/5s) at the moment of eviction is lost -- the new pod starts
+    # at the end of a fresh emptyDir and does not recover it. Eviction
+    # frequency tracks refusal volume, so this secondary observability signal
+    # degrades precisely during the flood when it would be most valuable. The
+    # primary auth-enforcement path is unaffected.
     volumeSizeLimit: 10Mi
 
 # Second public OTLP collector, for OpenCode laptops.
@@ -786,8 +800,10 @@ opencodeOtel:
   # rationale; the two must move together.
   refusalCapture:
     enabled: true
+    # logDir only -- the log file is derived as <logDir>/refusals.log in
+    # _helpers.tpl (no separate logPath, to avoid a desync crash). See
+    # aiCliOtel's block for the full rationale and the KNOWN TRADEOFF.
     logDir: /var/log/collector
-    logPath: /var/log/collector/refusals.log
     # Same append-only / pod-eviction tradeoff as aiCliOtel's block -- see there.
     volumeSizeLimit: 10Mi
 
