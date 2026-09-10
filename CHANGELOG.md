@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.4...v2.6.0) (2026-09-10)
+
+
+### Features
+
+* **charts:** capture refused-ingest reasons for public OTLP collectors ([#275](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/275)) ([#321](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/321)) ([d4e6a57](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d4e6a57d8921f6c2ffbccbe0039cbb3106b35ed8))
+
 ## [2.5.4](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.3...v2.5.4) (2026-09-10)
 
 
