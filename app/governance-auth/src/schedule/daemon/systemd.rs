@@ -1,8 +1,9 @@
 //! Linux: the daemon as a `Type=simple`, `Restart=on-failure` user service.
 //!
 //! No `.timer`: unlike the drain this must stay running, not wake
-//! periodically, so `enable --now` is issued directly against the
-//! `.service` unit.
+//! periodically, so `enable` + `restart` are issued directly against the
+//! `.service` unit -- see [`ensure_running`] for why `restart`, not
+//! `enable --now`.
 
 use std::{
     fs,
@@ -49,14 +50,26 @@ pub fn install(home: &Path, invocation: &Invocation) -> Result<()> {
     write(&path, &body)?;
     eprintln!("Configured: {}", path.display());
 
-    // ⚠️ Same two-step as the drain's install, and neither is optional here
-    // either: without the reload systemd runs the unit it parsed at login,
-    // so a changed endpoint is written to disk and ignored; without
-    // `enable --now` the unit exists and never starts.
-    run("systemctl", &["--user", "daemon-reload"])?;
-    run("systemctl", &["--user", "enable", "--now", &service_unit()])?;
+    ensure_running(&service_unit(), |args| run("systemctl", args))?;
     eprintln!("Daemon installed: forwarding via {}.", service_unit());
     Ok(())
+}
+
+/// `daemon-reload` + `enable` + `restart`, not `enable --now`: `start` (and
+/// `--now`, which implies it) is a documented no-op on an already-active
+/// unit, so a repeated `configure`/`login` after `self update` installed a
+/// new binary would leave the OLD process running indefinitely -- the same
+/// silent-stale-wiring failure this incident's launchd side closes, just
+/// showing up as "never restarts" instead of launchd's "restarts unsafely".
+/// `restart` behaves exactly like `start` when the unit is not running yet,
+/// so this is correct whether the service was already up, previously
+/// stopped, or never installed. Unlike launchd there is no unregister step
+/// to race: `enable`/`restart` are independent, idempotent operations, so
+/// there is no bootstrap-error-5 equivalent here to guard against.
+fn ensure_running(unit: &str, mut command: impl FnMut(&[&str]) -> Result<()>) -> Result<()> {
+    command(&["--user", "daemon-reload"])?;
+    command(&["--user", "enable", unit])?;
+    command(&["--user", "restart", unit])
 }
 
 pub fn remove(home: &Path) -> Result<()> {
@@ -128,3 +141,7 @@ mod tests {
         assert!(body.contains("\"https://auth.example\""));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/systemd_daemon_reload.rs"]
+mod reload_tests;
