@@ -32,10 +32,8 @@ impl DurableSpool {
         self.checkpoint.quarantine.prune(now);
         loop {
             let (peeked, identity) = self.peek_at(self.checkpoint.offset)?;
-            // Adopted into the checkpoint only when something durable
-            // actually happens -- mirrors `copilot::journal::Journal`'s same
-            // deferral, for the same reason: observing it must never itself
-            // be a reason to write. `commit_past` is what persists it.
+            // Persisted only when something durable actually happens;
+            // observing an identity must never itself be a reason to write.
             self.pending_identity = identity;
             match peeked {
                 Peeked::Empty => return Ok(None),
@@ -45,6 +43,10 @@ impl DurableSpool {
                          tail at byte 0"
                     );
                     self.checkpoint.restart();
+                    // Pair the reset offset with the observed identity in
+                    // memory. Keeping the old identity would detect the same
+                    // replacement forever, before any record can be returned.
+                    self.checkpoint.spool.clone_from(&self.pending_identity);
                 }
                 Peeked::Undecodable { boundary } => {
                     tracing::warn!("a durable spool record could not be decoded; discarding it");

@@ -5,6 +5,7 @@
 mod quarantine;
 mod quarantine_lookahead;
 mod reclaim;
+mod restart;
 
 use std::path::PathBuf;
 
