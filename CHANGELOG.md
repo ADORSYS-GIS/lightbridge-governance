@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.0...v2.5.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **governance-auth:** recover spool identity before retrying delivery ([4a6b77a](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4a6b77a750e48ca3b29ea04b597206c0fb643e4d))
+
 ## [2.5.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.4.4...v2.5.0) (2026-09-09)
 
 
