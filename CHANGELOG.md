@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.2](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.1...v2.5.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **governance-auth:** preserve OTLP signals across IDE exporters ([645cd07](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/645cd0768b35832c853b1af7f31613d05ef3ddc0))
+
 ## [2.5.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.0...v2.5.1) (2026-09-10)
 
 
