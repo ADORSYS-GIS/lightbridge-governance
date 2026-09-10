@@ -67,18 +67,20 @@ enum Pass {
 /// Runs `f` against the spool on a blocking-pool thread -- see the module
 /// doc's P2-7 section. A panic inside `f` is resumed, not swallowed by
 /// `spawn_blocking`'s own `JoinError`, so it surfaces as it would inline.
-async fn with_spool<T, F>(state: &DaemonState, f: F) -> T
+/// Cancellation is an ordinary error: callers stop without acknowledging work.
+async fn with_spool<T, F>(state: &DaemonState, f: F) -> anyhow::Result<T>
 where
-    F: FnOnce(&mut spool::DurableSpool) -> T + Send + 'static,
+    F: FnOnce(&mut spool::DurableSpool) -> anyhow::Result<T> + Send + 'static,
     T: Send + 'static,
 {
     let spool = state.spool.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut spool = spool.lock().unwrap_or_else(|p| p.into_inner());
-        f(&mut spool)
-    })
-    .await
-    .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()))
+    join_spool(
+        tokio::task::spawn_blocking(move || {
+            let mut spool = spool.lock().unwrap_or_else(|p| p.into_inner());
+            f(&mut spool)
+        })
+        .await,
+    )
 }
 
 /// Retains a payload durably, answering whether it durably landed -- `false`
@@ -160,3 +162,19 @@ pub(super) async fn pump(state: DaemonState) {
         }
     }
 }
+
+fn join_spool<T>(result: Result<anyhow::Result<T>, tokio::task::JoinError>) -> anyhow::Result<T> {
+    match result {
+        Ok(result) => result,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(cancelled) => {
+                Err(anyhow::anyhow!(cancelled).context("spool operation cancelled during shutdown"))
+            }
+        },
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/support/spool_join.rs"]
+mod join_tests;

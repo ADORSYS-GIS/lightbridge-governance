@@ -55,21 +55,14 @@ pub fn install(home: &Path, invocation: &Invocation) -> Result<()> {
     {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
+    let unchanged = fs::read_to_string(&path).is_ok_and(|previous| previous == body);
     write(&path, &body)?;
     eprintln!("Configured: {}", path.display());
 
-    // ⚠️ Same non-idempotent `bootstrap` trap as the drain's install: on an
-    // already-loaded label it fails and leaves the OLD argv running, so
-    // unload first, ignoring the failure that means "it was not loaded".
     let domain = domain(&path)?;
-    let _ = run(
-        "launchctl",
-        &["bootout", &format!("{domain}/{DAEMON_LABEL}")],
-    );
-    run(
-        "launchctl",
-        &["bootstrap", &domain, &path.to_string_lossy()],
-    )?;
+    reload(&domain, &path.to_string_lossy(), unchanged, |args| {
+        run("launchctl", args)
+    })?;
     eprintln!("Daemon installed: forwarding via {DAEMON_LABEL}.");
     Ok(())
 }
@@ -130,3 +123,23 @@ mod tests {
         );
     }
 }
+
+fn reload(
+    domain: &str,
+    path: &str,
+    unchanged: bool,
+    mut command: impl FnMut(&[&str]) -> Result<()>,
+) -> Result<()> {
+    let service = format!("{domain}/{DAEMON_LABEL}");
+    // A repeated login must not unregister an unchanged service. Kickstart
+    // also loads an upgraded executable without replacing its registration.
+    if unchanged && command(&["kickstart", "-k", &service]).is_ok() {
+        return Ok(());
+    }
+    let _ = command(&["bootout", &service]);
+    command(&["bootstrap", domain, path])
+}
+
+#[cfg(test)]
+#[path = "../../../tests/support/daemon_reload.rs"]
+mod reload_tests;

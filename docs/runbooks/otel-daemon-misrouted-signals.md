@@ -213,3 +213,31 @@ client output; first rule out an incorrect destination.
 Upstream documentation was consulted on 2026-09-10. Recheck version-specific
 client behavior when an exporter changes; the daemon's contract remains explicit
 signal routing, byte-preserving protobuf forwarding and refusal of ambiguity.
+
+## Follow-up: login succeeded but the macOS daemon stopped
+
+On 2026-09-10, v2.5.2 forwarded logs and metrics successfully, then stopped
+forwarding after its access token expired. A separate credential-helper call
+confirmed HTTP 400 `invalid_grant` during refresh. That response does not establish
+why the refresh grant became invalid. The daemon retained pending records.
+
+A fresh login succeeded, but service installation unloaded the existing launchd
+job and its immediate `bootstrap` failed with error 5. Inspection subsequently
+found no registered daemon. Registering the same plist later succeeded and the
+backlog drained without increasing the historical discard count of 122. The exact
+launchd rejection cause has not been established; the timing is consistent with a
+reload race, not proof of one.
+
+Shutdown also exposed a separate programming error: the spool task join handler
+called `JoinError::into_panic()` for a cancelled task. Cancellation is now returned
+as an operation error, while genuine panic payloads still propagate. Shutdown waits
+for the aborted drain task before returning. Repeat installation with an unchanged
+plist uses `kickstart -k` instead of unregistering the service; a missing service or
+changed plist still takes the registration path. This avoids the unnecessary
+unload/register sequence on repeated logins, rather than claiming to explain every
+possible launchd bootstrap failure.
+
+Regression tests reproduce the cancellation panic and the previous repeat-login
+command sequence before the fixes. Scheduler tests use injected commands and never
+unload the workstation's daemon. These source changes require a subsequent binary
+release; restoring the installed v2.5.2 service does not install them.

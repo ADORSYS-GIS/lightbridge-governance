@@ -112,6 +112,7 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
         .await
         .context("running the OTEL loopback receiver");
     pump.abort();
+    let _ = pump.await;
     result
 }
 
