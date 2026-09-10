@@ -1,13 +1,14 @@
 //! The authenticated outbound OTLP/HTTP POST (A3/A4).
 //!
-//! Reuses [`crate::copilot`]'s signal/verdict taxonomy and endpoint builder so
-//! the daemon cannot drift from `copilot push` on what an endpoint looks like
-//! or which statuses are permanent. The `Redacted` discipline is structural:
+//! Reuses [`crate::copilot`]'s refusal taxonomy while the daemon's signal
+//! vocabulary includes traces as well as logs and metrics.
+//! The `Redacted` discipline is structural:
 //! **never log the bearer or a body.**
 
 use anyhow::{Context, Result, bail};
 
-pub use crate::copilot::{Signal, Verdict};
+use super::signal::Signal;
+pub use crate::copilot::Verdict;
 use crate::{config::OauthConfig, copilot, redacted::Redacted};
 
 /// Posts one payload to the governed collector for the given signal.
@@ -37,7 +38,7 @@ pub async fn post(
         "no collector configured: supply --otel-endpoint / GOVERNANCE_AUTH_OTEL_ENDPOINT before \
          running `serve --otel`",
     )?;
-    let url = copilot::endpoint(base, signal);
+    let url = format!("{}{}", base.trim_end_matches('/'), signal.path());
     let content_type = if is_json {
         "application/json"
     } else {
@@ -63,3 +64,7 @@ pub async fn post(
     // 4xx body can echo the submitted payload, which is prompt-adjacent).
     bail!("the collector rejected the {signal} export at {url} with HTTP {status}");
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/forward_signals.rs"]
+mod tests;

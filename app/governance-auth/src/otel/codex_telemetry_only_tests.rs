@@ -36,7 +36,7 @@ fn codex_telemetry_only_does_not_add_a_provider_and_keeps_otel() {
     );
     assert_eq!(
         document["otel"]["exporter"]["otlp-http"]["endpoint"].as_str(),
-        Some("http://127.0.0.1:17457")
+        Some("http://127.0.0.1:17457/v1/logs")
     );
 }
 

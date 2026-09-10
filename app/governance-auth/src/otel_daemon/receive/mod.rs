@@ -1,15 +1,13 @@
 //! Parses an incoming OTLP request: method, path, body — after two admission
 //! checks that run *before* the body is ever read.
 //!
-//! ## "Any path" is the point (A2)
+//! ## Signal paths and bare URLs
 //!
-//! Codex posts OTLP to its configured endpoint **verbatim**, appending no
-//! signal path (`POST /` with a `resourceLogs` body, measured). So this
-//! receiver must not reject a path it does not recognise — the path is carried
-//! along, not branch-decisioned here. Admission for forwarding never depends
-//! on the URL path; the body discriminates the signal ([`super::classify`]).
+//! Standard OTLP paths identify logs, metrics and traces. Older Codex configs
+//! post binary exports to `/`; classification uses the OTLP schema there.
+//! Unknown or ambiguous signals are rejected, never defaulted to logs.
 //!
-//! ## Why `Host` and `Content-Type` ARE admission gates, unlike the path
+//! ## Why `Host` and `Content-Type` ARE admission gates, alongside signal classification
 //!
 //! Reviewed finding (#268/#290): `Router::new().fallback(any(handle_request))`
 //! with no `Host`/`Origin` check meant **any web page the developer's browser

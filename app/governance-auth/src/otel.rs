@@ -737,14 +737,15 @@ pub fn configure_codex(home: &Path, settings: &OtelSettings) -> Result<Outcome> 
         // as TOML but Codex rejects it at load time with `invalid type: unit
         // variant, expected struct variant in otel.exporter` -- and Codex
         // refuses to start at all on a config it can't load, so getting this
-        // wrong bricks the tool rather than just disabling telemetry. The
-        // shape below was confirmed by loading it in codex-cli 0.146.1, not
-        // inferred from the reference docs (which describe it as
-        // `otel.exporter.<id>.endpoint`).
-        for kind in ["exporter", "metrics_exporter"] {
+        // wrong bricks the tool rather than just disabling telemetry.
+        // Codex uses per-signal URLs verbatim; it does not append the path.
+        for (kind, signal) in [("exporter", "logs"), ("metrics_exporter", "metrics")] {
             let exporter = table_entry(otel, kind)?;
             let otlp = table_entry(exporter, "otlp-http")?;
-            otlp.insert("endpoint", toml_edit::value(endpoint));
+            otlp.insert(
+                "endpoint",
+                toml_edit::value(format!("{}/v1/{signal}", endpoint.trim_end_matches('/'))),
+            );
             otlp.insert("protocol", toml_edit::value("binary"));
             if let Some(token) = &settings.token {
                 let headers = table_entry(otlp, "headers")?;

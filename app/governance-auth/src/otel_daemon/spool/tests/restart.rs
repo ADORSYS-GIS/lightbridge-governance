@@ -3,7 +3,7 @@
 use std::{sync::mpsc, thread, time::Duration};
 
 use super::{DurableSpool, FORMAT, TempDir};
-use crate::copilot::Signal;
+use crate::otel_daemon::signal::Signal;
 
 #[test]
 fn a_changed_device_identity_recovers_and_persists_only_after_advance() {

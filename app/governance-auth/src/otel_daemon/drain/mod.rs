@@ -87,7 +87,7 @@ where
 /// success the payload never earned.
 pub(super) async fn retain(
     state: &DaemonState,
-    signal: crate::copilot::Signal,
+    signal: crate::otel_daemon::signal::Signal,
     payload: Vec<u8>,
     format: super::receive::WireFormat,
 ) -> bool {

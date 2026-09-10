@@ -409,13 +409,13 @@ fn codex_exporter_is_a_struct_variant_not_a_bare_string() {
         .parse::<toml_edit::DocumentMut>()
         .expect("output must be valid TOML");
 
-    for kind in ["exporter", "metrics_exporter"] {
+    for (kind, signal) in [("exporter", "logs"), ("metrics_exporter", "metrics")] {
         let otlp = document["otel"][kind]["otlp-http"]
             .as_table()
             .unwrap_or_else(|| panic!("otel.{kind}.otlp-http must be a table, not a string"));
         assert_eq!(
             otlp["endpoint"].as_str(),
-            Some("https://otel.example.com"),
+            Some(format!("https://otel.example.com/v1/{signal}").as_str()),
             "otel.{kind}.otlp-http.endpoint"
         );
         assert_eq!(

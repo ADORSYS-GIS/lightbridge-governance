@@ -6,11 +6,12 @@ mod quarantine;
 mod quarantine_lookahead;
 mod reclaim;
 mod restart;
+mod signals;
 
 use std::path::PathBuf;
 
 use super::DurableSpool;
-use crate::{copilot::Signal, otel_daemon::receive::WireFormat};
+use crate::otel_daemon::{receive::WireFormat, signal::Signal};
 
 const FORMAT: WireFormat = WireFormat::Json;
 

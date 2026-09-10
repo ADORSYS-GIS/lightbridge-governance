@@ -1797,6 +1797,8 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "minijinja",
+ "opentelemetry-proto",
+ "prost",
  "reqwest",
  "serde",
  "serde_json",

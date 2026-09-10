@@ -4,7 +4,7 @@
 //! not wedge the drain.
 
 use super::{super::commit::RECLAIM_ABOVE, DurableSpool, FORMAT, TempDir};
-use crate::copilot::Signal;
+use crate::otel_daemon::signal::Signal;
 
 #[test]
 fn a_fully_delivered_spool_over_the_reclaim_threshold_is_truncated() {

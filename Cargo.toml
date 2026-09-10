@@ -237,6 +237,9 @@ aws-config = { version = "1", default-features = false, features = ["rt-tokio", 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 opentelemetry = "0.32"
+# Message decoders disambiguate OTLP binary exports sent to a bare URL.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "metrics", "trace"] }
+prost = "0.14"
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "tokio"] }
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 tracing-opentelemetry = "0.33"

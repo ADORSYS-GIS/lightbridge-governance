@@ -32,8 +32,10 @@ mod drain;
 mod forward;
 mod mint;
 mod normalize;
+mod protobuf;
 mod receive;
 mod shutdown;
+mod signal;
 mod spool;
 
 use std::sync::{Arc, Mutex};
@@ -142,12 +144,13 @@ async fn handle_request(
         }
     };
 
-    // Carried for diagnostics, never a branch (A2).
+    // Path is diagnostic metadata and the explicit OTLP signal discriminator.
     tracing::trace!(method = %incoming.method, path = %incoming.path, "received OTLP");
     // Classification is the only inspection needed at admission. Identity
     // stamping happens when the drain forwards the retained bytes.
-    let parsed: Option<serde_json::Value> = serde_json::from_slice(&incoming.body).ok();
-    let signal = classify::signal(parsed.as_ref(), &incoming.path);
+    let Some(signal) = classify::signal(&incoming.body, incoming.format, &incoming.path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     retained_response(&state, signal, incoming.body, incoming.format).await
 }
 
@@ -158,7 +161,7 @@ async fn handle_request(
 /// protobuf, with the same content type the sender used as OTLP requires.
 async fn retained_response(
     state: &DaemonState,
-    signal: crate::copilot::Signal,
+    signal: signal::Signal,
     payload: Vec<u8>,
     format: receive::WireFormat,
 ) -> Response {

@@ -68,8 +68,9 @@ use anyhow::{Context, Result};
 use super::{
     checkpoint::{self, Checkpoint},
     receive::WireFormat,
+    signal::Signal,
 };
-use crate::copilot::{Signal, spool as tail, spool::Identity};
+use crate::copilot::{spool as tail, spool::Identity};
 
 /// The file name under the state directory. No CLI override exists for it
 /// (unlike Copilot's spool path): that override exists so a developer's

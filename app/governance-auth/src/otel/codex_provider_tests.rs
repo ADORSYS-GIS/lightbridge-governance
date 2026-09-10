@@ -164,11 +164,11 @@ trust_level = "trusted"
     assert_eq!(document["model_reasoning_effort"].as_str(), Some("low"));
     assert_eq!(
         document["otel"]["exporter"]["otlp-http"]["endpoint"].as_str(),
-        Some("http://127.0.0.1:17457")
+        Some("http://127.0.0.1:17457/v1/logs")
     );
     assert_eq!(
         document["otel"]["metrics_exporter"]["otlp-http"]["endpoint"].as_str(),
-        Some("http://127.0.0.1:17457")
+        Some("http://127.0.0.1:17457/v1/metrics")
     );
     assert_eq!(
         document["model_providers"][CODEX_PROVIDER_ID]["base_url"].as_str(),

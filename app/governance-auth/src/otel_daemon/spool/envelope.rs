@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
-use crate::{copilot::Signal, otel_daemon::receive::WireFormat};
+use crate::otel_daemon::{receive::WireFormat, signal::Signal};
 
 #[derive(Serialize, Deserialize)]
 struct Envelope {
@@ -50,7 +50,13 @@ pub(super) fn decode(text: &str) -> Result<(Signal, Vec<u8>, WireFormat)> {
             WireFormat::Protobuf
         }
     });
-    Ok((envelope.signal, body, format))
+    // Repair old root-URL classification without changing bytes or retry keys.
+    let signal = if envelope.signal == Signal::Logs {
+        super::super::classify::signal(&body, format, "/").unwrap_or(envelope.signal)
+    } else {
+        envelope.signal
+    };
+    Ok((signal, body, format))
 }
 
 /// Appends `line` plus a newline to `path`, `fsync`ing before returning, so a

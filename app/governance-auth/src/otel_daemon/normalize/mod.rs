@@ -123,7 +123,7 @@ pub fn stamp(
     };
 
     let mut changed = false;
-    for key in ["resourceMetrics", "resourceLogs"] {
+    for key in ["resourceMetrics", "resourceLogs", "resourceSpans"] {
         if let Some(resources) = value.get_mut(key).and_then(Value::as_array_mut) {
             for resource in resources {
                 changed |= stamp_resource(resource, &attributes);

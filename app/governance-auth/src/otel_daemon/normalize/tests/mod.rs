@@ -4,6 +4,7 @@
 //! [`retry_key`], split further for the same reason.
 
 mod retry_key;
+mod traces;
 
 use super::*;
 

@@ -49,10 +49,13 @@ impl DurableSpool {
     /// apart rather than depending on real wall-clock elapsing between two
     /// calls (see [`MIN_SEPARATION_SECONDS`]).
     pub fn record_refusal(&mut self, pending: &Pending, now: u64) -> Result<bool> {
+        // A rejection at /v1/logs says nothing about the same bytes rerouted
+        // to /v1/metrics. Keep refusal evidence separate from the retry key.
+        let refusal_key = format!("{}:{}", pending.signal, pending.key);
         let eligible =
             self.checkpoint
                 .quarantine
-                .refused(&pending.key, now, MIN_SEPARATION_SECONDS);
+                .refused(&refusal_key, now, MIN_SEPARATION_SECONDS);
         checkpoint::store(&self.checkpoint_path, &self.checkpoint)?;
         Ok(eligible)
     }
@@ -79,7 +82,9 @@ impl DurableSpool {
     /// Callers with the original single-record case (still the common one)
     /// pass `1`.
     pub fn discard_confirmed(&mut self, stuck: &Pending, lost: u64, probe: &Pending) -> Result<()> {
-        self.checkpoint.quarantine.forget(&stuck.key);
+        self.checkpoint
+            .quarantine
+            .forget(&format!("{}:{}", stuck.signal, stuck.key));
         self.commit_past(probe.boundary, lost)
     }
 

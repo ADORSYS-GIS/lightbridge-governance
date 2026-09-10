@@ -1,5 +1,12 @@
 # The local otel daemon stopped forwarding telemetry
 
+**Check the signal before diagnosing corruption.** On 2026-09-10, a payload
+rejected by `/v1/logs` with `wrong wireType = 2 for field TimeUnixNano` was
+accepted unchanged by `/v1/metrics`. Older daemon versions classified binary
+exports at `/` as logs, including Codex metrics. That error alone does **not**
+prove the payload is malformed. See [misrouted signals](otel-daemon-misrouted-signals.md)
+before using the discard procedure below.
+
 **Symptom:** `governance-auth`'s `serve --otel` daemon logs, repeatedly and without ever
 recovering on its own:
 
