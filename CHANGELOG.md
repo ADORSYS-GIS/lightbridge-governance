@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.4](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.3...v2.5.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **governance-auth:** restart the systemd daemon unit, not just enable --now ([1d850f4](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1d850f468597a681d9a52def3ba63182fd5a7220))
+
 ## [2.5.3](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.2...v2.5.3) (2026-09-10)
 
 
