@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.2...v2.5.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **governance-auth:** stop the otel drain panic and launchd reload race ([6f97f68](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6f97f68dd72541eaf9a00521254a0bc4f898a7b1))
+
 ## [2.5.2](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.1...v2.5.2) (2026-09-10)
 
 
