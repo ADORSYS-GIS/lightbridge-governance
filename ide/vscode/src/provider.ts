@@ -7,6 +7,7 @@ import { fetchCatalogue, logCatalogueFailure } from './catalogue.js';
 import { readConfig } from './config.js';
 import { errorMessage, log, redact } from './log.js';
 import { toWireMessages, toWireToolChoice, toWireTools } from './messages.js';
+import { fetchWithRetry } from './retry.js';
 import { pumpStream } from './stream.js';
 import type { LightbridgeModel } from './types.js';
 
@@ -140,7 +141,12 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     };
 
     try {
-      const res = await fetch(url, {
+      // fetchWithRetry handles 429 and 5xx retries honouring `Retry-After`,
+      // but ONLY for the initial fetch — before any bytes have been reported
+      // to `progress`. Once the stream has started, a retry would re-deliver
+      // text the developer has already received. A mid-stream transient
+      // failure surfaces as an error instead.
+      const res = await fetchWithRetry(url, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${accessToken}`,
@@ -156,9 +162,14 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
           `The gateway refused this request (${res.status}). Run 'governance-auth login'.`,
         );
       }
+      if (res.status === 429) {
+        throw new Error(
+          `The gateway is rate-limiting requests (429). Please wait a moment and try again.`,
+        );
+      }
       if (!res.ok) {
         // The status, not the body: an error body can echo the prompt back.
-        throw new Error(`${redact(url)} returned ${res.status}.`);
+        throw new Error(`${redact(url)} returned ${res.status}`);
       }
       if (!res.body) {
         throw new Error(`${redact(url)} returned no response body.`);

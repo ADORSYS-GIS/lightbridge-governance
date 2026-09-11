@@ -401,6 +401,82 @@ await scenario('FAIL CLOSED: no gateway configured offers no models', async () =
   assert.equal(models.length, 0);
 });
 
+// ── 429 / throttle scenarios ────────────────────────────────────────────────
+
+await scenario('THROTTLE: a single 429 on the catalogue path is retried and succeeds', async () => {
+  configure('good-auth.sh');
+  // Throttle the first request; the second (retry) goes through.
+  gw.throttleNext(1);
+  const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
+    { silent: false },
+    token as never,
+  );
+  assert.equal(models.length, 1, 'expected 1 model after retry; got an empty picker instead');
+});
+
+await scenario('THROTTLE: exhausted retries with no cache return empty (fail-closed)', async () => {
+  configure('good-auth.sh');
+  // TTL=0 means no cache hit. Throttle all retries — should return [] without
+  // crashing, preserving the fail-closed contract.
+  gw.throttleNext(99);
+  const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
+    { silent: false },
+    token as never,
+  );
+  assert.equal(models.length, 0, 'expected empty list when all retries exhaust with no cache');
+  gw.throttleNext(0); // reset
+});
+
+await scenario('THROTTLE: a single 429 on the chat path is retried and text arrives', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // Throttle the first chat POST; the retry goes through.
+  gw.throttleNext(1);
+  const parts: unknown[] = [];
+  await provider.provideLanguageModelChatResponse(
+    models[0]!,
+    [{ role: 1, content: [new (await import('vscode')).LanguageModelTextPart('hi')] }] as never,
+    { toolMode: 1, tools: [] } as never,
+    { report: (p: unknown) => parts.push(p) },
+    token as never,
+  );
+  const vscode = await import('vscode');
+  const text = parts
+    .filter((p) => p instanceof vscode.LanguageModelTextPart)
+    .map((p) => (p as { value: string }).value)
+    .join('');
+  assert.ok(text.length > 0, 'no text arrived after retry; got an empty response');
+});
+
+await scenario('THROTTLE: exhausted chat retries surface a rate-limit error, not a crash', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // Throttle more times than MAX_ATTEMPTS (3) so all attempts return 429.
+  gw.throttleNext(99);
+  let thrown: unknown;
+  try {
+    await provider.provideLanguageModelChatResponse(
+      models[0]!,
+      [] as never,
+      { toolMode: 1, tools: [] } as never,
+      { report: () => {} },
+      token as never,
+    );
+  } catch (err) {
+    thrown = err;
+  } finally {
+    gw.throttleNext(0); // reset so subsequent scenarios work
+  }
+  assert.ok(thrown, 'expected a throw when retries exhaust on the chat path');
+  assert.ok(
+    (thrown as Error).message.includes('rate-limiting') ||
+      (thrown as Error).message.includes('429'),
+    `unexpected error message: ${(thrown as Error).message}`,
+  );
+});
+
 // The strongest form of the fail-closed assertion: the permissive probe must
 // never have been contacted at all.
 if (gw.permissiveHits.length > 0) {
