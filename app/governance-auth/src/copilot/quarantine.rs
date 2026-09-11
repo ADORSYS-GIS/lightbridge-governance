@@ -132,4 +132,26 @@ impl Quarantine {
             self.entries.remove(&oldest);
         }
     }
+
+    /// Everything `dashboard`'s otel-spool row needs about what is currently
+    /// held, in one call: how many records, and the single most-refused
+    /// one's refusal count and when it was last refused. `None` when nothing
+    /// is held -- folded into the return type rather than a separate
+    /// `is_empty` so this table has no `len`/`is_empty` pair to keep in sync
+    /// with each other, or with what `worst` (the max, not an arbitrary
+    /// entry) actually needs to walk the table for anyway.
+    ///
+    /// `otel_daemon` reuses this same table for its own drain -- see
+    /// `otel_daemon::checkpoint::Checkpoint`'s own doc for why -- which is
+    /// the caller this method actually has; `copilot`'s own drain has never
+    /// needed to ask "what, in aggregate, is held" the way a status line
+    /// does.
+    ///
+    /// Deliberately does not expose the digest keys themselves: nothing
+    /// outside this table has a reason to see them, keyed-by-digest-only is
+    /// already the point (see the module doc's "Why the key is a digest").
+    pub fn held(&self) -> Option<(usize, u32, u64)> {
+        let worst = self.entries.values().max_by_key(|entry| entry.refusals)?;
+        Some((self.entries.len(), worst.refusals, worst.last_seen_unix))
+    }
 }

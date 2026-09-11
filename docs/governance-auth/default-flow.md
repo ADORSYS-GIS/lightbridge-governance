@@ -28,15 +28,24 @@ it is why one of the three tools below has a caveat rather than a clean path.
 ## Step 1 — install the binary
 
 ```bash
-cargo build --release --bin governance-auth
-install -m 755 target/release/governance-auth ~/.local/bin/governance-auth
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://adorsys-gis.github.io/lightbridge-governance/install.sh | sh
 ```
 
-`~/.local/bin` is the per-user location ADR-0012 defines. A locally built binary
-always reports `governance-auth 0.1.0` regardless of how current it is — the
-workspace version is never bumped, and released builds get their version
+This downloads the latest published release of `scripts/install.sh` from GitHub
+Pages, verifies its checksum, and installs to `~/.local/bin/governance-auth` —
+the per-user location ADR-0012 defines. Pin a version or a different install
+directory with `-s -- --version v2.7.0 --bin-dir /usr/local/bin`; see
+`install.sh --help` for the full flag list.
+
+Building from source (`cargo build --release --bin governance-auth`) is only
+for developing this binary itself, not for installing it: a locally built
+binary always reports `governance-auth 0.1.0` regardless of how current it is
+— the workspace version is never bumped, and released builds get their version
 injected at build time. **`--version` cannot tell you whether a local build is
-current**; compare against `origin/main` instead.
+current**; compare against `origin/main` instead. If you did build locally,
+`install -m 755 target/release/governance-auth ~/.local/bin/governance-auth`
+is the same install step the script above automates.
 
 ## Step 2 — write the config once
 
@@ -215,12 +224,23 @@ at a local gateway.
 Not "no errors" — these are the observable outcomes.
 
 ```bash
+governance-auth doctor
+```
+
+One command: mints a credential the way `token` does, hits the gateway the way the three
+commands below have a human do with `curl`, and reports every row `status --json` shows —
+one report, one exit code. See [`commands.md`](./commands.md#doctor).
+
+The three separate commands this replaces, if you want to run them by hand instead (or on a
+build old enough not to have `doctor` yet):
+
+```bash
 governance-auth status          # in a TTY: session fresh, and the managed targets
 governance-auth token >/dev/null && echo "credential resolves"
 curl -s -o /dev/null -w '%{http_code}\n' https://api.ai.camer.digital/v1/models/info
 ```
 
-Per tool:
+Per tool — `doctor` does not replace this, either:
 
 - **Claude Code** — a request succeeds and `ANTHROPIC_BASE_URL` in
   `~/.claude/settings.json` points at `<gateway>/anthropic`.

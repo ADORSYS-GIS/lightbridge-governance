@@ -7,9 +7,8 @@
 //!
 //! `an_unaskable_scheduler_is_not_reported_as_stopped` is the other one worth
 //! keeping: `systemctl --user is-active` exits non-zero both for a stopped
-//! timer and for a machine with no user manager to ask, so an implementation
-//! that read the exit code alone would send half the users of a container to
-//! debug a timer that does not exist.
+//! timer and for a machine with no user manager to ask -- reading the exit
+//! code alone sends half a container's users to debug a timer that isn't there.
 
 use std::path::PathBuf;
 
@@ -121,6 +120,7 @@ fn the_row_appears_in_the_rendered_table() {
         &Surveys {
             telemetry: &otel(None, false),
             daemon: &unsurveyed_daemon(),
+            otel_spool: &unsurveyed_otel_spool(),
             spool: &spool::spool(Some(0), 0, None, None),
             drain: &drain(true, Some(true), true),
         },

@@ -248,6 +248,7 @@ fn the_row_appears_in_the_rendered_table() {
         &Surveys {
             telemetry: &otel(None, false),
             daemon: &unsurveyed_daemon(),
+            otel_spool: &unsurveyed_otel_spool(),
             spool: &spool(Some(9000), 0, None, None),
             drain: &unsurveyed_drain(),
         },

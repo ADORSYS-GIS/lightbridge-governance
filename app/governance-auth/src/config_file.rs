@@ -110,6 +110,18 @@ pub struct ConfigFile {
     pub exchange_token_endpoint: Option<String>,
     pub exchange_client_id: Option<String>,
     pub exchange_scopes: Option<String>,
+    /// What `configure`/`login` were last asked to leave alone -- NOT a
+    /// live per-invocation override (that stays `crate::optout::ClientOptOut`,
+    /// CLI-only, on purpose). This is memory: `self update`'s automatic
+    /// `configure` re-apply reads it back so a machine set up with
+    /// `--no-vscode` stays that way after an update, instead of the
+    /// unconditional "reconfigure everything" that was possible to write
+    /// here before this field existed. See `config_persist::remember`'s doc
+    /// for who writes it and `update::reapply` for who reads it back.
+    pub no_claude: Option<bool>,
+    pub no_codex: Option<bool>,
+    pub no_vscode: Option<bool>,
+    pub codex_telemetry_only: Option<bool>,
 }
 
 impl ConfigFile {

@@ -165,6 +165,61 @@ rules out half the failure modes before you go looking at the tools.
 At a terminal it also prints a table. Those three lines are the contract; the table is an
 addition for a human and never a replacement, because `status` may be piped.
 
+### `--json`, for anything that isn't a human at a terminal
+
+```bash
+governance-auth status --json
+```
+
+Prints the same rows as the table — session, telemetry, daemon, Copilot spool/drain, and
+per-tool wiring — as one JSON array on **stdout**, whether or not a terminal is attached:
+
+```json
+[
+  {"label": "session", "value": "fresh, 11m left", "colour": "green", "note": ""},
+  {"label": "daemon", "value": "running", "colour": "green", "note": ""}
+]
+```
+
+Each element is `{"label", "value", "colour", "note"}`, all strings; `colour` is one of
+`"none"`, `"green"`, `"yellow"`, `"red"`; `note` is `""` rather than omitted when a row has
+none. This is the answer to "is it actually working" for a script, CI, or an agent — anything
+that cannot fake a terminal (`script -qec 'governance-auth status' /dev/null`, previously the
+only way to see these rows outside one) or that needs the answer in a structure it can parse
+rather than raw table text. Not yet a documented stable field-name contract the way the three
+plain lines above are.
+
+### The `otel spool` row
+
+Is the daemon's own **outbound** leg keeping up, not just the process being alive? A daemon can
+be `running` (the row above this one) and still not be forwarding anything:
+`otel_daemon::drain::lookahead::walk` can hold a record it cannot yet prove the collector accepts
+past, and every wake re-tries the same held record — indistinguishable from a healthy collector
+taking its time unless someone reads the checkpoint file by hand. See
+[`docs/runbooks/otel-daemon-wedged.md`](../runbooks/otel-daemon-wedged.md) for the incident
+(this exact failure mode, undetected, on a real machine) this row exists to make visible.
+
+| Shown | Colour | Means |
+|---|---|---|
+| `not applicable` | none | `manual` profile: telemetry is exported directly, no daemon spool |
+| `unknown` | yellow | the state directory could not be resolved |
+| `checkpoint unreadable` | red | `<state_dir>/otel-daemon-checkpoint.json` will not parse |
+| `no data yet` | none | the daemon has not received anything yet — ordinary right after install |
+| `<n> record(s) discarded` | **red** | given up on for good, within the last 24h |
+| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `<n> record(s) held, worst refused <n> time(s)` | yellow | see below |
+| `<n> bytes pending` | yellow | ordinary backlog: the collector is slow or briefly unreachable |
+| `up to date (<n> bytes)` | green | nothing pending, nothing lost |
+
+⚠️ **`held` cannot tell you, by itself, whether this clears on its own.** A record refused
+enough times to need proving against a later one looks IDENTICAL, at one point in time, whether
+it resolves on the very next wake or never resolves without help (a run of more than
+`MAX_LOOKAHEAD` consecutive bad records — see the runbook). This row reports the same numbers
+the runbook has a human read from the checkpoint file by hand (how many records, the worst
+one's refusal count, how long ago it was last refused); it does not — cannot, from one call —
+promise a verdict. If `held` has not cleared after checking `status` again a few minutes later,
+follow the runbook.
+
 ### The `copilot drain` row
 
 Is anything going to come and collect the spool? `configure` installs the schedule, so this
@@ -223,6 +278,41 @@ Two red rows, for the two ways this can fail silently:
 
 `copilot push --dry-run` prints the same tally the discard came from, which is where to look
 for *what* this build cannot read.
+
+---
+
+## `doctor`
+
+```bash
+governance-auth doctor
+```
+
+Everything "Verifying it actually works" (above, under `status`) has a human run by hand --
+`status`, `token`, `curl` -- plus a per-tool manual check, in one command with one exit code.
+`0` means every check passed; anything else means read the report above it.
+
+Two live checks, then every row `status --json` already knows:
+
+1. **`credential`** — mints a fresh access token the same way `token` does
+   (`oauth::current_session` + `oauth::emit_token`). Never prints the token itself.
+2. **`gateway`** — only when `gateway_url` is configured: an authenticated `GET
+   <gateway>/v1/models/info` with the bearer `credential` just minted, reusing it rather than
+   minting a second one. `not configured` (not a failure) when there is no gateway wired up at
+   all.
+3. Every row [`status --json`](#--json-for-anything-that-isnt-a-human-at-a-terminal) shows --
+   session, telemetry, `daemon`, `otel spool`, `copilot spool`, `copilot drain`, and the
+   per-tool wiring rows -- reusing exactly those rows, never a second, possibly-disagreeing
+   read of the same files.
+
+A row or check is a **failure** (non-zero exit) only when it is `red`, or a live check
+outright failed. A `yellow` row still prints — nothing is hidden — but does not fail the exit
+code, for the same reason `status`'s own rows use yellow for a normal steady state (a token
+mid-refresh, a scheduler that could not be asked) rather than a problem worth training a reader
+to treat as one.
+
+Does **not** replace a real per-tool check: whether Claude Code, Codex, or VS Code Copilot
+actually gets a response through the wiring `doctor` confirms is present is still a real
+request through that tool.
 
 ---
 
@@ -862,10 +952,25 @@ governance-auth self update
 governance-auth self update --dry-run   # report only, change nothing
 ```
 
-Unlike every other subcommand, this one **does not resolve the OAuth config** — it talks
-only to the GitHub releases API. Resolving first used to make `self update` fail with
-`--issuer … is required` on a machine that had no config yet, which is precisely the
-machine most likely to be updating.
+Unlike every other subcommand, this one **does not resolve the OAuth config up front** — it
+talks only to the GitHub releases API to decide whether to update. Resolving first used to
+make `self update` fail with `--issuer … is required` on a machine that had no config yet,
+which is precisely the machine most likely to be updating.
+
+### Re-applies `configure`, but only on a machine that already has one
+
+After a real (non-`--dry-run`) update installs successfully, `self update` tries resolving
+the OAuth config a *second* time and, only if that now succeeds, re-runs `configure` with no
+opt-outs. This closes the gap in
+[`troubleshooting.md`](./troubleshooting.md#upgrading-across-the-command-rename): an upgrade
+that changes what `configure` writes (a renamed subcommand, a new flag) used to leave every
+already-onboarded machine's wiring stale until a developer separately remembered to run
+`configure`, and the break was silent until a helper it wrote next failed.
+
+A resolve failure at this second point is silent, not a warning — it is the ordinary state on
+a fresh machine, which is exactly the case the first paragraph above protects. `self update`
+still needs nothing from a machine with no config on it; it just also does something useful
+on a machine that already has one.
 
 ### Trust model, stated plainly
 

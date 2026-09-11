@@ -67,7 +67,7 @@ pub async fn login(
     // non-fatal posture as `apply_telemetry` below and for the same reason:
     // the credential is already cached and usable, so a read-only config
     // directory must not turn a successful login into a failed command.
-    remember_settings(config);
+    remember_settings(config, optout);
 
     // Deliberately not `?`: the session is already cached and valid by this
     // point, and failing `login` because a dotfile couldn't be written would
@@ -399,7 +399,7 @@ pub fn configure(config: &OauthConfig, optout: ClientOptOut) -> Result<()> {
     // existing install never got a config file: upgrading keeps a valid cached
     // session, so `login` is never run again, so every later command kept
     // demanding --issuer/--client-id. Observed on a real upgrade.
-    remember_settings(config);
+    remember_settings(config, optout);
     Ok(())
 }
 
@@ -409,9 +409,9 @@ pub fn configure(config: &OauthConfig, optout: ClientOptOut) -> Result<()> {
 /// Non-fatal by design, in both callers: the credential is already cached and
 /// usable by this point, so a read-only config directory must not turn a
 /// successful command into a failed one.
-fn remember_settings(config: &OauthConfig) {
+fn remember_settings(config: &OauthConfig, optout: ClientOptOut) {
     match config_file::per_user_config_path() {
-        Ok(path) => match config_persist::remember(config, &path) {
+        Ok(path) => match config_persist::remember(config, optout, &path) {
             Ok(()) => eprintln!("Settings saved to {}.", path.display()),
             Err(error) => eprintln!("warning: could not save settings: {error:#}"),
         },
@@ -530,6 +530,10 @@ mod tests {
             otel_headers_debounce_ms: 240_000,
             open_browser: false,
             token_exchange: None,
+            last_no_claude: false,
+            last_no_codex: false,
+            last_no_vscode: false,
+            last_codex_telemetry_only: false,
         }
     }
 

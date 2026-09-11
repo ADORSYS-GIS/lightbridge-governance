@@ -27,6 +27,7 @@ mod config_file;
 mod config_persist;
 mod copilot;
 mod dashboard;
+mod doctor;
 mod durable_state;
 mod freshness;
 mod logging;

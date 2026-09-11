@@ -22,6 +22,12 @@
 //! the timer is running, because no file on disk answers that. Nothing here
 //! touches the network: `status` earns its keep by answering fast when
 //! something is already wrong.
+//!
+//! ## The one exception to the TTY gate
+//!
+//! `--json` (`render_json`) always gathers and prints all five rows,
+//! terminal or not: it is an explicit ask for the machine-readable form, not
+//! something a pipe stumbled into. See `render_json`'s own doc.
 
 /// Whether a human is looking. Extracted so tests can render both branches
 /// without a terminal.
@@ -60,110 +66,9 @@ pub fn plain(session: &Session) -> String {
 pub struct Surveys<'a> {
     pub telemetry: &'a Telemetry,
     pub daemon: &'a Daemon,
+    pub otel_spool: &'a OtelSpool,
     pub spool: &'a Spool,
     pub drain: &'a Drain,
-}
-
-/// The table, for a human. Returns a `String` rather than printing so it can be
-/// asserted on without a terminal.
-pub fn render(
-    issuer: &str,
-    client_id: &str,
-    session: &Session,
-    surveys: &Surveys<'_>,
-    targets: &[Target],
-) -> String {
-    let Surveys {
-        telemetry,
-        daemon,
-        spool,
-        drain,
-    } = surveys;
-    let (state, colour) = match (session.cached, session.fresh) {
-        (false, _) => ("no cached session".to_owned(), Colour::Red),
-        (true, true) => (format!("fresh, {}", ago(session.expires_in)), Colour::Green),
-        // Not red: a stale access token is the normal steady state between
-        // refreshes, and `token` renews it silently. Flagging it as a problem
-        // would train the reader to ignore this line.
-        (true, false) => (
-            format!("needs refresh, {}", ago(session.expires_in)),
-            Colour::Yellow,
-        ),
-    };
-
-    let mut rows: Vec<(String, String, Colour, String)> = vec![
-        ("session".to_owned(), state, colour, String::new()),
-        (
-            "issuer".to_owned(),
-            issuer.to_owned(),
-            Colour::None,
-            String::new(),
-        ),
-        (
-            "client".to_owned(),
-            client_id.to_owned(),
-            Colour::None,
-            String::new(),
-        ),
-    ];
-
-    // Telemetry sits with the identity rows, not with the per-file rows: it is
-    // configuration state, not something we manage inside someone's file.
-    let (value, colour, note) = telemetry.row(session);
-    rows.push(("telemetry".to_owned(), value, colour, note));
-
-    // Directly under telemetry: under `daemon` this is the row that answers
-    // "is anything actually forwarding what was just configured?" -- see
-    // `daemon`'s module doc for why a dead daemon is worse than a dead drain.
-    let (value, colour, note) = daemon.row();
-    rows.push(("daemon".to_owned(), value, colour, note));
-
-    // Directly under that: the Copilot drain is the one export path whose
-    // schedule this binary does not own, so it is the one that can silently
-    // stop. See `spool`'s module doc.
-    let (value, colour, note) = spool.row();
-    rows.push(("copilot spool".to_owned(), value, colour, note));
-
-    // And under that, the schedule that empties it. `configure` installs it
-    // now, so a stopped timer is ours to report -- see `drain`.
-    let (value, colour, note) = drain.row();
-    rows.push(("copilot drain".to_owned(), value, colour, note));
-
-    targets::rows(&mut rows, targets, session);
-
-    // ⚠️ Pad on the PLAIN text, then colour. Styling first embeds ANSI escapes
-    // that `str::len` counts as characters, so every coloured row would be
-    // indented differently -- invisible in a test that strips colour, obvious
-    // to the reader. `padded_width_ignores_colour` pins it.
-    let label_width = rows
-        .iter()
-        .map(|(l, ..)| l.chars().count())
-        .max()
-        .unwrap_or(0);
-    let value_width = rows
-        .iter()
-        .map(|(_, v, ..)| v.chars().count())
-        .max()
-        .unwrap_or(0);
-
-    let mut out = String::new();
-    for (label, value, colour, note) in rows {
-        // Pad the value only when something follows it. Padding every row
-        // leaves trailing spaces on most of them, which survive copy-paste and
-        // show up as whitespace noise in anything the reader pastes into an
-        // issue. `no_row_has_trailing_whitespace` pins it.
-        let value = if note.is_empty() {
-            colour.apply(&value)
-        } else {
-            colour.apply(&pad(&value, value_width))
-        };
-        out.push_str(&format!("  {label:label_width$}   {value}"));
-        if !note.is_empty() {
-            out.push_str(&format!("   {note}"));
-        }
-        out.push('\n');
-    }
-    out
 }
 
 #[cfg(test)]
@@ -171,6 +76,8 @@ mod tests;
 
 mod daemon;
 mod drain;
+mod otel_spool;
+mod render;
 mod spool;
 mod status;
 mod style;
@@ -178,8 +85,9 @@ mod targets;
 mod telemetry;
 pub use daemon::Daemon;
 pub use drain::Drain;
+pub use otel_spool::OtelSpool;
+pub use render::{render, render_json, rows_plain};
 pub use spool::Spool;
-pub use status::status;
-use style::{Colour, ago, pad};
+pub use status::{status, survey_rows};
 pub use targets::{Target, targets};
 pub use telemetry::Telemetry;

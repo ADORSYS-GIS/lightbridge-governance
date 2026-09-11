@@ -39,6 +39,7 @@ mod shutdown;
 mod signal;
 mod spool;
 mod spool_compaction;
+mod status;
 
 use std::sync::{Arc, Mutex};
 
@@ -50,6 +51,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
+pub use status::DaemonSpoolStatus;
 use tokio::{net::TcpListener, sync::Notify};
 
 use crate::{config::OauthConfig, otel_port};

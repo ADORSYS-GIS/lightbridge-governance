@@ -90,6 +90,38 @@ fn a_discarded_record_leaves_no_entry_behind() {
     );
 }
 
+/// `dashboard`'s otel-spool row reads exactly this accessor, never the
+/// entries themselves -- pinned so a reader can tell "empty" from "one
+/// record, refused once" from "the same record keeps losing", the three
+/// shapes that row actually distinguishes.
+#[test]
+fn held_reports_the_count_and_the_worst_entry() {
+    let mut quarantine = Quarantine::default();
+    assert_eq!(quarantine.held(), None, "an empty table holds nothing");
+
+    let stuck = key("the record that keeps losing");
+    quarantine.refused(&stuck, NOW, 0);
+    quarantine.refused(&key("a different, only-once-refused record"), NOW, 0);
+
+    let Some((count, refusals, _)) = quarantine.held() else {
+        panic!("two entries were just refused; `held` must report them");
+    };
+    assert_eq!(count, 2);
+    assert_eq!(
+        refusals, 1,
+        "both entries have exactly one refusal so far, so this is the max"
+    );
+
+    // One more refusal on `stuck` than on the other entry -- `held` must
+    // report ITS count, not the first entry inserted or the last one touched.
+    quarantine.refused(&stuck, NOW + 61, 0);
+    assert_eq!(
+        quarantine.held(),
+        Some((2, 2, NOW + 61)),
+        "must report the entry with the most refusals, and its own last-seen time"
+    );
+}
+
 /// The key must not be the record. `AGENTS.md` bans writing a payload
 /// anywhere, and this one is prompt-adjacent telemetry.
 #[test]

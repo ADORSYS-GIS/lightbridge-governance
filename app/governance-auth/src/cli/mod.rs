@@ -13,6 +13,12 @@
 //! `session` scope wrapping those six would be a level of tree that answers no
 //! question a reader has.
 //!
+//! `doctor` (added later) is deliberately not a seventh member of that list:
+//! it does not act on the session, it reads everything the other six and
+//! `crate::dashboard` already know how to read and adds a verdict on top --
+//! see `crate::doctor`'s own module doc. Top-level for the same one-word
+//! rule, not because it belongs to the session group above.
+//!
 //! ## The rule that decided which names were allowed to move
 //!
 //! Renaming a command breaks every file that already embeds the old one, and
@@ -53,7 +59,7 @@ pub use invoke::{
 use scopes::{CopilotCommand, OtelCommand, SelfCommand};
 use verbs::Command;
 
-use crate::{config::OauthConfigArgs, copilot, dashboard, oauth, otel_daemon, update};
+use crate::{config::OauthConfigArgs, copilot, dashboard, doctor, oauth, otel_daemon, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -113,7 +119,8 @@ impl Cli {
             } => oauth::login(http, &self.oauth.resolve()?, device_code, optout).await,
             Command::Token => oauth::token(http, &self.oauth.resolve()?).await,
             Command::Refresh => oauth::refresh(http, &self.oauth.resolve()?).await,
-            Command::Status => dashboard::status(&self.oauth.resolve()?),
+            Command::Status { json } => dashboard::status(&self.oauth.resolve()?, json),
+            Command::Doctor => doctor::run(http, &self.oauth.resolve()?).await,
             Command::Configure { optout } => oauth::configure(&self.oauth.resolve()?, optout),
             Command::Logout => oauth::logout(http, &self.oauth.resolve()?).await,
             Command::Serve { otel: true } => otel_daemon::serve(http, &self.oauth.resolve()?).await,
@@ -127,10 +134,13 @@ impl Cli {
             Command::Copilot {
                 command: CopilotCommand::Push { dry_run },
             } => copilot::run(http, &self.oauth.resolve()?, dry_run).await,
-            // Deliberately does NOT resolve: see the doc above.
+            // Deliberately does NOT resolve HERE: see the doc above. `update::run`
+            // makes its own, later, best-effort attempt -- after a real update
+            // installs, to re-apply `configure` on a machine that turns out to
+            // already have one; see `update`'s own module doc.
             Command::Own {
                 command: SelfCommand::Update { dry_run },
-            } => update::run(http, dry_run).await,
+            } => update::run(http, self.oauth, dry_run).await,
         }
     }
 }
