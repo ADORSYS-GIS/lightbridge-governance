@@ -235,11 +235,26 @@ function pickSupported(
   return kept;
 }
 
-function extractText(message: vscode.LanguageModelChatRequestMessage): string {
+/**
+ * Extracts plain text from a LanguageModelTextPart, or structurally matching objects.
+ *
+ * Exported so unit tests can exercise it without the extension host, and so we can
+ * assert its fallback duck-typing works.
+ */
+export function extractText(message: vscode.LanguageModelChatRequestMessage): string {
   const chunks: string[] = [];
   for (const part of message.content) {
     if (part instanceof vscode.LanguageModelTextPart) {
       chunks.push(part.value);
+    } else if (
+      typeof part === 'object' &&
+      part !== null &&
+      'value' in part &&
+      typeof (part as { value: unknown }).value === 'string'
+    ) {
+      // Structural match: a part that has a string `value` but failed
+      // `instanceof` — e.g. a plain object from a different realm.
+      chunks.push((part as { value: string }).value);
     }
   }
   return chunks.join('');
