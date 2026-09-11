@@ -148,9 +148,10 @@ await scenario('streaming: text arrives and a fragmented tool call is reassemble
 await scenario('token count: provideTokenCount returns a sensible estimate', async () => {
   configure('good-auth.sh');
   const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
   const text = 'This is exactly 35 characters long!';
   // Math.ceil(35 / 3.5) = 10
-  const count = await provider.provideTokenCount(text, token as never);
+  const count = await provider.provideTokenCount(models[0]!, text, token as never);
   assert.equal(count, 10, `expected 10 tokens for 35 characters, got ${count}`);
 });
 

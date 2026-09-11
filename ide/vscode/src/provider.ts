@@ -8,6 +8,7 @@ import { readConfig } from './config.js';
 import { errorMessage, log, redact } from './log.js';
 import { toWireMessages, toWireToolChoice, toWireTools } from './messages.js';
 import { pumpStream } from './stream.js';
+import { estimateTokens, extractText } from './tokens.js';
 import type { LightbridgeModel } from './types.js';
 
 export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider<LightbridgeModel> {
@@ -182,23 +183,15 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
   /**
    * Estimate the token count for a piece of text.
    *
-   * This is an estimate and is documented as one. The real tokenizer lives with
-   * the model, and this extension has no access to it; the alternative — a
-   * network round trip to the gateway per call — sits on a path VS Code invokes
-   * while building every prompt.
-   *
-   * The ratio deliberately **over**-counts. The two errors are not symmetric:
-   * over-counting costs a little unused context, while under-counting means VS
-   * Code packs a prompt the model then rejects, which surfaces to the developer
-   * as a failed request with no obvious cause.
+   * The ratio and its deliberate over-count live in `estimateTokens`
+   * (`tokens.ts`) so they are unit-testable without the extension host.
    */
   async provideTokenCount(
     _model: LightbridgeModel,
     text: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken,
   ): Promise<number> {
-    const value = typeof text === 'string' ? text : extractText(text);
-    return Math.ceil(value.length / 3.5);
+    return estimateTokens(typeof text === 'string' ? text : extractText(text));
   }
 }
 
@@ -233,29 +226,4 @@ function pickSupported(
   }
 
   return kept;
-}
-
-/**
- * Extracts plain text from a LanguageModelTextPart, or structurally matching objects.
- *
- * Exported so unit tests can exercise it without the extension host, and so we can
- * assert its fallback duck-typing works.
- */
-export function extractText(message: vscode.LanguageModelChatRequestMessage): string {
-  const chunks: string[] = [];
-  for (const part of message.content) {
-    if (part instanceof vscode.LanguageModelTextPart) {
-      chunks.push(part.value);
-    } else if (
-      typeof part === 'object' &&
-      part !== null &&
-      'value' in part &&
-      typeof (part as { value: unknown }).value === 'string'
-    ) {
-      // Structural match: a part that has a string `value` but failed
-      // `instanceof` — e.g. a plain object from a different realm.
-      chunks.push((part as { value: string }).value);
-    }
-  }
-  return chunks.join('');
 }
