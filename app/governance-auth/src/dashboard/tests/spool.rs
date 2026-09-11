@@ -11,7 +11,10 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::{copilot::SpoolStatus, dashboard::style::Colour};
+use crate::{
+    copilot::SpoolStatus,
+    dashboard::{spool::SIZE_WARNING_ABOVE, style::Colour},
+};
 
 /// `pub(super)` so `spool_held` can build the same shape: a field added to
 /// `SpoolStatus` must break one fixture, not silently miss a second copy of it.
@@ -179,6 +182,61 @@ fn an_unreadable_checkpoint_is_reported_rather_than_hidden() {
          the spool's path, which is not what the docs promise"
     );
     assert!(note.contains("will not parse"), "{note}");
+}
+
+/// #230/#241's own shape: pending stays modest, a push keeps succeeding --
+/// every other signal here reads healthy while the file itself has grown
+/// past where the last two incidents were noticed only once they were
+/// already 164 MB / 600+ GiB. The size warning is the one thing left to
+/// catch that.
+#[test]
+fn a_spool_past_the_size_warning_is_red_even_though_it_is_otherwise_up_to_date() {
+    let past_threshold = SIZE_WARNING_ABOVE + 1;
+    let (value, colour, note) = spool(
+        Some(past_threshold),
+        past_threshold,
+        Some(1_788_191_916),
+        Some(120),
+    )
+    .row();
+    assert!(
+        value.contains("up to date"),
+        "the base state must still be the honest one: {value}"
+    );
+    assert_eq!(
+        colour,
+        Colour::Red,
+        "otherwise-healthy must not stay green once the file itself is this large"
+    );
+    assert!(
+        note.contains("WARNING") && note.contains(&past_threshold.to_string()),
+        "the note must say why it escalated and name the actual size, got: {note}"
+    );
+}
+
+#[test]
+fn a_spool_under_the_size_warning_is_unaffected_by_it() {
+    let (_, colour, note) = spool(Some(4096), 4096, Some(1_788_191_916), Some(120)).row();
+    assert_eq!(colour, Colour::Green);
+    assert!(!note.contains("WARNING"), "{note}");
+}
+
+/// A row already red for a more specific reason must not also carry the
+/// size warning's own text -- that row already has the reader's attention,
+/// and a second, less specific alarm on top of it is noise, not signal.
+#[test]
+fn a_row_already_red_for_its_own_reason_does_not_also_carry_the_size_warning() {
+    let past_threshold = SIZE_WARNING_ABOVE + 1;
+    let (_, colour, note) = spool(Some(past_threshold), 0, None, None).row();
+    assert_eq!(
+        colour,
+        Colour::Red,
+        "never-pushed-with-bytes-waiting is red on its own"
+    );
+    assert!(
+        !note.contains("WARNING"),
+        "the more specific alarm must not be diluted by a second one: {note}"
+    );
 }
 
 #[test]

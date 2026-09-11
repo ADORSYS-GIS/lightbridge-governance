@@ -20,6 +20,18 @@
 //! | never pushed (red) | bytes waiting and no push has *ever* succeeded |
 //! | unknown (yellow) | the state directory could not be resolved |
 //!
+//! One more, layered on top of any of the above except an already-red one
+//! (see [`with_size_warning`]): past [`SIZE_WARNING_ABOVE`] on disk, the row
+//! escalates to red regardless of state. #230/#241 (164 MB) and two later
+//! incidents (600+ GiB, ~1 TiB) all looked exactly like "up to date" or an
+//! ordinary "pending" right up until someone happened to `ls` the state
+//! directory -- this is the row noticing first. `copilot::spool::reclaim`'s
+//! own module doc explains why the file cannot simply be rewritten to avoid
+//! this the way `otel_daemon::spool::compact` does for its own,
+//! differently-shaped spool (Copilot holds long-lived descriptors on this
+//! one); making the growth visible early is the safety net in place of a
+//! silent fix.
+//!
 //! ## Why "held" is its own row, not a backlog
 //!
 //! A record the collector refuses on its own is only given up on once it has
@@ -97,7 +109,14 @@ impl Spool {
                 "could not locate the state directory".to_owned(),
             );
         };
+        with_size_warning(self.base_row(status), status)
+    }
 
+    /// Everything this row reports before [`with_size_warning`] wraps it --
+    /// unchanged from before that existed, just split out so the warning
+    /// applies uniformly to every branch below rather than being repeated in
+    /// each one.
+    fn base_row(&self, status: &SpoolStatus) -> (String, Colour, String) {
         if status.checkpoint_unreadable {
             return (
                 "checkpoint unreadable".to_owned(),
@@ -197,4 +216,47 @@ impl Spool {
             ),
         )
     }
+}
+
+/// Above this, the row escalates regardless of which state it would
+/// otherwise be in -- detection, not a fix. `copilot::spool::reclaim`'s own
+/// module doc explains why a rewrite-based reclaim (the fix
+/// `otel_daemon::spool::compact` uses for its own, differently-shaped spool)
+/// is NOT safe to port onto this one: Copilot holds long-lived `O_APPEND`
+/// descriptors on this file, so rewriting it risks corrupting an in-flight
+/// write rather than merely losing one. Absent that option, the honest
+/// remaining lever is making the growth visible long before it is a crisis.
+///
+/// 50 MiB: comfortably above the worst *ordinary* backlog this row's own
+/// module doc measures (single-digit MB before a wake catches up), and
+/// comfortably below where the last two incidents were noticed (164 MB on
+/// the machine that reported #230/#241; 600+ GiB and ~1 TiB on two others
+/// that had no warning like this one at all).
+pub(super) const SIZE_WARNING_ABOVE: u64 = 50 * 1024 * 1024;
+
+/// Wraps whatever [`Spool::base_row`] returned: past [`SIZE_WARNING_ABOVE`],
+/// escalates to red with an explanatory note, UNLESS the row is already red
+/// for a more specific reason (an unreadable checkpoint, a drain that has
+/// never once pushed, recent discards) -- that row already has the reader's
+/// attention, and duplicating the alarm on top of it would just be noise.
+fn with_size_warning(
+    base: (String, Colour, String),
+    status: &SpoolStatus,
+) -> (String, Colour, String) {
+    let (value, colour, note) = base;
+    let Some(size) = status.size else {
+        return (value, colour, note);
+    };
+    if size <= SIZE_WARNING_ABOVE || colour == Colour::Red {
+        return (value, colour, note);
+    }
+    (
+        value,
+        Colour::Red,
+        format!(
+            "{note}. WARNING: this spool is {size} bytes on disk, past the \
+             {SIZE_WARNING_ABOVE}-byte warning threshold -- see #230/#241 and confirm the drain's \
+             schedule is actually running (the `copilot drain` row below)"
+        ),
+    )
 }
