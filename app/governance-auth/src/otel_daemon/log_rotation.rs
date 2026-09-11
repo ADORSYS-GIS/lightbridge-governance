@@ -22,16 +22,18 @@
 //! ## The bound this buys
 //!
 //! `crate::logging::rotate::MAX_BYTES` plus whatever every log source writes
-//! during one [`INTERVAL`]. At the daemon's default `info` level that is at
-//! most a handful of failure lines, so the live file settles back to the
-//! ~1 MiB / ~4 MiB directory bound `crate::logging::rotate` already
-//! advertises -- this time for real, for as long as the daemon runs. At an
-//! elevated `GOVERNANCE_AUTH_LOG` (`debug`/`trace`) under real request
-//! volume, growth between checks scales with that volume; no fixed interval
-//! makes an intentionally verbose, high-traffic daemon bounded in the small,
-//! and shortening [`INTERVAL`] only trades that for more frequent `stat`s.
-//! Running this daemon at `debug`/`trace` for anything but a short, attended
-//! session is the actual unbounded case, and no rotation policy fixes that.
+//! during one [`INTERVAL`] -- a FIXED number now, at any `GOVERNANCE_AUTH_LOG`
+//! level, not just at `info`. Before `crate::logging::file_filter` scoped
+//! that variable to this crate's own target (see `crate::logging`'s doc,
+//! "`GOVERNANCE_AUTH_LOG` only raises OUR level"), a bare `debug`/`trace`
+//! also turned on `h2`/`hyper`'s own wire-level tracing -- measured at ~40 KB
+//! per request, next to this crate's ~150-byte line for the same request.
+//! With that closed, the worst case per [`INTERVAL`] is this crate's own
+//! handful of lines times however many requests land in 5 seconds -- for any
+//! request rate this loopback receiver plausibly sees, that is kilobytes,
+//! not gigabytes, so the live file settles back to the ~1 MiB / ~4 MiB
+//! directory bound `crate::logging::rotate` already advertises, for as long
+//! as the daemon runs, at any log level anyone sets.
 
 use std::time::Duration;
 
@@ -42,7 +44,21 @@ const INTERVAL: Duration = Duration::from_secs(5);
 
 /// Runs until aborted by [`super::serve`], exactly like `drain::pump`.
 pub(super) async fn ticker() {
-    run(crate::logging::recheck_rotation).await;
+    run(|| {
+        // Off the async runtime, matching `drain::with_spool`'s own P2-7
+        // reasoning: `recheck_rotation`'s `stat`/`copy`/`rename`/`truncate`
+        // are synchronous, and a struggling filesystem -- exactly the
+        // condition an oversized, never-rotated log implies -- must not
+        // block whatever else this worker thread was scheduled to run.
+        // Fire-and-forget, not awaited: `rotate::maybe_rotate`'s own lock
+        // already serializes concurrent rotations (see its doc), so a check
+        // still in flight when the next tick fires is not a race, only
+        // wasted work: it also finds the file oversized and takes the same
+        // lock. `recheck_rotation` has no unwrap/expect, so there is no
+        // panic here for a dropped `JoinHandle` to have silently discarded.
+        tokio::task::spawn_blocking(crate::logging::recheck_rotation);
+    })
+    .await;
 }
 
 /// [`ticker`], with the check pulled out as a parameter so a test can count

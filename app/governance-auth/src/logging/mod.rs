@@ -42,6 +42,30 @@
 //! stdout is never a sink here: one layer is pinned to stderr, the other to
 //! the file. `token`'s stdout carries the access token and nothing else.
 //!
+//! ## `GOVERNANCE_AUTH_LOG` only raises OUR level, never a dependency's
+//!
+//! `LEVEL_ENV` used to be handed to `EnvFilter::parse_lossy` verbatim. A bare
+//! level word (`"trace"`, `"debug"` -- the only form ever documented, tested
+//! (`tests/logging_redaction.rs`), or used in practice) is a directive with
+//! no target, which `EnvFilter` applies as the DEFAULT for every target --
+//! not just this crate's. `h2` depends on `tracing` unconditionally (not an
+//! optional feature) and has 160 `trace!`/25 `debug!` call sites of its own;
+//! measured with the exact `hyper`/`h2`/`reqwest` versions this daemon links
+//! (2026-09-11, isolated harness, no TLS -- a real HTTPS hop only adds more):
+//! **~40 KB of `h2`/`hyper`'s own output per request**, over a kept-alive
+//! HTTP/2 connection, next to governance-auth's own single ~150-byte line
+//! per request. Anyone who set `GOVERNANCE_AUTH_LOG=trace` to troubleshoot
+//! this crate got every dependency's wire-level tracing for free, at roughly
+//! 270x the byte cost -- a far larger amplifier of the incident
+//! `otel_daemon::log_rotation`'s doc describes than request volume ever was.
+//!
+//! [`file_level`] resolves `LEVEL_ENV` to a bare [`tracing::level_filters::LevelFilter`]
+//! (falling back to `info` on unset or unparseable, same as before) and
+//! [`init`] scopes it to [`CRATE_TARGET`] alone, so no value anyone puts in
+//! that variable can raise a dependency's own logging above the fixed `info`
+//! default -- this is a narrowing, not a regression: nothing in this repo
+//! ever set it to anything but a bare level.
+//!
 //! ## Rotation is a startup check, which only bounds a short process
 //!
 //! [`init`] rotates once, via [`writer::open`], before the file is ever
@@ -56,6 +80,8 @@
 //! see `crate::otel_daemon::log_rotation` for why that has to be its own
 //! timer rather than piggybacked on the drain.
 
+#[cfg(test)]
+mod filter_tests;
 mod rotate;
 #[cfg(test)]
 mod tests;
@@ -73,6 +99,35 @@ const FILE_NAME: &str = "governance-auth.log";
 /// after the fact by someone who could not have set an env var at the time,
 /// so it defaults to `info` rather than to off.
 const LEVEL_ENV: &str = "GOVERNANCE_AUTH_LOG";
+
+/// The only `tracing` target [`LEVEL_ENV`] is allowed to raise -- this
+/// crate's own module path, never a dependency's. See this module's doc,
+/// "`GOVERNANCE_AUTH_LOG` only raises OUR level".
+const CRATE_TARGET: &str = "governance_auth";
+
+/// Resolves [`LEVEL_ENV`] to a bare level, falling back to `info` when unset
+/// or unparseable -- the same "loud enough to be useful, never silent"
+/// default [`init`]'s own doc already commits to. Deliberately NOT
+/// `EnvFilter::parse_lossy` on the raw string: that accepts a full
+/// `target=level` directive DSL, and this only ever needs one level for one
+/// target ([`CRATE_TARGET`]).
+fn file_level() -> tracing::level_filters::LevelFilter {
+    std::env::var(LEVEL_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(tracing::level_filters::LevelFilter::INFO)
+}
+
+/// Builds the file layer's filter for a given [`file_level`] result -- split
+/// out from [`init`] purely so a test can drive it with an explicit level
+/// instead of mutating the real process environment (racy across tests
+/// running in parallel). Every OTHER target stays at the `with_default_directive`
+/// below regardless of `level`; only [`CRATE_TARGET`] moves.
+fn file_filter(level: tracing::level_filters::LevelFilter) -> EnvFilter {
+    EnvFilter::builder()
+        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+        .parse_lossy(format!("{CRATE_TARGET}={level}"))
+}
 
 /// macOS's log path for a given `$HOME`. Pure and unconditional so
 /// `schedule::launchd` -- whose rendering tests run on Linux CI -- can point
@@ -103,11 +158,7 @@ pub fn init() {
                 // No colour escapes in a file someone will `grep`.
                 .with_ansi(false)
                 .with_writer(handle)
-                .with_filter(
-                    EnvFilter::builder()
-                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-                        .parse_lossy(std::env::var(LEVEL_ENV).unwrap_or_default()),
-                ),
+                .with_filter(file_filter(file_level())),
         ),
         Err(error) => {
             // stderr, never stdout, and only when logging is actually
