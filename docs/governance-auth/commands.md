@@ -189,6 +189,37 @@ only way to see these rows outside one) or that needs the answer in a structure 
 rather than raw table text. Not yet a documented stable field-name contract the way the three
 plain lines above are.
 
+### The `otel spool` row
+
+Is the daemon's own **outbound** leg keeping up, not just the process being alive? A daemon can
+be `running` (the row above this one) and still not be forwarding anything:
+`otel_daemon::drain::lookahead::walk` can hold a record it cannot yet prove the collector accepts
+past, and every wake re-tries the same held record — indistinguishable from a healthy collector
+taking its time unless someone reads the checkpoint file by hand. See
+[`docs/runbooks/otel-daemon-wedged.md`](../runbooks/otel-daemon-wedged.md) for the incident
+(this exact failure mode, undetected, on a real machine) this row exists to make visible.
+
+| Shown | Colour | Means |
+|---|---|---|
+| `not applicable` | none | `manual` profile: telemetry is exported directly, no daemon spool |
+| `unknown` | yellow | the state directory could not be resolved |
+| `checkpoint unreadable` | red | `<state_dir>/otel-daemon-checkpoint.json` will not parse |
+| `no data yet` | none | the daemon has not received anything yet — ordinary right after install |
+| `<n> record(s) discarded` | **red** | given up on for good, within the last 24h |
+| `<n> record(s) discarded` | yellow | the same, but the last loss was more than 24h ago |
+| `<n> record(s) held, worst refused <n> time(s)` | yellow | see below |
+| `<n> bytes pending` | yellow | ordinary backlog: the collector is slow or briefly unreachable |
+| `up to date (<n> bytes)` | green | nothing pending, nothing lost |
+
+⚠️ **`held` cannot tell you, by itself, whether this clears on its own.** A record refused
+enough times to need proving against a later one looks IDENTICAL, at one point in time, whether
+it resolves on the very next wake or never resolves without help (a run of more than
+`MAX_LOOKAHEAD` consecutive bad records — see the runbook). This row reports the same numbers
+the runbook has a human read from the checkpoint file by hand (how many records, the worst
+one's refusal count, how long ago it was last refused); it does not — cannot, from one call —
+promise a verdict. If `held` has not cleared after checking `status` again a few minutes later,
+follow the runbook.
+
 ### The `copilot drain` row
 
 Is anything going to come and collect the spool? `configure` installs the schedule, so this

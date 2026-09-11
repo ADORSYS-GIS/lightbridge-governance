@@ -50,6 +50,7 @@ fn the_held_row_reaches_the_rendered_table() {
         &Surveys {
             telemetry: &otel(None, false),
             daemon: &unsurveyed_daemon(),
+            otel_spool: &unsurveyed_otel_spool(),
             spool: &held(None),
             drain: &unsurveyed_drain(),
         },

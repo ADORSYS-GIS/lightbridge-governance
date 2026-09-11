@@ -9,6 +9,7 @@ mod daemon;
 mod drain;
 mod duration;
 mod hints;
+mod otel_spool;
 mod spool;
 mod spool_held;
 mod survey;
@@ -33,6 +34,7 @@ fn table(
         &Surveys {
             telemetry,
             daemon: &unsurveyed_daemon(),
+            otel_spool: &unsurveyed_otel_spool(),
             spool: &Spool {
                 inner: None,
                 last_push_age: None,
@@ -64,6 +66,19 @@ pub(super) fn unsurveyed_daemon() -> Daemon {
         schedule: None,
         profile: crate::profile::Profile::Daemon,
         collector: true,
+    }
+}
+
+/// `Profile::Manual` -> [`OtelSpool::row`]'s quiet "not applicable" branch,
+/// for the same reason [`unsurveyed_drain`] picks `Manual`: a test that is not
+/// specifically about this row should not have to reason about a daemon spool
+/// that was never surveyed.
+pub(super) fn unsurveyed_otel_spool() -> OtelSpool {
+    OtelSpool {
+        inner: None,
+        worst_quarantined_age: None,
+        last_discard_age: None,
+        profile: crate::profile::Profile::Manual,
     }
 }
 
@@ -175,6 +190,7 @@ fn json_output_has_the_same_rows_as_the_table() {
     let surveys = Surveys {
         telemetry: &otel(Some("https://otel.example"), true),
         daemon: &unsurveyed_daemon(),
+        otel_spool: &unsurveyed_otel_spool(),
         spool: &Spool {
             inner: None,
             last_push_age: None,
@@ -206,6 +222,7 @@ fn json_output_has_the_same_rows_as_the_table() {
             "client",
             "telemetry",
             "daemon",
+            "otel spool",
             "copilot spool",
             "copilot drain",
             "~/.codex/config.toml",

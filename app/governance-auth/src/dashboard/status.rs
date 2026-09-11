@@ -24,7 +24,7 @@
 use anyhow::{Context, Result};
 
 use super::{
-    Daemon, Drain, Session, Spool, Surveys, Target, Telemetry, attended, plain, render,
+    Daemon, Drain, OtelSpool, Session, Spool, Surveys, Target, Telemetry, attended, plain, render,
     render_json, targets,
 };
 use crate::{cache, config::OauthConfig};
@@ -44,7 +44,7 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
     };
 
     if json {
-        let (target_rows, telemetry, daemon, spool, drain) = gather(config);
+        let (target_rows, telemetry, daemon, otel_spool, spool, drain) = gather(config);
         let out = render_json(
             &config.issuer,
             &config.client_id,
@@ -52,6 +52,7 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
             &Surveys {
                 telemetry: &telemetry,
                 daemon: &daemon,
+                otel_spool: &otel_spool,
                 spool: &spool,
                 drain: &drain,
             },
@@ -70,7 +71,7 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let (target_rows, telemetry, daemon, spool, drain) = gather(config);
+    let (target_rows, telemetry, daemon, otel_spool, spool, drain) = gather(config);
     eprintln!(
         "{}",
         render(
@@ -80,6 +81,7 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
             &Surveys {
                 telemetry: &telemetry,
                 daemon: &daemon,
+                otel_spool: &otel_spool,
                 spool: &spool,
                 drain: &drain,
             },
@@ -89,10 +91,10 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The four per-source surveys plus the per-target rows, gathered once so the
+/// The five per-source surveys plus the per-target rows, gathered once so the
 /// table path and the `--json` path can never read a different set of files
 /// for what is supposed to be the same answer.
-fn gather(config: &OauthConfig) -> (Vec<Target>, Telemetry, Daemon, Spool, Drain) {
+fn gather(config: &OauthConfig) -> (Vec<Target>, Telemetry, Daemon, OtelSpool, Spool, Drain) {
     let home = std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
@@ -108,11 +110,14 @@ fn gather(config: &OauthConfig) -> (Vec<Target>, Telemetry, Daemon, Spool, Drain
     // SECOND such shell-out per run and a hung one must not hang the whole
     // command. See `super::daemon`.
     let daemon = Daemon::survey(home.as_deref(), config);
+    // Reads this daemon's own spool file and checkpoint, never the network --
+    // see `super::otel_spool`.
+    let otel_spool = OtelSpool::survey(config);
     // Reads two local files and never the network, same as the rest of this
     // command -- see `super::spool`.
     let spool = Spool::survey(config);
     // Reads the unit/plist and asks the platform's scheduler whether it is
     // loaded -- one short local command, no network. See `super::drain`.
     let drain = Drain::survey(home.as_deref(), config);
-    (target_rows, telemetry, daemon, spool, drain)
+    (target_rows, telemetry, daemon, otel_spool, spool, drain)
 }

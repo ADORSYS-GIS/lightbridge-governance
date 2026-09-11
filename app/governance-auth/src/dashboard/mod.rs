@@ -68,6 +68,7 @@ pub fn plain(session: &Session) -> String {
 pub struct Surveys<'a> {
     pub telemetry: &'a Telemetry,
     pub daemon: &'a Daemon,
+    pub otel_spool: &'a OtelSpool,
     pub spool: &'a Spool,
     pub drain: &'a Drain,
 }
@@ -86,6 +87,7 @@ fn build_rows(
     let Surveys {
         telemetry,
         daemon,
+        otel_spool,
         spool,
         drain,
     } = surveys;
@@ -127,6 +129,13 @@ fn build_rows(
     // `daemon`'s module doc for why a dead daemon is worse than a dead drain.
     let (value, colour, note) = daemon.row();
     rows.push(("daemon".to_owned(), value, colour, note));
+
+    // Directly under the daemon's own liveness: is its OUTBOUND leg actually
+    // keeping up, not just the process being alive? See `otel_spool`'s module
+    // doc for the incident (this exact daemon, held on a refused record with
+    // nothing in `status` saying so) this row exists to make visible.
+    let (value, colour, note) = otel_spool.row();
+    rows.push(("otel spool".to_owned(), value, colour, note));
 
     // Directly under that: the Copilot drain is the one export path whose
     // schedule this binary does not own, so it is the one that can silently
@@ -237,6 +246,7 @@ mod tests;
 
 mod daemon;
 mod drain;
+mod otel_spool;
 mod spool;
 mod status;
 mod style;
@@ -244,6 +254,7 @@ mod targets;
 mod telemetry;
 pub use daemon::Daemon;
 pub use drain::Drain;
+pub use otel_spool::OtelSpool;
 pub use spool::Spool;
 pub use status::status;
 use style::{Colour, ago, pad};
