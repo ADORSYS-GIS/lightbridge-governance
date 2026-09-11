@@ -145,6 +145,16 @@ await scenario('streaming: text arrives and a fragmented tool call is reassemble
   assert.deepEqual(calls[0]!.input, { path: 'src/a.ts' });
 });
 
+await scenario('token count: provideTokenCount returns a sensible estimate', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  const text = 'This is exactly 35 characters long!';
+  // Math.ceil(35 / 3.5) = 10
+  const count = await provider.provideTokenCount(models[0]!, text, token as never);
+  assert.equal(count, 10, `expected 10 tokens for 35 characters, got ${count}`);
+});
+
 await scenario('modelOptions: supported params pass, Copilot internals are dropped', async () => {
   configure('good-auth.sh');
   const provider = new LightbridgeChatProvider();
