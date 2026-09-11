@@ -34,7 +34,10 @@ const MAX_ATTEMPTS = 3;
  * Mirrors `retry_delay()` in `crates/governance-copilot/src/client.rs`.
  */
 export function retryDelay(attempt: number, retryAfterHeader?: string | null): number {
-  if (retryAfterHeader !== undefined && retryAfterHeader !== null) {
+  // An empty or whitespace-only header is a *missing* hint, not a 0-second
+  // one: Number('') is 0 and would otherwise pass the integer check, making
+  // retries fire back-to-back with no delay at all.
+  if (retryAfterHeader != null && retryAfterHeader.trim() !== '') {
     const secs = Number(retryAfterHeader.trim());
     if (Number.isInteger(secs) && secs >= 0) {
       return Math.min(secs * 1000, RETRY_MAX_DELAY_MS);
@@ -79,6 +82,14 @@ export async function fetchWithRetry(
     const res = await fetch(url, init);
     if (!isRetryableStatus(res.status) || attempt >= maxAttempts) {
       return res;
+    }
+    // Release the abandoned response's body before sleeping: an unread body
+    // keeps its socket pinned in undici, degrading connection reuse across
+    // retries. Headers stay readable after cancel.
+    try {
+      await res.body?.cancel();
+    } catch {
+      // Body already consumed or errored — nothing to release.
     }
     const delay = retryDelay(attempt, res.headers.get('Retry-After'));
     await sleep(delay);
