@@ -41,6 +41,20 @@
 //!
 //! stdout is never a sink here: one layer is pinned to stderr, the other to
 //! the file. `token`'s stdout carries the access token and nothing else.
+//!
+//! ## Rotation is a startup check, which only bounds a short process
+//!
+//! [`init`] rotates once, via [`writer::open`], before the file is ever
+//! opened. For `token`/`otel headers`/`copilot push` that is enough: each is
+//! a fresh process that re-execs within minutes and re-checks on its own, so
+//! the live file is bounded "kilobytes, and bounded by the run" ([`rotate`]'s
+//! own doc). `serve --otel` (`crate::otel_daemon`) is the one invocation that
+//! is not a short run -- it is a `systemd`/`launchd` service meant to stay up
+//! for the machine's entire uptime, and nothing after [`init`]'s one check
+//! ever revisits the bound for it. [`recheck_rotation`] exists so that
+//! process can ask again, on its own schedule, for as long as it runs --
+//! see `crate::otel_daemon::log_rotation` for why that has to be its own
+//! timer rather than piggybacked on the drain.
 
 mod rotate;
 #[cfg(test)]
@@ -112,6 +126,19 @@ pub fn init() {
         )
         .with(file)
         .init();
+}
+
+/// Re-checks the live file against [`rotate::MAX_BYTES`] and rotates if it
+/// is still (or newly) oversized, independent of [`init`]'s one-time check.
+///
+/// Best-effort, exactly like [`rotate::maybe_rotate`] itself: an unresolvable
+/// path (`HOME` unset, e.g.) or a rotation that cannot run leaves the file as
+/// it was and returns silently. That is not a new failure mode -- it is the
+/// same one [`init`]'s own startup check already accepts, asked again.
+pub(crate) fn recheck_rotation() {
+    if let Ok(path) = path() {
+        rotate::maybe_rotate(&path);
+    }
 }
 
 /// Records how a command ended and hands the outcome straight back, so the

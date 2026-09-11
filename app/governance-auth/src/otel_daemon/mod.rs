@@ -30,6 +30,7 @@ mod checkpoint;
 mod classify;
 mod drain;
 mod forward;
+mod log_rotation;
 mod mint;
 mod normalize;
 mod protobuf;
@@ -102,6 +103,12 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     // doc. Aborted below once the server itself stops; a detached task
     // would otherwise outlive the listener with nothing to hand results to.
     let pump = tokio::spawn(drain::pump(state.clone()));
+    // Re-checks the log file's size on its own schedule -- `logging::init`'s
+    // startup check only bounds a short-lived process, and this daemon is
+    // the opposite of one. See `log_rotation`'s doc for why it cannot just
+    // ride along on `pump` instead. Aborted alongside it for the same
+    // reason: nothing should outlive the listener it exists to serve.
+    let rotation = tokio::spawn(log_rotation::ticker());
 
     let router = Router::new()
         .fallback(any(handle_request))
@@ -113,6 +120,8 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
         .context("running the OTEL loopback receiver");
     pump.abort();
     let _ = pump.await;
+    rotation.abort();
+    let _ = rotation.await;
     result
 }
 
