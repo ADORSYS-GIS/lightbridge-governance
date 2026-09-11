@@ -1,13 +1,19 @@
 use std::path::Path;
 
+use fixtures::{
+    expiring, otel, session, table, target, unsurveyed_daemon, unsurveyed_drain,
+    unsurveyed_otel_spool,
+};
+
 use super::{
-    style::{short, strip_ansi},
+    style::{ago, short, strip_ansi},
     *,
 };
 
 mod daemon;
 mod drain;
 mod duration;
+mod fixtures;
 mod hints;
 mod otel_spool;
 mod spool;
@@ -16,105 +22,6 @@ mod survey;
 mod survey_support;
 mod targets;
 mod telemetry;
-
-/// [`render`] with the two Copilot rows fixed at "nothing surveyed", so tests
-/// predating them assert exactly what they did before and never touch `$HOME`
-/// (never running `systemctl` for the drain row). Covered in [`spool`]/[`drain`].
-fn table(
-    issuer: &str,
-    client_id: &str,
-    session: &Session,
-    telemetry: &Telemetry,
-    targets: &[Target],
-) -> String {
-    render(
-        issuer,
-        client_id,
-        session,
-        &Surveys {
-            telemetry,
-            daemon: &unsurveyed_daemon(),
-            otel_spool: &unsurveyed_otel_spool(),
-            spool: &Spool {
-                inner: None,
-                last_push_age: None,
-                last_discard_age: None,
-                held_age: None,
-                profile: crate::profile::Profile::Manual,
-            },
-            drain: &unsurveyed_drain(),
-        },
-        targets,
-    )
-}
-
-/// `home` unresolvable, so [`Drain::row`] takes its "unknown" branch without
-/// asking the platform's scheduler anything.
-pub(super) fn unsurveyed_drain() -> Drain {
-    Drain {
-        schedule: None,
-        collector: false,
-        stale: None,
-        profile: crate::profile::Profile::Manual,
-    }
-}
-
-/// [`Daemon::row`]'s "unknown" branch, for the same reason as
-/// [`unsurveyed_drain`] above.
-pub(super) fn unsurveyed_daemon() -> Daemon {
-    Daemon {
-        schedule: None,
-        profile: crate::profile::Profile::Daemon,
-        collector: true,
-    }
-}
-
-/// `Profile::Manual` -> [`OtelSpool::row`]'s quiet "not applicable" branch,
-/// for the same reason [`unsurveyed_drain`] picks `Manual`: a test that is not
-/// specifically about this row should not have to reason about a daemon spool
-/// that was never surveyed.
-pub(super) fn unsurveyed_otel_spool() -> OtelSpool {
-    OtelSpool {
-        inner: None,
-        worst_quarantined_age: None,
-        last_discard_age: None,
-        profile: crate::profile::Profile::Manual,
-    }
-}
-
-fn target(path: &str, managed: usize, edited: usize) -> Target {
-    Target {
-        path: path.to_owned(),
-        managed,
-        edited,
-    }
-}
-
-fn otel(endpoint: Option<&str>, has_static_token: bool) -> Telemetry {
-    Telemetry {
-        endpoint: endpoint.map(ToOwned::to_owned),
-        applied: endpoint.is_some(),
-        has_static_token,
-        stale: false,
-        // `manual`: every existing caller of this helper is asserting on
-        // `has_static_token` meaning something, which is only true under
-        // `manual` (`Telemetry::row`'s doc) -- a `daemon` fixture belongs in
-        // `dashboard/tests/telemetry.rs`'s own daemon-specific test instead.
-        profile: crate::profile::Profile::Manual,
-    }
-}
-
-fn session(cached: bool, fresh: bool) -> Session {
-    expiring(cached, fresh, 900)
-}
-
-fn expiring(cached: bool, fresh: bool, expires_in: i64) -> Session {
-    Session {
-        cached,
-        fresh,
-        expires_in,
-    }
-}
 
 /// The three documented lines are a surface other things depend on --
 /// `commands.md` lists them and `cli_arg_order.rs` asserts one. The dashboard
