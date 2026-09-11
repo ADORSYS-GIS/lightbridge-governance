@@ -198,6 +198,28 @@ pub fn render(
     out
 }
 
+/// The same rows as [`render`], as plain owned data -- `colour` already
+/// turned into `Colour::as_str`'s string ("none"/"green"/"yellow"/"red"),
+/// never the enum itself, so a caller outside this module (`doctor`; see its
+/// own module doc) can read a verdict off these rows without this module
+/// exposing `Colour`, which stays private to its own rendering.
+///
+/// [`render_json`] and `doctor::run` both build on exactly this, so neither
+/// can see a different set of rows, or a different colour for the same row,
+/// than the other.
+pub fn rows_plain(
+    issuer: &str,
+    client_id: &str,
+    session: &Session,
+    surveys: &Surveys<'_>,
+    targets: &[Target],
+) -> Vec<(String, String, String, String)> {
+    build_rows(issuer, client_id, session, surveys, targets)
+        .into_iter()
+        .map(|(label, value, colour, note)| (label, value, colour.as_str().to_owned(), note))
+        .collect()
+}
+
 /// The same rows as [`render`], as one JSON array on stdout -- for anywhere
 /// `status` is not attached to a human terminal: a script, CI, or an agent.
 /// See the `status` subcommand's `--json` flag and this module's own doc for
@@ -221,23 +243,22 @@ pub fn render_json(
     targets: &[Target],
 ) -> Result<String> {
     #[derive(serde::Serialize)]
-    struct Row<'a> {
-        label: &'a str,
-        value: &'a str,
-        colour: &'static str,
-        note: &'a str,
+    struct Row {
+        label: String,
+        value: String,
+        colour: String,
+        note: String,
     }
 
-    let rows = build_rows(issuer, client_id, session, surveys, targets);
-    let rows: Vec<Row<'_>> = rows
-        .iter()
+    let rows = rows_plain(issuer, client_id, session, surveys, targets)
+        .into_iter()
         .map(|(label, value, colour, note)| Row {
             label,
             value,
-            colour: colour.as_str(),
+            colour,
             note,
         })
-        .collect();
+        .collect::<Vec<_>>();
     serde_json::to_string(&rows).context("serialising status as JSON")
 }
 
@@ -256,7 +277,7 @@ pub use daemon::Daemon;
 pub use drain::Drain;
 pub use otel_spool::OtelSpool;
 pub use spool::Spool;
-pub use status::status;
+pub use status::{status, survey_rows};
 use style::{Colour, ago, pad};
 pub use targets::{Target, targets};
 pub use telemetry::Telemetry;

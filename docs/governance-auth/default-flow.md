@@ -224,12 +224,23 @@ at a local gateway.
 Not "no errors" — these are the observable outcomes.
 
 ```bash
+governance-auth doctor
+```
+
+One command: mints a credential the way `token` does, hits the gateway the way the three
+commands below have a human do with `curl`, and reports every row `status --json` shows —
+one report, one exit code. See [`commands.md`](./commands.md#doctor).
+
+The three separate commands this replaces, if you want to run them by hand instead (or on a
+build old enough not to have `doctor` yet):
+
+```bash
 governance-auth status          # in a TTY: session fresh, and the managed targets
 governance-auth token >/dev/null && echo "credential resolves"
 curl -s -o /dev/null -w '%{http_code}\n' https://api.ai.camer.digital/v1/models/info
 ```
 
-Per tool:
+Per tool — `doctor` does not replace this, either:
 
 - **Claude Code** — a request succeeds and `ANTHROPIC_BASE_URL` in
   `~/.claude/settings.json` points at `<gateway>/anthropic`.

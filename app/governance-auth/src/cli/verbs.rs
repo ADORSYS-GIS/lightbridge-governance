@@ -63,6 +63,14 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run every check "is this actually working" needs, and exit non-zero
+    /// if any of them failed.
+    ///
+    /// Mints a credential the way `token` does, hits the gateway the way
+    /// `configure`'s own verification snippet has a human do with `curl`,
+    /// and reports every row `status --json` would show -- one command, one
+    /// report, one exit code, instead of three commands and a judgment call.
+    Doctor,
     /// Re-apply the tool configuration and the drain schedule.
     ///
     /// Rewrites the Claude Code / Codex / VS Code wiring without re-running

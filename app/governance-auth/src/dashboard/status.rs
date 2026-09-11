@@ -25,12 +25,15 @@ use anyhow::{Context, Result};
 
 use super::{
     Daemon, Drain, OtelSpool, Session, Spool, Surveys, Target, Telemetry, attended, plain, render,
-    render_json, targets,
+    render_json, rows_plain, targets,
 };
 use crate::{cache, config::OauthConfig};
 
-pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
-    let state = match cache::load(&config.issuer, &config.client_id)? {
+/// The session state every rendering of `status` starts from -- split out so
+/// [`survey_rows`] (for `doctor`) shares it with [`status`] itself rather
+/// than loading the cache a second, possibly different, way.
+fn load_session(config: &OauthConfig) -> Result<Session> {
+    Ok(match cache::load(&config.issuer, &config.client_id)? {
         Some(session) => Session {
             cached: true,
             fresh: session.is_fresh()?,
@@ -41,7 +44,11 @@ pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
             fresh: false,
             expires_in: 0,
         },
-    };
+    })
+}
+
+pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
+    let state = load_session(config)?;
 
     if json {
         let (target_rows, telemetry, daemon, otel_spool, spool, drain) = gather(config);
@@ -120,4 +127,27 @@ fn gather(config: &OauthConfig) -> (Vec<Target>, Telemetry, Daemon, OtelSpool, S
     // loaded -- one short local command, no network. See `super::drain`.
     let drain = Drain::survey(home.as_deref(), config);
     (target_rows, telemetry, daemon, otel_spool, spool, drain)
+}
+
+/// Every row `status --json` would show, as plain owned data -- for
+/// `doctor` (see its own module doc), which needs a verdict per row without
+/// going through a JSON string or touching this module's private `Colour`.
+/// Shares [`load_session`] and [`gather`] with `status` itself, so the two
+/// can never disagree about what a fresh look at this machine finds.
+pub fn survey_rows(config: &OauthConfig) -> Result<Vec<(String, String, String, String)>> {
+    let state = load_session(config)?;
+    let (target_rows, telemetry, daemon, otel_spool, spool, drain) = gather(config);
+    Ok(rows_plain(
+        &config.issuer,
+        &config.client_id,
+        &state,
+        &Surveys {
+            telemetry: &telemetry,
+            daemon: &daemon,
+            otel_spool: &otel_spool,
+            spool: &spool,
+            drain: &drain,
+        },
+        &target_rows,
+    ))
 }

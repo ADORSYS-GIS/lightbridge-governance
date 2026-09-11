@@ -281,6 +281,41 @@ for *what* this build cannot read.
 
 ---
 
+## `doctor`
+
+```bash
+governance-auth doctor
+```
+
+Everything "Verifying it actually works" (above, under `status`) has a human run by hand --
+`status`, `token`, `curl` -- plus a per-tool manual check, in one command with one exit code.
+`0` means every check passed; anything else means read the report above it.
+
+Two live checks, then every row `status --json` already knows:
+
+1. **`credential`** — mints a fresh access token the same way `token` does
+   (`oauth::current_session` + `oauth::emit_token`). Never prints the token itself.
+2. **`gateway`** — only when `gateway_url` is configured: an authenticated `GET
+   <gateway>/v1/models/info` with the bearer `credential` just minted, reusing it rather than
+   minting a second one. `not configured` (not a failure) when there is no gateway wired up at
+   all.
+3. Every row [`status --json`](#--json-for-anything-that-isnt-a-human-at-a-terminal) shows --
+   session, telemetry, `daemon`, `otel spool`, `copilot spool`, `copilot drain`, and the
+   per-tool wiring rows -- reusing exactly those rows, never a second, possibly-disagreeing
+   read of the same files.
+
+A row or check is a **failure** (non-zero exit) only when it is `red`, or a live check
+outright failed. A `yellow` row still prints — nothing is hidden — but does not fail the exit
+code, for the same reason `status`'s own rows use yellow for a normal steady state (a token
+mid-refresh, a scheduler that could not be asked) rather than a problem worth training a reader
+to treat as one.
+
+Does **not** replace a real per-tool check: whether Claude Code, Codex, or VS Code Copilot
+actually gets a response through the wiring `doctor` confirms is present is still a real
+request through that tool.
+
+---
+
 ## `configure`
 
 Re-applies the client configuration for an existing session, without re-running the
