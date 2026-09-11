@@ -165,6 +165,30 @@ rules out half the failure modes before you go looking at the tools.
 At a terminal it also prints a table. Those three lines are the contract; the table is an
 addition for a human and never a replacement, because `status` may be piped.
 
+### `--json`, for anything that isn't a human at a terminal
+
+```bash
+governance-auth status --json
+```
+
+Prints the same rows as the table — session, telemetry, daemon, Copilot spool/drain, and
+per-tool wiring — as one JSON array on **stdout**, whether or not a terminal is attached:
+
+```json
+[
+  {"label": "session", "value": "fresh, 11m left", "colour": "green", "note": ""},
+  {"label": "daemon", "value": "running", "colour": "green", "note": ""}
+]
+```
+
+Each element is `{"label", "value", "colour", "note"}`, all strings; `colour` is one of
+`"none"`, `"green"`, `"yellow"`, `"red"`; `note` is `""` rather than omitted when a row has
+none. This is the answer to "is it actually working" for a script, CI, or an agent — anything
+that cannot fake a terminal (`script -qec 'governance-auth status' /dev/null`, previously the
+only way to see these rows outside one) or that needs the answer in a structure it can parse
+rather than raw table text. Not yet a documented stable field-name contract the way the three
+plain lines above are.
+
 ### The `copilot drain` row
 
 Is anything going to come and collect the spool? `configure` installs the schedule, so this

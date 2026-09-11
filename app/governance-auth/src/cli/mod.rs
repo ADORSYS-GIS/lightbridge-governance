@@ -113,7 +113,7 @@ impl Cli {
             } => oauth::login(http, &self.oauth.resolve()?, device_code, optout).await,
             Command::Token => oauth::token(http, &self.oauth.resolve()?).await,
             Command::Refresh => oauth::refresh(http, &self.oauth.resolve()?).await,
-            Command::Status => dashboard::status(&self.oauth.resolve()?),
+            Command::Status { json } => dashboard::status(&self.oauth.resolve()?, json),
             Command::Configure { optout } => oauth::configure(&self.oauth.resolve()?, optout),
             Command::Logout => oauth::logout(http, &self.oauth.resolve()?).await,
             Command::Serve { otel: true } => otel_daemon::serve(http, &self.oauth.resolve()?).await,

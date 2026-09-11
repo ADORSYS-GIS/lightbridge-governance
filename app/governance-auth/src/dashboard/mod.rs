@@ -22,6 +22,14 @@
 //! the timer is running, because no file on disk answers that. Nothing here
 //! touches the network: `status` earns its keep by answering fast when
 //! something is already wrong.
+//!
+//! ## The one exception to the TTY gate
+//!
+//! `--json` (`render_json`) always gathers and prints all five rows,
+//! terminal or not: it is an explicit ask for the machine-readable form, not
+//! something a pipe stumbled into. See `render_json`'s own doc.
+
+use anyhow::{Context, Result};
 
 /// Whether a human is looking. Extracted so tests can render both branches
 /// without a terminal.
@@ -64,15 +72,17 @@ pub struct Surveys<'a> {
     pub drain: &'a Drain,
 }
 
-/// The table, for a human. Returns a `String` rather than printing so it can be
-/// asserted on without a terminal.
-pub fn render(
+/// The rows both [`render`] and [`render_json`] show -- built once so the
+/// human table and the machine-readable form can never disagree about which
+/// sources exist or what each one says. Neither caller re-derives a row from
+/// its own copy of this logic; both take exactly this `Vec`.
+fn build_rows(
     issuer: &str,
     client_id: &str,
     session: &Session,
     surveys: &Surveys<'_>,
     targets: &[Target],
-) -> String {
+) -> Vec<(String, String, Colour, String)> {
     let Surveys {
         telemetry,
         daemon,
@@ -130,6 +140,19 @@ pub fn render(
     rows.push(("copilot drain".to_owned(), value, colour, note));
 
     targets::rows(&mut rows, targets, session);
+    rows
+}
+
+/// The table, for a human. Returns a `String` rather than printing so it can be
+/// asserted on without a terminal.
+pub fn render(
+    issuer: &str,
+    client_id: &str,
+    session: &Session,
+    surveys: &Surveys<'_>,
+    targets: &[Target],
+) -> String {
+    let rows = build_rows(issuer, client_id, session, surveys, targets);
 
     // ⚠️ Pad on the PLAIN text, then colour. Styling first embeds ANSI escapes
     // that `str::len` counts as characters, so every coloured row would be
@@ -164,6 +187,49 @@ pub fn render(
         out.push('\n');
     }
     out
+}
+
+/// The same rows as [`render`], as one JSON array on stdout -- for anywhere
+/// `status` is not attached to a human terminal: a script, CI, or an agent.
+/// See the `status` subcommand's `--json` flag and this module's own doc for
+/// why that path does not go through the TTY gate at all.
+///
+/// Each element is `{"label", "value", "colour", "note"}`, all strings --
+/// `colour` is one of `"none"`, `"green"`, `"yellow"`, `"red"` (see
+/// `Colour::as_str`), never Rust's `Debug` spelling. `note` is `""` rather
+/// than absent when a row has none, so a consumer can always index the field
+/// without an `Option` on its side.
+///
+/// Returns `Result` rather than swallowing a serialisation error: every field
+/// here is a plain `String`, which cannot itself fail to serialise, but a
+/// `Result` costs nothing and keeps this from being the one place in the
+/// crate that silently prints `"[]"` instead of surfacing a real bug.
+pub fn render_json(
+    issuer: &str,
+    client_id: &str,
+    session: &Session,
+    surveys: &Surveys<'_>,
+    targets: &[Target],
+) -> Result<String> {
+    #[derive(serde::Serialize)]
+    struct Row<'a> {
+        label: &'a str,
+        value: &'a str,
+        colour: &'static str,
+        note: &'a str,
+    }
+
+    let rows = build_rows(issuer, client_id, session, surveys, targets);
+    let rows: Vec<Row<'_>> = rows
+        .iter()
+        .map(|(label, value, colour, note)| Row {
+            label,
+            value,
+            colour: colour.as_str(),
+            note,
+        })
+        .collect();
+    serde_json::to_string(&rows).context("serialising status as JSON")
 }
 
 #[cfg(test)]

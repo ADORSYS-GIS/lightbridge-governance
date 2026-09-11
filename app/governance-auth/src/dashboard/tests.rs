@@ -166,6 +166,62 @@ fn no_row_has_trailing_whitespace() {
     }
 }
 
+/// `render_json` must show the identical set of rows `render` does -- same
+/// source data, just a different shape -- so a consumer scripting against
+/// `--json` can never see something a human reading the table would not.
+#[test]
+fn json_output_has_the_same_rows_as_the_table() {
+    let targets = vec![target("~/.codex/config.toml", 11, 2)];
+    let surveys = Surveys {
+        telemetry: &otel(Some("https://otel.example"), true),
+        daemon: &unsurveyed_daemon(),
+        spool: &Spool {
+            inner: None,
+            last_push_age: None,
+            last_discard_age: None,
+            held_age: None,
+            profile: crate::profile::Profile::Manual,
+        },
+        drain: &unsurveyed_drain(),
+    };
+    let out = render_json(
+        "https://auth.example",
+        "cli",
+        &session(true, true),
+        &surveys,
+        &targets,
+    )
+    .expect("plain strings always serialise");
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).expect("valid JSON array");
+    let labels: Vec<&str> = rows
+        .iter()
+        .map(|row| row["label"].as_str().expect("label is a string"))
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "session",
+            "issuer",
+            "client",
+            "telemetry",
+            "daemon",
+            "copilot spool",
+            "copilot drain",
+            "~/.codex/config.toml",
+        ]
+    );
+
+    let session_row = &rows[0];
+    assert_eq!(session_row["value"], "fresh, 15m left");
+    // Lowercase, not Rust's `Debug` spelling ("Green") -- what a consumer of
+    // a JSON API actually expects a status field to look like.
+    assert_eq!(session_row["colour"], "green");
+    // Present and empty, not absent -- so indexing the field never needs an
+    // `Option` on the consumer's side.
+    assert_eq!(session_row["note"], "");
+}
+
 /// ⚠️ The trap in `render`: styling before padding embeds ANSI escapes that
 /// `len` counts as characters, so coloured rows indent differently.
 ///

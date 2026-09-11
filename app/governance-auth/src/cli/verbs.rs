@@ -49,7 +49,20 @@ pub enum Command {
     /// Prints whether a cached session exists and how fresh it is, and
     /// whether the wiring `configure` wrote is still the wiring this binary
     /// generates today.
-    Status,
+    ///
+    /// With no terminal attached, this still prints only the one documented
+    /// plain line -- pass `--json` for the full picture from a script, CI, or
+    /// anything else that is not a human reading a terminal.
+    Status {
+        /// Print every status row as one JSON array on stdout, terminal or not.
+        ///
+        /// The same session/telemetry/daemon/Copilot rows a human sees, as
+        /// `{"label","value","colour","note"}` objects -- for anywhere `status`
+        /// is not attached to a human terminal. Not yet a documented stable
+        /// field-name contract; the plain one-line form is.
+        #[arg(long)]
+        json: bool,
+    },
     /// Re-apply the tool configuration and the drain schedule.
     ///
     /// Rewrites the Claude Code / Codex / VS Code wiring without re-running

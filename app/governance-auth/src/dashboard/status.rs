@@ -8,15 +8,28 @@
 //! authorization server.
 //!
 //! The TTY split is the contract described in [`super`]'s module doc: with no
-//! terminal, `status` prints exactly the one documented line it always has,
-//! because Claude Code and Codex parse this binary's output.
+//! terminal and no `--json`, `status` prints exactly the one documented line
+//! it always has, because Claude Code and Codex parse this binary's output.
+//!
+//! ## `--json` bypasses the TTY gate on purpose
+//!
+//! The gate exists so a table meant for a human never lands in a pipe a tool
+//! parses. `--json` is the opposite case: an explicit ask, from a script, CI,
+//! or an agent, for the same five rows a human would see -- so it always
+//! gathers all five surveys and always prints them, whether or not a terminal
+//! is attached. It writes to **stdout**, not stderr: nothing on stdout is a
+//! documented contract for `status` today (unlike the plain line, which is),
+//! so this claims the stream clean rather than competing with it.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
-use super::{Daemon, Drain, Session, Spool, Surveys, Telemetry, attended, plain, render, targets};
+use super::{
+    Daemon, Drain, Session, Spool, Surveys, Target, Telemetry, attended, plain, render,
+    render_json, targets,
+};
 use crate::{cache, config::OauthConfig};
 
-pub fn status(config: &OauthConfig) -> Result<()> {
+pub fn status(config: &OauthConfig, json: bool) -> Result<()> {
     let state = match cache::load(&config.issuer, &config.client_id)? {
         Some(session) => Session {
             cached: true,
@@ -30,6 +43,25 @@ pub fn status(config: &OauthConfig) -> Result<()> {
         },
     };
 
+    if json {
+        let (target_rows, telemetry, daemon, spool, drain) = gather(config);
+        let out = render_json(
+            &config.issuer,
+            &config.client_id,
+            &state,
+            &Surveys {
+                telemetry: &telemetry,
+                daemon: &daemon,
+                spool: &spool,
+                drain: &drain,
+            },
+            &target_rows,
+        )
+        .context("rendering status as JSON")?;
+        println!("{out}");
+        return Ok(());
+    }
+
     // Plain line unless a human is looking. The three strings below are a
     // documented surface (`commands.md`) that a test asserts on, and `status`
     // may be piped; the table is an addition, never a replacement.
@@ -38,6 +70,29 @@ pub fn status(config: &OauthConfig) -> Result<()> {
         return Ok(());
     }
 
+    let (target_rows, telemetry, daemon, spool, drain) = gather(config);
+    eprintln!(
+        "{}",
+        render(
+            &config.issuer,
+            &config.client_id,
+            &state,
+            &Surveys {
+                telemetry: &telemetry,
+                daemon: &daemon,
+                spool: &spool,
+                drain: &drain,
+            },
+            &target_rows,
+        )
+    );
+    Ok(())
+}
+
+/// The four per-source surveys plus the per-target rows, gathered once so the
+/// table path and the `--json` path can never read a different set of files
+/// for what is supposed to be the same answer.
+fn gather(config: &OauthConfig) -> (Vec<Target>, Telemetry, Daemon, Spool, Drain) {
     let home = std::env::var("HOME")
         .ok()
         .filter(|home| !home.is_empty())
@@ -59,20 +114,5 @@ pub fn status(config: &OauthConfig) -> Result<()> {
     // Reads the unit/plist and asks the platform's scheduler whether it is
     // loaded -- one short local command, no network. See `super::drain`.
     let drain = Drain::survey(home.as_deref(), config);
-    eprintln!(
-        "{}",
-        render(
-            &config.issuer,
-            &config.client_id,
-            &state,
-            &Surveys {
-                telemetry: &telemetry,
-                daemon: &daemon,
-                spool: &spool,
-                drain: &drain,
-            },
-            &target_rows,
-        )
-    );
-    Ok(())
+    (target_rows, telemetry, daemon, spool, drain)
 }

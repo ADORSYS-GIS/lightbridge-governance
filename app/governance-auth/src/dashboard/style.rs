@@ -74,6 +74,18 @@ impl Colour {
             Self::Red => console::style(text).red().to_string(),
         }
     }
+
+    /// The name `render_json` puts in each row -- lowercase, so a consumer's
+    /// `if colour == "red"` reads the way every other JSON API's status field
+    /// does, rather than matching Rust's `Debug` capitalisation.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Red => "red",
+        }
+    }
 }
 
 /// Minimal ANSI stripper, test-only: enough to assert on the plain text
