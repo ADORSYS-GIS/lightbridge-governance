@@ -231,6 +231,42 @@ stops it (see [commands.md](commands.md) → *A wake drains a backlog, not 8 MiB
 makes this reclaim reachable at all on those machines — 23.6 MB drained and truncated in a
 single wake in `copilot_push_backlog.rs`.
 
+### `serve --otel` daemon spool and checkpoint
+
+```
+<state dir>/governance-auth/otel-daemon-spool.jsonl          # written and read only by this daemon
+<state dir>/governance-auth/otel-daemon-checkpoint.json      # offset into it, mode 0600
+```
+
+**Written and read entirely by this binary** (ADR-0016, #268/#269) — unlike the Copilot spool
+above, nothing external ever holds a descriptor on this file. Every OTLP request `serve --otel`
+accepts is durably retained here before the daemon answers its sender, so a killed daemon loses
+nothing it already admitted; the background drain then mints, forwards, and advances an offset
+into it exactly like `copilot push` does for its own spool. `otel-daemon-checkpoint.json` mirrors
+`copilot-push.json`'s shape (offset, `discarded_total`, a self-expiring `quarantine` table) but
+with one offset, not two — a daemon-spooled entry is already routed to exactly one signal at
+receive time, unlike a Copilot line which can produce both a metric and a log record.
+
+**Two bounds, not one.** `CAPACITY` (16 MiB) caps *unconsumed* bytes (`size − offset`) — `retain`
+refuses rather than drops once it is reached, so a genuinely unreachable collector fails closed
+into backpressure (a client-visible `503`), never silent, unbounded growth. Separately, the file
+is **reclaimed** (truncated) once every byte in it is delivered — mirroring the Copilot spool's
+own `size == offset` truncate — and additionally **compacted** every 30 seconds if the
+already-delivered prefix (`offset` itself) crosses 1 MiB, regardless of whether the file is
+exactly caught up: the exact-catch-up precondition is the same one the Copilot spool above
+documents as unreachable under sustained backlog (#230/#241), and a daemon that is working
+perfectly — collector healthy, offset always advancing — can still never present it if traffic
+never has a gap. Compaction rewrites the file to keep only the undelivered tail and resets the
+offset to 0 against it.
+
+⚠️ **This is the opposite trade-off from the Copilot spool's, deliberately.** That module's own
+doc rejects a rewrite-based reclaim because Copilot itself holds long-lived `O_APPEND`
+descriptors on its outfile — rewriting it would race an external process's in-flight write. This
+spool has no such writer: `append_line` opens the path fresh on every call, so a rename swapping
+in a compacted file underneath it is transparent, the same way a rotated log's next writer never
+notices. Do not port this mechanism back onto the Copilot spool without re-deriving that this
+precondition still holds.
+
 ### Copilot drain schedule
 
 ```

@@ -38,6 +38,7 @@ mod receive;
 mod shutdown;
 mod signal;
 mod spool;
+mod spool_compaction;
 
 use std::sync::{Arc, Mutex};
 
@@ -109,6 +110,11 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     // ride along on `pump` instead. Aborted alongside it for the same
     // reason: nothing should outlive the listener it exists to serve.
     let rotation = tokio::spawn(log_rotation::ticker());
+    // Closes the gap try_reclaim's own truncate cannot: see
+    // `spool_compaction`'s doc. Same independent-timer reasoning as
+    // `rotation` above, and aborted alongside the other two for the same
+    // reason.
+    let compaction = tokio::spawn(spool_compaction::ticker(state.clone()));
 
     let router = Router::new()
         .fallback(any(handle_request))
@@ -122,6 +128,8 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     let _ = pump.await;
     rotation.abort();
     let _ = rotation.await;
+    compaction.abort();
+    let _ = compaction.await;
     result
 }
 

@@ -2,6 +2,7 @@
 //! live in [`quarantine`]; reclaim and `is_empty` tests live in [`reclaim`]
 //! -- both split out for the LoC gate.
 
+mod compact;
 mod quarantine;
 mod quarantine_lookahead;
 mod reclaim;

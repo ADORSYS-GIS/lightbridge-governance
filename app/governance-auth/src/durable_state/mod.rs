@@ -86,8 +86,12 @@ pub fn store<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     sync_dir(dir).with_context(|| format!("syncing {} after renaming into it", dir.display()))
 }
 
+/// `pub(crate)`: `otel_daemon::spool::compact` reuses this directly for the
+/// same tmp-file discipline, writing a spool's compacted tail rather than a
+/// JSON checkpoint -- the durability requirement (never hand a reader a
+/// half-written file) is identical, only the content differs.
 #[cfg(unix)]
-fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
 
     let mut file = fs::OpenOptions::new()
@@ -104,7 +108,7 @@ fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_durably(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
 }
 

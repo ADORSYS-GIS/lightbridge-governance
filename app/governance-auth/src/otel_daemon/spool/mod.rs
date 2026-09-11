@@ -56,6 +56,7 @@
 //! deduping on it is the ingest side's.
 
 mod commit;
+mod compact;
 mod envelope;
 mod read;
 #[cfg(test)]

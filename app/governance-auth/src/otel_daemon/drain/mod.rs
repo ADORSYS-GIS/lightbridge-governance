@@ -68,7 +68,7 @@ enum Pass {
 /// doc's P2-7 section. A panic inside `f` is resumed, not swallowed by
 /// `spawn_blocking`'s own `JoinError`, so it surfaces as it would inline.
 /// Cancellation is an ordinary error: callers stop without acknowledging work.
-async fn with_spool<T, F>(state: &DaemonState, f: F) -> anyhow::Result<T>
+pub(super) async fn with_spool<T, F>(state: &DaemonState, f: F) -> anyhow::Result<T>
 where
     F: FnOnce(&mut spool::DurableSpool) -> anyhow::Result<T> + Send + 'static,
     T: Send + 'static,
