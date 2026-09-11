@@ -1,5 +1,6 @@
 import { getToken } from './auth.js';
 import { errorMessage, log, redact } from './log.js';
+import { fetchWithRetry } from './retry.js';
 import type { Config } from './config.js';
 import type { CatalogueEntry, CatalogueResponse, LightbridgeModel } from './types.js';
 
@@ -63,11 +64,25 @@ export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]
     return inflight.promise;
   }
 
-  const promise = fetchFresh(config, gatewayUrl).finally(() => {
-    if (inflight?.promise === promise) {
-      inflight = undefined;
-    }
-  });
+  const promise = fetchFresh(config, gatewayUrl)
+    .catch((err) => {
+      // A transient failure (including exhausted 429 retries) must not blank
+      // the picker when we have a catalogue that is still within its TTL. A
+      // genuinely withdrawn model disappears after the TTL expires — the
+      // stale cache is only served while it is still fresh.
+      if (cache && cache.gatewayUrl === gatewayUrl && Date.now() - cache.at < config.catalogueTtlMs) {
+        log().warn(
+          `Model catalogue fetch failed; serving ${cache.models.length} model(s) from cache: ${errorMessage(err)}`,
+        );
+        return cache.models;
+      }
+      throw err;
+    })
+    .finally(() => {
+      if (inflight?.promise === promise) {
+        inflight = undefined;
+      }
+    });
   inflight = { gatewayUrl, promise };
   return promise;
 }
@@ -79,7 +94,11 @@ async function fetchFresh(config: Config, gatewayUrl: string): Promise<Lightbrid
   // empty picker, not as an error anyone traces to a URL.
   const url = `${gatewayUrl}/v1/models/info`;
 
-  const res = await fetch(url, {
+  // fetchWithRetry handles 429 and 5xx with bounded back-off, honouring the
+  // server's `Retry-After` header. Deterministic failures (401, 403, 404)
+  // are returned on the first attempt — retrying them burns rate limit
+  // without any hope of success (AGENTS.md).
+  const res = await fetchWithRetry(url, {
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
 

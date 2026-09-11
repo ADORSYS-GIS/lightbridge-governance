@@ -13,6 +13,17 @@ export interface CapturedRequest {
   body?: Record<string, unknown>;
 }
 
+/** Controls how many of the next N gateway requests return 429. */
+export interface GatewayHandle {
+  url: string;
+  permissiveUrl: string;
+  requests: CapturedRequest[];
+  permissiveHits: string[];
+  /** Make the next `n` requests to the strict gateway return HTTP 429. */
+  throttleNext(n: number): void;
+  close(): Promise<unknown>;
+}
+
 /**
  * Mirrors the shape the live gateway serves at /v1/models/info, verified
  * against https://api.ai.camer.digital/v1/models/info.
@@ -59,15 +70,30 @@ const listen = (server: http.Server): Promise<number> =>
  * gateway's strictness, not the extension's refusal. A correct extension never
  * contacts the probe at all.
  */
-export async function startGateway() {
+export async function startGateway(): Promise<GatewayHandle> {
   const requests: CapturedRequest[] = [];
   const permissiveHits: string[] = [];
+  let throttleRemaining = 0;
+
+  function handleThrottle(res: import('node:http').ServerResponse): boolean {
+    if (throttleRemaining > 0) {
+      throttleRemaining--;
+      res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
+      res.end(JSON.stringify({ error: 'rate limited' }));
+      return true;
+    }
+    return false;
+  }
 
   const strict = http.createServer((req, res) => {
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) {
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: 'missing bearer' }));
+    }
+
+    if (handleThrottle(res)) {
+      return;
     }
 
     if (req.method === 'GET' && req.url === '/v1/models/info') {
@@ -162,6 +188,9 @@ export async function startGateway() {
     permissiveUrl: `http://127.0.0.1:${permissivePort}`,
     requests,
     permissiveHits,
+    throttleNext(n: number) {
+      throttleRemaining = n;
+    },
     close: () =>
       Promise.all([
         new Promise((r) => strict.close(r)),
