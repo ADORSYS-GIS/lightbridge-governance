@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.7.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.6.0...v2.7.0) (2026-09-11)
+
+
+### Features
+
+* **governance-auth:** warn loudly when the Copilot spool grows past 50 MiB ([52e0b43](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/52e0b432008a29756934db5f29e37ce30205e6f9))
+
+
+### Bug Fixes
+
+* **governance-auth:** compact the otel daemon's durable spool independent of exact catch-up ([bc03be1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/bc03be1d6c7d36777555b2d4eaf9669c185b0366))
+* **governance-auth:** re-check log rotation on a timer, not only at startup ([061d910](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/061d910c9a1d6e2cef929a95d6ba596ed54f1091))
+* **governance-auth:** scope GOVERNANCE_AUTH_LOG to our own crate, run rotation checks off the async runtime ([df6d57b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/df6d57b30169c65d7e85c2a41c3fe1f7a78b9b92))
+
 ## [2.6.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.5.4...v2.6.0) (2026-09-10)
 
 
