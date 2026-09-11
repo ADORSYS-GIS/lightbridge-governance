@@ -917,10 +917,25 @@ governance-auth self update
 governance-auth self update --dry-run   # report only, change nothing
 ```
 
-Unlike every other subcommand, this one **does not resolve the OAuth config** — it talks
-only to the GitHub releases API. Resolving first used to make `self update` fail with
-`--issuer … is required` on a machine that had no config yet, which is precisely the
-machine most likely to be updating.
+Unlike every other subcommand, this one **does not resolve the OAuth config up front** — it
+talks only to the GitHub releases API to decide whether to update. Resolving first used to
+make `self update` fail with `--issuer … is required` on a machine that had no config yet,
+which is precisely the machine most likely to be updating.
+
+### Re-applies `configure`, but only on a machine that already has one
+
+After a real (non-`--dry-run`) update installs successfully, `self update` tries resolving
+the OAuth config a *second* time and, only if that now succeeds, re-runs `configure` with no
+opt-outs. This closes the gap in
+[`troubleshooting.md`](./troubleshooting.md#upgrading-across-the-command-rename): an upgrade
+that changes what `configure` writes (a renamed subcommand, a new flag) used to leave every
+already-onboarded machine's wiring stale until a developer separately remembered to run
+`configure`, and the break was silent until a helper it wrote next failed.
+
+A resolve failure at this second point is silent, not a warning — it is the ordinary state on
+a fresh machine, which is exactly the case the first paragraph above protects. `self update`
+still needs nothing from a machine with no config on it; it just also does something useful
+on a machine that already has one.
 
 ### Trust model, stated plainly
 

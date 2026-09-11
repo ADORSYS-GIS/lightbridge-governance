@@ -127,10 +127,13 @@ impl Cli {
             Command::Copilot {
                 command: CopilotCommand::Push { dry_run },
             } => copilot::run(http, &self.oauth.resolve()?, dry_run).await,
-            // Deliberately does NOT resolve: see the doc above.
+            // Deliberately does NOT resolve HERE: see the doc above. `update::run`
+            // makes its own, later, best-effort attempt -- after a real update
+            // installs, to re-apply `configure` on a machine that turns out to
+            // already have one; see `update`'s own module doc.
             Command::Own {
                 command: SelfCommand::Update { dry_run },
-            } => update::run(http, dry_run).await,
+            } => update::run(http, self.oauth, dry_run).await,
         }
     }
 }
