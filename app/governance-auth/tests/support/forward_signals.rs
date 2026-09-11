@@ -34,6 +34,10 @@ async fn mixed_signal_formats_keep_their_bytes_and_destination() -> Result<()> {
         otel_headers_debounce_ms: 240000,
         open_browser: false,
         token_exchange: None,
+        last_no_claude: false,
+        last_no_codex: false,
+        last_no_vscode: false,
+        last_codex_telemetry_only: false,
     };
     let traces = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
