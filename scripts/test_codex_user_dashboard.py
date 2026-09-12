@@ -33,7 +33,7 @@ class CodexUserDashboardTest(unittest.TestCase):
                     if p['type'] in ('stat', 'table', 'piechart'):
                         self.assertEqual(t['queryType'], 'instant')
                         self.assertIs(t['instant'], True)
-        self.assertEqual(queries, 24)
+        self.assertEqual(queries, 28)
 
     def test_activity_excludes_diagnostics_and_stream_chunks(self):
         targets = self.panels['Meaningful activity']['targets']
@@ -96,7 +96,7 @@ class CodexUserDashboardTest(unittest.TestCase):
 
     def test_layout_has_no_overlapping_panels_or_invented_measurements(self):
         panels = list(self.panels.values())
-        self.assertEqual(len(panels), 15)
+        self.assertEqual(len(panels), 19)
         self.assertEqual(len({p['id'] for p in panels}), len(panels))
         for i, p in enumerate(panels):
             a = p['gridPos']
@@ -106,8 +106,33 @@ class CodexUserDashboardTest(unittest.TestCase):
                 overlap = a['x'] < b['x'] + b['w'] and b['x'] < a['x'] + a['w'] and a['y'] < b['y'] + b['h'] and b['y'] < a['y'] + a['h']
                 self.assertFalse(overlap, (p['title'], other['title']))
         titles = ' '.join(self.panels).lower()
-        for invented in ('cost', 'accepted', 'retained', 'active duration', 'approval'):
+        for invented in ('actual spend', 'accepted', 'retained', 'active duration', 'approval'):
             self.assertNotIn(invented, titles)
+
+    def test_estimates_are_separate_and_do_not_create_a_series_per_response(self):
+        cost = self.panels['Estimated token cost · priced observations']
+        q = cost['targets'][0]['expr']
+        self.assertIn('sum_over_time', q)
+        self.assertNotIn('event_stamp', q)
+        self.assertIn('rate_card="openai-standard-us-2026-09-12"', q)
+        self.assertIn('estimate_status="priced"', q)
+        self.assertNotIn('vector(0)', q)
+        self.assertIn('not actual spend', cost['description'])
+        self.assertIn('replays can inflate', cost['description'])
+        self.assertIn('partial sum', self.panels['Estimate coverage · responses']['description'])
+
+    def test_turn_metadata_uses_resource_identity_and_natural_turn_key(self):
+        from generate_codex_dashboard import turn_metadata, turn_time
+        self.assertIn('resources[\\"user.email\\"]', turn_metadata())
+        self.assertIn('by (collector_user, session, turn, repository)', turn_time())
+        self.assertIn('max_over_time', turn_time())
+        self.assertNotIn('${user:regex}', turn_metadata())
+        self.assertIn('and on (session)', turn_time())
+        self.assertIn('${user:regex}', turn_time())
+        self.assertIn('ended >= ${__from:date:seconds}', turn_metadata())
+        self.assertIn('ended <= ${__to:date:seconds}', turn_metadata())
+        self.assertIn('not human active time', self.panels['Sessions']['description'])
+        self.assertIn(' and ', self.panels['Turn metadata coverage · sessions']['targets'][0]['expr'])
 
 
 if __name__ == '__main__':

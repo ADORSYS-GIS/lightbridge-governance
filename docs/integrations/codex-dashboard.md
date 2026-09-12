@@ -42,15 +42,85 @@ This reads existing forwarded OTLP logs, without a new persistence or collector 
   `user.email`, fleet-wide over the selected period. It deliberately ignores
   user/session filters. Empty-email traffic remains in the all-users view.
   A populated source email is not proof of employee identity; no hostname fallback.
-- No dollar cost, proposed/accepted/retained line count, repository attribution,
-  active-time measurement or human edit-acceptance rate is invented. In particular,
-  `tool_decision` measures permissions and may describe automated approvals.
+- The daemon annotates completed native responses with a **standard US API-equivalent
+  estimate** using the dated `openai-standard-us-2026-09-12` rate card. The first
+  supported model is exact `gpt-6-astra`; missing counters, unknown models and
+  nonzero cache writes remain unpriced. Current live cache-write counts are zero;
+  their inclusion in Codex input must be verified before pricing nonzero writes.
+  [Official Astra rates](https://developers.openai.com/api/docs/models/gpt-6-astra)
+  distinguish cached input and whole-request long-context pricing above 272,000
+  input tokens. Computation uses checked integer micro-USD. Currency scaling in
+  Grafana is presentation only. This baseline excludes fast-mode/residency
+  adjustments and tool fees; it does not assert historical invoice pricing.
+- Estimated cost sums only priced observations. Its accompanying coverage stat
+  includes unannotated native responses, so upgrading the daemon midway through
+  a selected period cannot silently make a partial sum look complete. Queries
+  use observation sums consistently with the native token totals; exporter replays
+  can inflate both. A per-response dedup query was rejected after the seven-day
+  fleet test exceeded Loki's 500-series limit. Authoritative billing needs upstream
+  deduplication in the usage store, not a label per response in Loki. No estimate is written
+  into an actual-spend field. Admin billing is not connected or implemented here;
+  a future authoritative reporting source must retain its own attribution grain.
+- Session turn time sums durations of terminal turns **observed and ending** in the selected
+  period, including interrupted turns and waits. It is neither human active time
+  nor an interval union; concurrent turns can overlap. Source session/turn keys
+  suppress replay before aggregation. No token counts are added from transcripts.
+- Repository attribution uses launch metadata only when the recorded turn cwd
+  matches the launch cwd. Other turns remain unattributed. The repository table
+  sums measured turn durations, not assumed allocations of token cost. Its
+  credential-derived email is read from resource attributes, distinct from the
+  native events' source-provided email. These logins can differ (as in the live
+  pilot). User filters select native Codex sessions, then correlate metadata by
+  session ID; this does not assert that the two emails are the same identity.
+  Coverage intersects measured sessions with
+  native active sessions, so orphan metadata cannot inflate coverage above 100%.
+- Proposed/accepted/retained lines and human edit-acceptance rates remain
+  unmeasured. Structured edits missed shell changes in the live pilot, and
+  `tool_decision` measures permissions that may be automated. No zero or substitute
+  counter is presented for these fields.
 
 ## Layout
 
-Eight summary numbers, one meaningful-activity trend, two model-share donuts,
-one session table, and separate turn/request waiting trends. Session drilldown
-filters those same panels rather than opening a duplicate detail dashboard.
+Eight activity summary numbers, one activity trend, two model-share donuts,
+one session table, separate turn/request waiting trends, a cost estimate with two
+coverage indicators, and a repository table. Session drilldown filters those same
+panels. Session token columns are replaced by turn time and estimated cost, keeping
+the table within the existing export width.
+
+## Local collection
+
+The updated `governance-auth serve --otel` annotates native OTLP JSON and protobuf
+logs at admission, before the durable spool. A rate update therefore cannot change
+an already-spooled observation on retry. Other signals are unaffected.
+
+Every minute, a separate task inspects changed regular `.jsonl` files under
+`$CODEX_HOME/sessions` (default `~/.codex/sessions`), after obtaining a valid
+governance session. It respects persisted `last_no_codex`. Only the observed engine
+version `0.154.0-alpha.6.2` is supported initially; incompatible files produce a
+warning and no measurements. Native OTLP continues independently.
+
+Discovery is bounded to 20,000 entries, four directory levels and eight changed
+files per pass; each file has a 64 MiB inspection limit. Automatic export includes
+terminal turns from the last 24 hours only. Recently resumed files do not backfill
+years of history. Symlink entries are skipped. No transcript contents, commands,
+prompts, diffs or content hashes enter the metadata payload or checkpoint. The
+in-memory cache contains file signatures only. Failed parse signatures are retried
+on file change or daemon restart; warnings and dashboard coverage expose gaps.
+Successful signatures advance only after every generated batch is durably admitted.
+Restart replays are harmless to the turn-duration queries.
+
+For an explicit validation or bounded backfill, including continuation files:
+
+```sh
+governance-auth codex --dry-run --transcript /absolute/session.jsonl /absolute/continuation.jsonl
+# Omit --dry-run to hand the same metadata to the local daemon's durable spool.
+```
+
+Metadata logs use observation time to avoid Loki rejecting late source events.
+Original start/end times remain fields, and queries also filter the source end time
+to the selected period. An absolute historical period ending before collection
+will therefore omit later backfill: this is not a historical session ledger.
+Dry runs authenticate and print only a terminal-turn count.
 
 ## Verification
 
@@ -81,3 +151,31 @@ restoring the wrong time-link property or including timestamps in model labels f
 User plus session searches and the session-row link were exercised in Grafana;
 filtering produced one active session and retained the selected period. A PNG
 export completed at 1280×1443 with the user/session filters preserved.
+
+
+### Measurement extension verification (2026-09-12)
+
+With the live daemon stopped, all 558 `governance-auth` unit/integration tests
+passed; the macOS fake browser launcher was corrected to intercept `open`.
+After the final observation-time change, all seven metadata tests and strict
+all-target clippy passed again. Nightly formatting, 17 dashboard tests, all six
+deterministic generator checks, Helm lint/template, resolved JSON validation,
+OIDC chart assertions and cargo-deny advisories/bans/licenses/sources passed.
+The Docker-dependent collector checks were not rerun (Docker is unavailable).
+
+Regression mutations proved that tests reject double-counting cached input,
+inheriting a repository after a working-directory change, and replacing the
+native-session intersection with a union. The restored tests passed.
+
+All 28 final queries passed with this conversation's actual native user/session
+filters. The 24-hour and seven-day duration queries both returned 2,486,933 ms
+for 21 terminal turns, agreeing with local allowlisted metadata. Re-exporting
+those turns left the total unchanged. The pilot also verified that different
+Codex and governance login emails correlate through the session key without
+being treated as the same identity. Fleet cost/coverage queries passed for both
+24 hours and seven days after removing per-response label expansion.
+
+The latest unreleased release binary was installed and the launchd daemon
+restarted successfully. The final preview PNG rendered at 1280×1823 with the
+user/session filters, duration, estimate, coverage and repository panels intact.
+The provisioned production dashboard remains unchanged until the branch ships.

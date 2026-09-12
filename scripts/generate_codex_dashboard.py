@@ -30,6 +30,11 @@ FIELDS = {"event": "event.name", "user": "user.email", "session": "conversation.
           "model": "model", "kind": "event.kind", "input_tokens": "input_token_count",
           "output_tokens": "output_token_count", "cached_tokens": "cached_token_count",
           "ttft_ms": "ttft_ms", "duration_ms": "duration_ms"}
+ESTIMATE_FIELDS = {"estimate_micro_usd": "governance.estimate.micro_usd",
+                  "estimate_status": "governance.estimate.status",
+                  "rate_card": "governance.estimate.rate_card"}
+ESTIMATE_PARSER = " | json " + ", ".join(f"{alias}=" + json.dumps('attributes["' + key + '"]')
+                                       for alias, key in ESTIMATE_FIELDS.items())
 PARSER = " | json " + ", ".join(f"{alias}=" + json.dumps('attributes["' + key + '"]')
                                       for alias, key in FIELDS.items())
 
@@ -62,6 +67,30 @@ def meaningful() -> str:
 def count(q: str, window: str = "$__range", group: str = "") -> str:
     by = f" by ({group})" if group else ""
     return f"sum{by}(count_over_time({q}[{window}]))"
+
+
+def estimated_cost(group: str = "") -> str:
+    q = completed() + ESTIMATE_PARSER + ' | __error__="" | session!="" | estimate_status="priced" | rate_card="openai-standard-us-2026-09-12"'
+    by = f" by ({group})" if group else ""
+    return f'sum{by}(sum_over_time({q} | unwrap estimate_micro_usd | __error__=""[$__range])) / 1000000'
+
+
+def turn_metadata() -> str:
+    return ('{job="governance-codex-session"} |= "governance.codex.turn"'
+        ' | json collector_user="resources[\\"user.email\\"]", session="attributes[\\"conversation.id\\"]", '
+        'turn="attributes[\\"turn.id\\"]", repository="attributes.repository", duration_ms="attributes.duration_ms", ended="attributes.completed_at"'
+        ' | __error__="" | session!="" | turn!=""'
+        ' | session=~`.*${session:regex}.*`'
+        ' | ended >= ${__from:date:seconds} | ended <= ${__to:date:seconds}')
+
+
+def turn_time(group: str = "session") -> str:
+    # Native Codex email and the governance login can differ. Correlate the
+    # selected native sessions by source session ID; do not equate identities.
+    measured = (f'sum by (session, repository)(max_over_time({turn_metadata()} | unwrap duration_ms '
+                '| __error__=""[$__range]) by (collector_user, session, turn, repository))')
+    selected = count(meaningful(), group="session")
+    return f'sum by ({group})(({measured}) and on (session) ({selected}))'
 
 
 def total(field: str, *, group: str = "") -> str:
@@ -242,7 +271,9 @@ def build_dashboard() -> dict[str, Any]:
     panels.append({"id": ids.take(), "type": "text", "title": "Your Codex activity",
         "gridPos": {"x": 0, "y": 0, "w": 24, "h": 3}, "options": {"mode": "markdown", "content":
         "Search by email or click a session. Clear searches for everyone. "
-        "Session times are observed bounds; identity coverage is fleet-wide."}})
+        "Session times are observed bounds; identity coverage is fleet-wide. "
+        "Estimates use a dated standard API rate card and are separate from actual billing, "
+        "which is not connected. Code acceptance and retention are not yet measured."}})
     sessions = 'count(' + count(meaningful() + ' | session!=""', group="session") + ')'
     fleet = (
         logs(scoped=False) + ' | event=~"codex.user_prompt|codex.tool_result|codex.sse_event"'
@@ -305,14 +336,16 @@ def build_dashboard() -> dict[str, Any]:
         ("B", "Last activity", stamp("max"), "dateTimeAsIso"),
         ("C", "Prompts", count(logs("codex.user_prompt") + ' | session!=""', group="session"), "short"),
         ("D", "Model responses", count(completed() + ' | session!=""', group="session"), "short"),
-        ("E", "Input tokens", total("input_tokens", group="session"), "short"),
-        ("F", "Output tokens", total("output_tokens", group="session"), "short"),
+        ("E", "Turn time", turn_time(), "ms"),
+        ("F", "Est. USD", estimated_cost("session"), "currencyUSD"),
         ("G", "Turn wait p95", latency("codex.turn_ttft", "duration_ms", .95, group="session"), "ms"),
     ]
     table = loki_table_panel(ids, title="Sessions", description=
         "One row per conversation. Observed start and last activity are bounded by the selected period, "
         "not lifecycle timestamps. Blank cells mean no matching signal. Click a session to filter this dashboard. "
-        "Prompt and response counts are observed events, not deduplicated billing records.", expr="", grid={"x": 0, "y": 19, "w": 24, "h": 9})
+        "Turn time sums durations of turns ending in the selected period, including waits; it is not "
+        "human active time or a union of overlapping turns. Estimates cover priced observations only; "
+        "blank cells are unavailable. Prompt and response counts are observed events, not billing records.", expr="", grid={"x": 0, "y": 19, "w": 24, "h": 9})
     table["targets"] = [dict(target(expr, ref), format="table") for ref, _, expr, _ in session_queries]
     table["transformations"] = [
         {"id": "joinByField", "options": {"byField": "session", "mode": "outerTabular"}},
@@ -344,6 +377,41 @@ def build_dashboard() -> dict[str, Any]:
         p["interval"] = "5m"
         p["options"]["legend"]["calcs"] = []
         panels.append(p)
+    cost = loki_stat_panel(ids, title="Estimated token cost · priced observations",
+        description="Standard US API-equivalent estimate at 2026-09-12 rates, not actual spend. "
+        "Currently prices exact gpt-6-astra only with complete counters and zero cache writes. "
+        "Long-context pricing is applied per response. Excludes service-tier adjustments, residency and tool fees. "
+        "Sums observed responses, like the token totals; exporter replays can inflate both. This is not a billing ledger.",
+        expr=estimated_cost(), unit="currencyUSD", grid={"x": 0, "y": 35, "w": 8, "h": 4}, mappings=[NO_DATA_MAPPING])
+    cost["fieldConfig"]["defaults"]["decimals"] = 2
+    cost["options"]["colorMode"] = "none"
+    panels.append(cost)
+    native = completed() + ESTIMATE_PARSER + ' | __error__="" | session!=""'
+    def observations(q):
+        return count(q)
+    priced = native + ' | estimate_status="priced" | rate_card="openai-standard-us-2026-09-12"'
+    coverage = f'100 * ({observations(priced)} or vector(0)) / {observations(native)}'
+    panels.append(loki_stat_panel(ids, title="Estimate coverage · responses", description=
+        "Priced observations divided by all completed responses with a session. "
+        "Old daemon versions, unknown models, missing counters and nonzero cache writes are unpriced. "
+        "Cost is a partial sum when coverage is below 100%.", expr=coverage, unit="percent",
+        grid={"x": 8, "y": 35, "w": 8, "h": 4}, mappings=[NO_DATA_MAPPING]))
+    panels.append(loki_stat_panel(ids, title="Turn metadata coverage · sessions", description=
+        "Sessions with exported terminal turn metadata divided by sessions with meaningful native events. "
+        "Requires the metadata exporter; sessions with only unfinished turns have no terminal metadata. "
+        "Having metadata for a session does not mean every turn was measured.",
+        expr=f'100 * (count({count(turn_metadata(), group="session")} and {count(meaningful(), group="session")}) or vector(0)) / {sessions}',
+        unit="percent", grid={"x": 16, "y": 35, "w": 8, "h": 4}, mappings=[NO_DATA_MAPPING]))
+    for p in panels[-2:]:
+        p["options"]["colorMode"] = "none"
+    repositories = loki_table_panel(ids, title="Repositories · measured turn time",
+        description="Launch repository only when turn cwd matches launch cwd. Empty repository means unknown. "
+        "Sums measured terminal turn durations, including waits. Multiple repositories remain separate; "
+        "request token costs are not allocated using an assumed repository. "
+        "User filters select native Codex sessions, correlated by session ID; governance login may differ.", expr=turn_time("repository"),
+        unit="ms", grid={"x": 0, "y": 39, "w": 24, "h": 6})
+    repositories["transformations"][0]["options"]["renameByName"] = {"repository": "Repository", "Value #A": "Measured turn time"}
+    panels.append(repositories)
     d = dashboard_shell(UID, "Codex telemetry", "User and session activity, model usage and waiting time from Codex telemetry. Generated; see docs/integrations/codex-dashboard.md.", panels)
     d["tags"].append("codex")
     d["time"] = {"from": "now-24h", "to": "now"}

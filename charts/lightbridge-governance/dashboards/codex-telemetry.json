@@ -107,7 +107,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Search by email or click a session. Clear searches for everyone. Session times are observed bounds; identity coverage is fleet-wide."
+        "content": "Search by email or click a session. Clear searches for everyone. Session times are observed bounds; identity coverage is fleet-wide. Estimates use a dated standard API rate card and are separate from actual billing, which is not connected. Code acceptance and retention are not yet measured."
       }
     },
     {
@@ -932,7 +932,7 @@
       "id": 13,
       "type": "table",
       "title": "Sessions",
-      "description": "One row per conversation. Observed start and last activity are bounded by the selected period, not lifecycle timestamps. Blank cells mean no matching signal. Click a session to filter this dashboard. Prompt and response counts are observed events, not deduplicated billing records.",
+      "description": "One row per conversation. Observed start and last activity are bounded by the selected period, not lifecycle timestamps. Blank cells mean no matching signal. Click a session to filter this dashboard. Turn time sums durations of turns ending in the selected period, including waits; it is not human active time or a union of overlapping turns. Estimates cover priced observations only; blank cells are unavailable. Prompt and response counts are observed events, not billing records.",
       "datasource": {
         "type": "loki",
         "uid": "__DS_LOKI__"
@@ -1019,12 +1019,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Input tokens"
+              "options": "Turn time"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "short"
+                "value": "ms"
               },
               {
                 "id": "custom.width",
@@ -1035,12 +1035,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Output tokens"
+              "options": "Est. USD"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "short"
+                "value": "currencyUSD"
               },
               {
                 "id": "custom.width",
@@ -1146,7 +1146,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum by (session)(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | session!=\"\" | input_tokens!=\"\" | unwrap input_tokens | __error__=\"\"[$__range]))",
+          "expr": "sum by (session)((sum by (session, repository)(max_over_time({job=\"governance-codex-session\"} |= \"governance.codex.turn\" | json collector_user=\"resources[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", turn=\"attributes[\\\"turn.id\\\"]\", repository=\"attributes.repository\", duration_ms=\"attributes.duration_ms\", ended=\"attributes.completed_at\" | __error__=\"\" | session!=\"\" | turn!=\"\" | session=~`.*${session:regex}.*` | ended >= ${__from:date:seconds} | ended <= ${__to:date:seconds} | unwrap duration_ms | __error__=\"\"[$__range]) by (collector_user, session, turn, repository))) and on (session) (sum by (session)(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | event=~\"codex.user_prompt|codex.tool_result|codex.sse_event\" | (event!=\"codex.sse_event\" or kind=\"response.completed\")[$__range]))))",
           "refId": "E",
           "legendFormat": "__auto",
           "queryType": "instant",
@@ -1158,7 +1158,7 @@
             "type": "loki",
             "uid": "__DS_LOKI__"
           },
-          "expr": "sum by (session)(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | session!=\"\" | output_tokens!=\"\" | unwrap output_tokens | __error__=\"\"[$__range]))",
+          "expr": "sum by (session)(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | json estimate_micro_usd=\"attributes[\\\"governance.estimate.micro_usd\\\"]\", estimate_status=\"attributes[\\\"governance.estimate.status\\\"]\", rate_card=\"attributes[\\\"governance.estimate.rate_card\\\"]\" | __error__=\"\" | session!=\"\" | estimate_status=\"priced\" | rate_card=\"openai-standard-us-2026-09-12\" | unwrap estimate_micro_usd | __error__=\"\"[$__range])) / 1000000",
           "refId": "F",
           "legendFormat": "__auto",
           "queryType": "instant",
@@ -1206,8 +1206,8 @@
               "Value #B": "Last activity",
               "Value #C": "Prompts",
               "Value #D": "Model responses",
-              "Value #E": "Input tokens",
-              "Value #F": "Output tokens",
+              "Value #E": "Turn time",
+              "Value #F": "Est. USD",
               "Value #G": "Turn wait p95"
             }
           }
@@ -1352,6 +1352,270 @@
         }
       ],
       "interval": "5m"
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Estimated token cost \u00b7 priced observations",
+      "description": "Standard US API-equivalent estimate at 2026-09-12 rates, not actual spend. Currently prices exact gpt-6-astra only with complete counters and zero cache writes. Long-context pricing is applied per response. Excludes service-tier adjustments, residency and tool fees. Sums observed responses, like the token totals; exporter replays can inflate both. This is not a billing ledger.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "sum(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | json estimate_micro_usd=\"attributes[\\\"governance.estimate.micro_usd\\\"]\", estimate_status=\"attributes[\\\"governance.estimate.status\\\"]\", rate_card=\"attributes[\\\"governance.estimate.rate_card\\\"]\" | __error__=\"\" | session!=\"\" | estimate_status=\"priced\" | rate_card=\"openai-standard-us-2026-09-12\" | unwrap estimate_micro_usd | __error__=\"\"[$__range])) / 1000000",
+          "queryType": "instant",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Estimate coverage \u00b7 responses",
+      "description": "Priced observations divided by all completed responses with a session. Old daemon versions, unknown models, missing counters and nonzero cache writes are unpriced. Cost is a partial sum when coverage is below 100%.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 35,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "100 * (sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | json estimate_micro_usd=\"attributes[\\\"governance.estimate.micro_usd\\\"]\", estimate_status=\"attributes[\\\"governance.estimate.status\\\"]\", rate_card=\"attributes[\\\"governance.estimate.rate_card\\\"]\" | __error__=\"\" | session!=\"\" | estimate_status=\"priced\" | rate_card=\"openai-standard-us-2026-09-12\"[$__range])) or vector(0)) / sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} |= \"codex.sse_event\" | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | event=\"codex.sse_event\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | kind=\"response.completed\" | json estimate_micro_usd=\"attributes[\\\"governance.estimate.micro_usd\\\"]\", estimate_status=\"attributes[\\\"governance.estimate.status\\\"]\", rate_card=\"attributes[\\\"governance.estimate.rate_card\\\"]\" | __error__=\"\" | session!=\"\"[$__range]))",
+          "queryType": "instant",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Turn metadata coverage \u00b7 sessions",
+      "description": "Sessions with exported terminal turn metadata divided by sessions with meaningful native events. Requires the metadata exporter; sessions with only unfinished turns have no terminal metadata. Having metadata for a session does not mean every turn was measured.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 35,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "100 * (count(sum by (session)(count_over_time({job=\"governance-codex-session\"} |= \"governance.codex.turn\" | json collector_user=\"resources[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", turn=\"attributes[\\\"turn.id\\\"]\", repository=\"attributes.repository\", duration_ms=\"attributes.duration_ms\", ended=\"attributes.completed_at\" | __error__=\"\" | session!=\"\" | turn!=\"\" | session=~`.*${session:regex}.*` | ended >= ${__from:date:seconds} | ended <= ${__to:date:seconds}[$__range])) and sum by (session)(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | event=~\"codex.user_prompt|codex.tool_result|codex.sse_event\" | (event!=\"codex.sse_event\" or kind=\"response.completed\")[$__range]))) or vector(0)) / count(sum by (session)(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | event=~\"codex.user_prompt|codex.tool_result|codex.sse_event\" | (event!=\"codex.sse_event\" or kind=\"response.completed\") | session!=\"\"[$__range])))",
+          "queryType": "instant",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Repositories \u00b7 measured turn time",
+      "description": "Launch repository only when turn cwd matches launch cwd. Empty repository means unknown. Sums measured terminal turn durations, including waits. Multiple repositories remain separate; request token costs are not allocated using an assumed repository. User filters select native Codex sessions, correlated by session ID; governance login may differ.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "sum by (repository)((sum by (session, repository)(max_over_time({job=\"governance-codex-session\"} |= \"governance.codex.turn\" | json collector_user=\"resources[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", turn=\"attributes[\\\"turn.id\\\"]\", repository=\"attributes.repository\", duration_ms=\"attributes.duration_ms\", ended=\"attributes.completed_at\" | __error__=\"\" | session!=\"\" | turn!=\"\" | session=~`.*${session:regex}.*` | ended >= ${__from:date:seconds} | ended <= ${__to:date:seconds} | unwrap duration_ms | __error__=\"\"[$__range]) by (collector_user, session, turn, repository))) and on (session) (sum by (session)(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json event=\"attributes[\\\"event.name\\\"]\", user=\"attributes[\\\"user.email\\\"]\", session=\"attributes[\\\"conversation.id\\\"]\", model=\"attributes[\\\"model\\\"]\", kind=\"attributes[\\\"event.kind\\\"]\", input_tokens=\"attributes[\\\"input_token_count\\\"]\", output_tokens=\"attributes[\\\"output_token_count\\\"]\", cached_tokens=\"attributes[\\\"cached_token_count\\\"]\", ttft_ms=\"attributes[\\\"ttft_ms\\\"]\", duration_ms=\"attributes[\\\"duration_ms\\\"]\" | __error__=\"\" | user=~`.*${user:regex}.*` | session=~`.*${session:regex}.*` | event=~\"codex.user_prompt|codex.tool_result|codex.sse_event\" | (event!=\"codex.sse_event\" or kind=\"response.completed\")[$__range]))))",
+          "queryType": "instant",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "repository": "Repository",
+              "Value #A": "Measured turn time"
+            }
+          }
+        }
+      ]
     }
   ]
 }

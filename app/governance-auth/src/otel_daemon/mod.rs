@@ -28,6 +28,8 @@
 
 mod checkpoint;
 mod classify;
+mod codex_cost;
+mod codex_sessions;
 mod drain;
 mod forward;
 mod log_rotation;
@@ -117,6 +119,7 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     // `rotation` above, and aborted alongside the other two for the same
     // reason.
     let compaction = tokio::spawn(spool_compaction::ticker(state.clone()));
+    let codex_sessions = tokio::spawn(codex_sessions::ticker(state.clone()));
 
     let router = Router::new()
         .fallback(any(handle_request))
@@ -132,6 +135,8 @@ pub async fn serve(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     let _ = rotation.await;
     compaction.abort();
     let _ = compaction.await;
+    codex_sessions.abort();
+    let _ = codex_sessions.await;
     result
 }
 
@@ -171,7 +176,12 @@ async fn handle_request(
     let Some(signal) = classify::signal(&incoming.body, incoming.format, &incoming.path) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    retained_response(&state, signal, incoming.body, incoming.format).await
+    let body = if signal == signal::Signal::Logs {
+        codex_cost::enrich(&incoming.body, incoming.format)
+    } else {
+        incoming.body
+    };
+    retained_response(&state, signal, body, incoming.format).await
 }
 
 /// Retains `payload` and answers what actually happened: an OTLP full-success

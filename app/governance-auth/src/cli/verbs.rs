@@ -14,6 +14,15 @@ use crate::optout::ClientOptOut;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Export allowlisted Codex session metadata through the local daemon.
+    Codex {
+        /// Session JSONL files, including continuation files for the same session.
+        #[arg(long, required = true, num_args = 1..)]
+        transcript: Vec<std::path::PathBuf>,
+        /// Validate and report counts without posting any measurements.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run the interactive login once and cache the session.
     ///
     /// Prints an authorize URL to visit -- or, with `--device-code`, a

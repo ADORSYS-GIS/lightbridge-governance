@@ -113,6 +113,13 @@ impl Cli {
     pub async fn run(self, http: &reqwest::Client) -> Result<()> {
         tracing::info!(command = ?self.command, version = update::VERSION, "invoked");
         match self.command {
+            Command::Codex {
+                transcript,
+                dry_run,
+            } => {
+                crate::codex_measurements::run(http, &self.oauth.resolve()?, transcript, dry_run)
+                    .await
+            }
             Command::Login {
                 device_code,
                 optout,

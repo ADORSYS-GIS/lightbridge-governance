@@ -38,7 +38,13 @@ impl FakeXdgOpen {
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let marker = dir.join("invoked");
-        let script_path = dir.join("xdg-open");
+        // Match the production platform opener. A Linux-only fake on macOS
+        // invokes the real `open`, misses the marker and opens test URLs.
+        let script_path = dir.join(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        });
         // `$1` is the URL `browser::open` passes -- unused here, but taking
         // it (rather than requiring zero args) keeps this a faithful stand-in
         // for the real `xdg-open` invocation shape.
