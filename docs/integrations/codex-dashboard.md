@@ -122,6 +122,12 @@ to the selected period. An absolute historical period ending before collection
 will therefore omit later backfill: this is not a historical session ledger.
 Dry runs authenticate and print only a terminal-turn count.
 
+## Cross-client handoff
+
+See [dashboard direction and implementation handoff](dashboard-direction-and-handoff.md)
+for shared display decisions, Claude/VS Code Copilot next steps and the local-versus-central
+processing tradeoffs.
+
 ## Verification
 
 ```sh
