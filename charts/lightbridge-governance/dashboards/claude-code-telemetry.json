@@ -32,7 +32,7 @@
       "icon": "external link",
       "url": "/render/d/governance-claude-code-telemetry?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
       "targetBlank": true,
-      "includeTime": true,
+      "keepTime": true,
       "includeVars": true,
       "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
     },
@@ -40,7 +40,7 @@
       "type": "link",
       "title": "Governance overview",
       "url": "/d/governance-ai-cli-telemetry",
-      "includeTime": true,
+      "keepTime": true,
       "includeVars": false,
       "targetBlank": false
     }

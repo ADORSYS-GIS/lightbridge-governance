@@ -50,5 +50,5 @@ class DashboardOwnershipTest(unittest.TestCase):
                 self.assertEqual(url.path, '/render/d/' + d['uid'])
                 self.assertEqual(parse_qs(url.query)['timeout'], ['180'])
                 self.assertNotIn('refresh', parse_qs(url.query))
-                self.assertTrue(link['includeTime'])
+                self.assertTrue(link['keepTime'])
                 self.assertTrue(link['includeVars'])

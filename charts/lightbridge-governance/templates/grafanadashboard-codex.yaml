@@ -9,10 +9,10 @@ verification note and the datasource-token substitution rationale ((b):
 Helm-side string replace over literal placeholder tokens, resolved entirely
 at `helm template` time); this file only restates what differs.
 
-This dashboard has no `templating` variables, same as ai-cli-telemetry and
-opencode-telemetry -- Loki's own label selectors (`job=~"codex-app-server|
-codex_cli_rs"`, and the JSON-parsed `attributes_*`/`resources_*` fields) are
-this dashboard's filtering surface, not a Grafana template variable.
+User and session searches filter JSON event attributes. They are textbox
+variables because those attributes are not indexed Loki stream labels.
+The generated JSON escapes searches as regex literals; no additional
+high-cardinality labels or collector changes are required.
 
 Deliberately NOT backed by this chart's own Postgres datasource, despite
 this repo having an `executions`/`model_calls`/`tool_calls` schema with a

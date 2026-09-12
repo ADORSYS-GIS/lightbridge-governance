@@ -16,12 +16,12 @@ def dashboard_links(uid: str) -> list[dict[str, Any]]:
     links = [{
         "type": "link", "title": "Export PNG", "icon": "external link",
         "url": f"/render/d/{uid}?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
-        "targetBlank": True, "includeTime": True, "includeVars": True,
+        "targetBlank": True, "keepTime": True, "includeVars": True,
         "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters.",
     }]
     if uid != "governance-ai-cli-telemetry":
         links.append({"type": "link", "title": "Governance overview", "url": "/d/governance-ai-cli-telemetry",
-                      "includeTime": True, "includeVars": False, "targetBlank": False})
+                      "keepTime": True, "includeVars": False, "targetBlank": False})
     return links
 
 

@@ -31,7 +31,7 @@
       "icon": "external link",
       "url": "/render/d/governance-ai-cli-telemetry?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
       "targetBlank": true,
-      "includeTime": true,
+      "keepTime": true,
       "includeVars": true,
       "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
     }
