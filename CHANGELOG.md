@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.9.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.8.0...v2.9.0) (2026-09-12)
+
+
+### Features
+
+* **codex:** measure session turns and estimate token costs ([2c11391](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2c113913d8984e89134e002772c3233ee9c3bc31))
+* **dashboards:** separate source views from governance overview ([84e0248](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/84e02481b6059de4b65b9a3e46a15e7cbe5b99b1))
+* **dashboards:** separate source views from governance overview ([#333](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/333)) ([7551bc0](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7551bc07fc1febd42dd48c0ecf5e29b55b9a55db))
+* **grafana:** focus Codex dashboard on users and sessions ([bef3bb1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/bef3bb14e119acbda92746e9a5743a534eb6517d))
+
+
+### Bug Fixes
+
+* **dashboards:** use instant Loki stats for Claude and Codex ([#331](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/331)) ([4e984ad](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4e984ad0f1a712f8955755f8f9576dd6554ebfa3))
+
+
+### Documentation
+
+* **dashboards:** record source ownership and implementation handoff ([63f212b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/63f212b2f2f697d2d0cf3834b66338386862710e))
+
 ## [2.8.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.7.0...v2.8.0) (2026-09-11)
 
 
