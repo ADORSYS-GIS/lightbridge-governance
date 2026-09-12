@@ -104,7 +104,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" | unwrap attributes_cost_usd [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -174,7 +175,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_session_id) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -244,7 +246,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"user_prompt\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -314,7 +317,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -388,7 +392,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_error\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -458,7 +463,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_user_email) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_user_email=~\".+\" [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -980,7 +986,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"tool_decision\" | attributes_tool_name=~\"Edit|Write|NotebookEdit\" | attributes_source=\"config\" [7d])) / sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"tool_decision\" | attributes_tool_name=~\"Edit|Write|NotebookEdit\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1789,7 +1796,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"retention_sweep\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1859,7 +1867,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"retention_sweep\" | unwrap attributes_transcripts_deleted [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1929,7 +1938,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"retention_sweep\" | unwrap attributes_session_files_deleted [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1999,7 +2009,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"retention_sweep\" | unwrap attributes_history_entries_pruned [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }

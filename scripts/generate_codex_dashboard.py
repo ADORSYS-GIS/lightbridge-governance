@@ -329,13 +329,14 @@ def loki_stat_panel(
     reduce_calc: str = "lastNotNull",
     thresholds_steps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """⚠️ `reduce_calc` default is `lastNotNull`, not `sum` -- same trap the
-    other two Loki-backed generators document: a stat panel's `expr` here
-    embeds its OWN window (e.g. a literal `[24h]` bracket) and still runs as
-    a RANGE query over the dashboard's time range, so Loki returns one
-    already-fully-aggregated sample per step. Reducing those with `sum`
-    multiplies the true value by the step count. `lastNotNull` reads the one
-    correct number."""
+    """Return a single snapshot, matching the #318 Loki OOM fix in the
+    AI CLI and OpenCode generators. Each expression embeds its own window
+    (e.g. `[24h]` or `[7d]`); a range query needlessly recomputes that whole
+    window at every dashboard step. With no sparkline (`graphMode: none`),
+    an instant query supplies the same final value without that amplification.
+    Keep `lastNotNull` as the reducer: summing already-aggregated samples
+    would multiply the value if a range query were ever reintroduced.
+    """
     field_config = _base_field_config(unit=unit, mappings=mappings)
     if thresholds_steps:
         field_config["defaults"]["thresholds"] = {"mode": "absolute", "steps": thresholds_steps}
@@ -359,7 +360,8 @@ def loki_stat_panel(
             {
                 "datasource": LOKI_DS,
                 "expr": expr,
-                "queryType": "range",
+                "queryType": "instant",
+                "instant": True,
                 "legendFormat": "__auto",
                 "refId": "A",
             }

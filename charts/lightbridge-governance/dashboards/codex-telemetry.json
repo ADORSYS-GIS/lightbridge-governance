@@ -104,7 +104,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_conversation_id) (count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.conversation_starts\" [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -174,7 +175,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | attributes_event_kind=\"response.completed\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -244,7 +246,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | unwrap attributes_input_token_count [24h])) + sum(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | unwrap attributes_output_token_count [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -314,7 +317,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.tool_decision\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -384,7 +388,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | unwrap attributes_cached_token_count [24h])) / sum(sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | unwrap attributes_input_token_count [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -462,7 +467,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.tool_decision\" | attributes_source!=\"User\" [7d])) / sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.tool_decision\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -532,7 +538,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "quantile_over_time(0.95, {job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.turn_ttft\" | unwrap attributes_duration_ms [24h]) by ()",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -602,7 +609,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (attributes_user_email) (count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_user_email=~\".+\" [24h])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -741,7 +749,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=~\".+\" [24h]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -811,7 +820,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "count(count by (resources_host_name) (count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json [7d])))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1463,7 +1473,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.tool_result\" | attributes_tool_name=\"apply_patch\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1862,7 +1873,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | attributes_error_message=~\".+\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1940,7 +1952,8 @@
             "uid": "__DS_LOKI__"
           },
           "expr": "sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.auth_recovery\" | attributes_auth_outcome=\"recovery_failed_transient\" [7d])) / sum(count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.auth_recovery\" [7d]))",
-          "queryType": "range",
+          "queryType": "instant",
+          "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         }
