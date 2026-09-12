@@ -25,12 +25,31 @@
   "annotations": {
     "list": []
   },
-  "links": [],
+  "links": [
+    {
+      "type": "link",
+      "title": "Export PNG",
+      "icon": "external link",
+      "url": "/render/d/governance-opencode-telemetry?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
+      "targetBlank": true,
+      "includeTime": true,
+      "includeVars": true,
+      "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
+    },
+    {
+      "type": "link",
+      "title": "Governance overview",
+      "url": "/d/governance-ai-cli-telemetry",
+      "includeTime": true,
+      "includeVars": false,
+      "targetBlank": false
+    }
+  ],
   "panels": [
     {
       "id": 1,
       "type": "row",
-      "title": "Volume & adoption (RFC-0003 OpenCode row)",
+      "title": "Activity",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -481,7 +500,7 @@
     {
       "id": 9,
       "type": "row",
-      "title": "Cost & tokens -- self-reported by the client (opencode.assistant_response)",
+      "title": "Cost & tokens",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -822,7 +841,7 @@
     {
       "id": 15,
       "type": "row",
-      "title": "Tool activity (opencode.tool_result / .tool_decision)",
+      "title": "Tools",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1067,7 +1086,7 @@
     {
       "id": 20,
       "type": "row",
-      "title": "Reliability (opencode.api_error)",
+      "title": "Reliability",
       "collapsed": false,
       "gridPos": {
         "h": 1,

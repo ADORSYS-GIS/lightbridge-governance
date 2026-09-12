@@ -145,6 +145,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dashboard_common import dashboard_links
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PATH = REPO_ROOT / "charts" / "lightbridge-governance" / "dashboards" / "claude-code-telemetry.json"
 
@@ -338,7 +340,7 @@ def loki_table_panel(
     }
 
 
-def loki_piechart_panel(
+def loki_breakdown_table_panel(
     ids: Ids,
     *,
     title: str,
@@ -349,23 +351,24 @@ def loki_piechart_panel(
 ) -> dict[str, Any]:
     return {
         "id": ids.take(),
-        "type": "piechart",
+        "type": "table",
         "title": title,
         "description": description,
         "datasource": LOKI_DS,
         "gridPos": grid,
         "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-        "options": {
-            "legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]},
-            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-            "pieType": "pie",
-        },
+        "options": {"showHeader": True, "cellHeight": "sm"},
+        "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": True},
+            "renameByName": {"attributes_model": "Model", "attributes_originator": "Client",
+                "attributes_approval_policy": "Approval policy", "attributes_query_source": "Invocation source",
+                "Value #A": "Value"}}}],
         "targets": [
             {
                 "datasource": LOKI_DS,
                 "expr": expr,
                 "queryType": "instant",
                 "instant": True,
+                "format": "table",
                 "legendFormat": legend,
                 "refId": "A",
             }
@@ -471,7 +474,7 @@ def build_dashboard() -> dict[str, Any]:
     # data (see module docstring); real per-engineer identity is a genuine
     # strength here instead.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Summary KPIs", y))
+    panels.append(row(ids, "At a glance", y))
     y += 1
 
     panels.append(
@@ -654,7 +657,7 @@ def build_dashboard() -> dict[str, Any]:
     y += 1
 
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Token Usage by Model (24h)",
             description=(
@@ -671,7 +674,7 @@ def build_dashboard() -> dict[str, Any]:
         )
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Cost by Model (24h)",
             description=(
@@ -688,7 +691,7 @@ def build_dashboard() -> dict[str, Any]:
         )
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="API Requests by Model (24h)",
             description='sum by (attributes_model) (count_over_time({...} | attributes_event_name="api_request" [24h])).',
@@ -707,7 +710,7 @@ def build_dashboard() -> dict[str, Any]:
     # section -- decision alone is 99.4% policy default, not a human, and
     # this section makes that split explicit exactly like the Codex sibling.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Tool Usage & Approvals -- decision vs source (tool_decision)", y))
+    panels.append(row(ids, "Tools & approvals", y))
     y += 1
 
     panels.append(
@@ -796,7 +799,7 @@ def build_dashboard() -> dict[str, Any]:
         )
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Invocation source (query_source, 7d)",
             description=(
@@ -965,7 +968,7 @@ def build_dashboard() -> dict[str, Any]:
     # Section 7 -- Hooks (hook_execution_start/.complete, hook_registered).
     # No analogue in 25052 -- see module docstring.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Hooks (hook_execution_start / .complete) -- not in 25052", y))
+    panels.append(row(ids, "Hooks", y))
     y += 1
 
     panels.append(
@@ -1048,11 +1051,11 @@ def build_dashboard() -> dict[str, Any]:
     # Section 8 -- MCP servers & plugins (mcp_server_connection,
     # plugin_loaded). No analogue in 25052.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "MCP servers & plugins -- not in 25052", y))
+    panels.append(row(ids, "MCP & plugins", y))
     y += 1
 
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="MCP server connections, by status (7d)",
             description=(
@@ -1069,7 +1072,7 @@ def build_dashboard() -> dict[str, Any]:
         )
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="MCP server connections, by transport (7d)",
             description=(
@@ -1109,7 +1112,7 @@ def build_dashboard() -> dict[str, Any]:
     # framing (redaction, content-capture policy) rather than being a
     # generic "more metrics" addition.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Data retention & privacy hygiene (retention_sweep) -- not in 25052", y))
+    panels.append(row(ids, "Retention", y))
     y += 1
 
     panels.append(
@@ -1173,6 +1176,16 @@ def build_dashboard() -> dict[str, Any]:
     )
     y += 6
 
+    panels.append(row(ids, "Request latency", y))
+    y += 1
+    panels.append(loki_timeseries_panel(
+        ids, title="API request latency", description="Mean request duration reported by Claude Code. "
+        "Moved from AI CLI; usage detail is owned by this dashboard.",
+        expr=f'avg(avg_over_time({CLAUDE_JOB} | json | attributes_event_name="api_request" '
+             '| unwrap attributes_duration_ms [$__interval]))',
+        legend="Mean duration", unit="ms", grid={"h": 7, "w": 24, "x": 0, "y": y},
+    ))
+
     dashboard: dict[str, Any] = {
         "id": None,
         "uid": "governance-claude-code-telemetry",
@@ -1200,7 +1213,7 @@ def build_dashboard() -> dict[str, Any]:
         "timepicker": {},
         "templating": {"list": []},
         "annotations": {"list": []},
-        "links": [],
+        "links": dashboard_links("governance-claude-code-telemetry"),
         "panels": panels,
     }
     return dashboard

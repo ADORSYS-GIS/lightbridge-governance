@@ -375,7 +375,13 @@ grafanaDashboard:
   aiCliFolder:
     enabled: true
     nameSuffix: ai-cli
-    title: "AI CLI"
+    title: "Overview"
+
+  # Editor telemetry is separate from GitHub daily reports and seat snapshots.
+  vscodeCopilotFolder:
+    enabled: true
+    nameSuffix: vscode-copilot
+    title: "VS Code Copilot"
 
   # A third sibling folder under the same `Governance` parent, for the
   # OpenCode telemetry dashboard (RFC-0003's OpenCode row, `opencodeOtel`

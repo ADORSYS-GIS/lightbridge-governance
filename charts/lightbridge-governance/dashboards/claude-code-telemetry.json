@@ -25,12 +25,31 @@
   "annotations": {
     "list": []
   },
-  "links": [],
+  "links": [
+    {
+      "type": "link",
+      "title": "Export PNG",
+      "icon": "external link",
+      "url": "/render/d/governance-claude-code-telemetry?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
+      "targetBlank": true,
+      "includeTime": true,
+      "includeVars": true,
+      "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
+    },
+    {
+      "type": "link",
+      "title": "Governance overview",
+      "url": "/d/governance-ai-cli-telemetry",
+      "includeTime": true,
+      "includeVars": false,
+      "targetBlank": false
+    }
+  ],
   "panels": [
     {
       "id": 1,
       "type": "row",
-      "title": "Summary KPIs",
+      "title": "At a glance",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -640,7 +659,7 @@
     },
     {
       "id": 12,
-      "type": "piechart",
+      "type": "table",
       "title": "Token Usage by Model (24h)",
       "description": "sum by (attributes_model) (sum_over_time({...} | unwrap attributes_input_tokens [24h])) -- input tokens as the volume proxy.",
       "datasource": {
@@ -660,23 +679,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -686,6 +708,7 @@
           "expr": "sum by (attributes_model) (sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" | unwrap attributes_input_tokens [24h]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_model}}",
           "refId": "A"
         }
@@ -693,7 +716,7 @@
     },
     {
       "id": 13,
-      "type": "piechart",
+      "type": "table",
       "title": "Cost by Model (24h)",
       "description": "sum by (attributes_model) (sum_over_time({...} | unwrap attributes_cost_usd [24h])).",
       "datasource": {
@@ -713,23 +736,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -739,6 +765,7 @@
           "expr": "sum by (attributes_model) (sum_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" | unwrap attributes_cost_usd [24h]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_model}}",
           "refId": "A"
         }
@@ -746,7 +773,7 @@
     },
     {
       "id": 14,
-      "type": "piechart",
+      "type": "table",
       "title": "API Requests by Model (24h)",
       "description": "sum by (attributes_model) (count_over_time({...} | attributes_event_name=\"api_request\" [24h])).",
       "datasource": {
@@ -766,23 +793,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -792,6 +822,7 @@
           "expr": "sum by (attributes_model) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" [24h]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_model}}",
           "refId": "A"
         }
@@ -800,7 +831,7 @@
     {
       "id": 15,
       "type": "row",
-      "title": "Tool Usage & Approvals -- decision vs source (tool_decision)",
+      "title": "Tools & approvals",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1051,7 +1082,7 @@
     },
     {
       "id": 20,
-      "type": "piechart",
+      "type": "table",
       "title": "Invocation source (query_source, 7d)",
       "description": "sum by (attributes_query_source) (count_over_time({...} | attributes_event_name=\"assistant_response\" [7d])). Independent of app.entrypoint -- confirmed live values: sdk, prompt_suggestion, agent:builtin:general-purpose, web_fetch_apply, web_search_tool, compact. \"sdk\" dominating (669/726 in the sample checked) means most traffic in this fleet is Agent-SDK-driven, not a human typing at an interactive prompt.",
       "datasource": {
@@ -1071,23 +1102,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1097,6 +1131,7 @@
           "expr": "sum by (attributes_query_source) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"assistant_response\" [7d]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_query_source}}",
           "refId": "A"
         }
@@ -1401,7 +1436,7 @@
     {
       "id": 27,
       "type": "row",
-      "title": "Hooks (hook_execution_start / .complete) -- not in 25052",
+      "title": "Hooks",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1554,7 +1589,7 @@
     {
       "id": 30,
       "type": "row",
-      "title": "MCP servers & plugins -- not in 25052",
+      "title": "MCP & plugins",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1566,7 +1601,7 @@
     },
     {
       "id": 31,
-      "type": "piechart",
+      "type": "table",
       "title": "MCP server connections, by status (7d)",
       "description": "sum by (attributes_status) (count_over_time({...} | attributes_event_name=\"mcp_server_connection\" [7d])). Confirmed live values: connected, disconnected.",
       "datasource": {
@@ -1586,23 +1621,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1612,6 +1650,7 @@
           "expr": "sum by (attributes_status) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"mcp_server_connection\" [7d]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_status}}",
           "refId": "A"
         }
@@ -1619,7 +1658,7 @@
     },
     {
       "id": 32,
-      "type": "piechart",
+      "type": "table",
       "title": "MCP server connections, by transport (7d)",
       "description": "sum by (attributes_transport_type) (count_over_time({...} | attributes_event_name=\"mcp_server_connection\" [7d])). Confirmed live values: stdio, http.",
       "datasource": {
@@ -1639,23 +1678,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1665,6 +1707,7 @@
           "expr": "sum by (attributes_transport_type) (count_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"mcp_server_connection\" [7d]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_transport_type}}",
           "refId": "A"
         }
@@ -1722,7 +1765,7 @@
     {
       "id": 34,
       "type": "row",
-      "title": "Data retention & privacy hygiene (retention_sweep) -- not in 25052",
+      "title": "Retention",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -2012,6 +2055,75 @@
           "queryType": "instant",
           "instant": true,
           "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "type": "row",
+      "title": "Request latency",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 91
+      },
+      "panels": []
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "API request latency",
+      "description": "Mean request duration reported by Claude Code. Moved from AI CLI; usage detail is owned by this dashboard.",
+      "datasource": {
+        "type": "loki",
+        "uid": "__DS_LOKI__"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 92
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "__DS_LOKI__"
+          },
+          "expr": "avg(avg_over_time({job=~\"claude-code-desktop|ai-cli/claude-code|ai-cli/claude-code-desktop\"} | json | attributes_event_name=\"api_request\" | unwrap attributes_duration_ms [$__interval]))",
+          "queryType": "range",
+          "legendFormat": "Mean duration",
           "refId": "A"
         }
       ]
