@@ -139,7 +139,7 @@ panel-by-panel at the user's request) queries a DIFFERENT backend entirely
 (Azure Monitor / Log Analytics KQL over `customMetrics`, real OTLP metrics --
 `codex.thread.started`, `codex.turn.token_usage`, `codex.tool.call`,
 `codex.approval.requested`, etc.) that this org's Codex traffic does not
-emit into (see "Why Loki" above); its "Summary KPIs" layout (8 compact h=4
+emit into (see "Why Loki" above); its "At a glance" layout (8 compact h=4
 stats, 2 rows of 4) and per-section structure (Token Usage / Latency / Usage
 Over Time / Tool Health / Safety & Access) were still worth matching, and
 this revision does, filling in what our own live-confirmed fields can
@@ -215,6 +215,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from dashboard_common import dashboard_links
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PATH = REPO_ROOT / "charts" / "lightbridge-governance" / "dashboards" / "codex-telemetry.json"
@@ -406,7 +408,7 @@ def loki_table_panel(
     }
 
 
-def loki_piechart_panel(
+def loki_breakdown_table_panel(
     ids: Ids,
     *,
     title: str,
@@ -415,28 +417,27 @@ def loki_piechart_panel(
     grid: dict[str, int],
     legend: str = "__auto",
 ) -> dict[str, Any]:
-    """Same shape as `generate_claude_code_dashboard.py`'s own
-    `loki_piechart_panel` -- an instant, grouped breakdown, for "share of
-    total by category" rather than a trend or a ranked list."""
+    """Compact grouped values; a single category remains readable."""
     return {
         "id": ids.take(),
-        "type": "piechart",
+        "type": "table",
         "title": title,
         "description": description,
         "datasource": LOKI_DS,
         "gridPos": grid,
         "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-        "options": {
-            "legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]},
-            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-            "pieType": "pie",
-        },
+        "options": {"showHeader": True, "cellHeight": "sm"},
+        "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": True},
+            "renameByName": {"attributes_model": "Model", "attributes_originator": "Client",
+                "attributes_approval_policy": "Approval policy", "attributes_query_source": "Invocation source",
+                "Value #A": "Value"}}}],
         "targets": [
             {
                 "datasource": LOKI_DS,
                 "expr": expr,
                 "queryType": "instant",
                 "instant": True,
+                "format": "table",
                 "legendFormat": legend,
                 "refId": "A",
             }
@@ -459,7 +460,7 @@ def build_dashboard() -> dict[str, Any]:
     # share (this dashboard's own headline finding) and real per-engineer
     # identity (which 25266 has no dimension for at all).
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Summary KPIs", y))
+    panels.append(row(ids, "At a glance", y))
     y += 1
 
     panels.append(
@@ -635,7 +636,7 @@ def build_dashboard() -> dict[str, Any]:
     # ChatGPT-signed-in engineers over the trailing 7d (a small pilot group,
     # not a bug).
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Volume & adoption (RFC-0003 Codex row)", y))
+    panels.append(row(ids, "Activity", y))
     y += 1
 
     panels.append(
@@ -721,7 +722,7 @@ def build_dashboard() -> dict[str, Any]:
     # row name; adds the tokens-by-model piechart 25266 has and this
     # dashboard's earlier revision didn't.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Token Usage -- codex.sse_event (no cost figure: RFC-0003 confirms none emitted)", y))
+    panels.append(row(ids, "Tokens", y))
     y += 1
 
     panels.append(
@@ -804,7 +805,7 @@ def build_dashboard() -> dict[str, Any]:
         ]
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Tokens by model (24h)",
             description=(
@@ -918,7 +919,7 @@ def build_dashboard() -> dict[str, Any]:
     panels.append(
         row(
             ids,
-            "Tool Health & Safety/Access -- decision vs source (codex.tool_decision)",
+            "Tools & approvals",
             y,
         )
     )
@@ -1024,7 +1025,7 @@ def build_dashboard() -> dict[str, Any]:
         )
     )
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Sessions by client (originator, 7d)",
             description=(
@@ -1047,7 +1048,7 @@ def build_dashboard() -> dict[str, Any]:
     y += 8
 
     panels.append(
-        loki_piechart_panel(
+        loki_breakdown_table_panel(
             ids,
             title="Sessions by approval policy (7d)",
             description=(
@@ -1093,7 +1094,7 @@ def build_dashboard() -> dict[str, Any]:
     # Section 6 -- Reliability (codex.api_request / .websocket_request /
     # .auth_recovery / .sse_event). What breaks, not what the agent did.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Reliability (codex.api_request / .auth_recovery / .sse_event)", y))
+    panels.append(row(ids, "Reliability", y))
     y += 1
 
     panels.append(
@@ -1230,7 +1231,7 @@ def build_dashboard() -> dict[str, Any]:
         "timepicker": {},
         "templating": {"list": []},
         "annotations": {"list": []},
-        "links": [],
+        "links": dashboard_links("governance-codex-telemetry"),
         "panels": panels,
     }
     return dashboard

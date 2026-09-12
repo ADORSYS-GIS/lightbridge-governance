@@ -25,12 +25,31 @@
   "annotations": {
     "list": []
   },
-  "links": [],
+  "links": [
+    {
+      "type": "link",
+      "title": "Export PNG",
+      "icon": "external link",
+      "url": "/render/d/governance-codex-telemetry?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
+      "targetBlank": true,
+      "includeTime": true,
+      "includeVars": true,
+      "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
+    },
+    {
+      "type": "link",
+      "title": "Governance overview",
+      "url": "/d/governance-ai-cli-telemetry",
+      "includeTime": true,
+      "includeVars": false,
+      "targetBlank": false
+    }
+  ],
   "panels": [
     {
       "id": 1,
       "type": "row",
-      "title": "Summary KPIs",
+      "title": "At a glance",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -619,7 +638,7 @@
     {
       "id": 10,
       "type": "row",
-      "title": "Volume & adoption (RFC-0003 Codex row)",
+      "title": "Activity",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -928,7 +947,7 @@
     {
       "id": 16,
       "type": "row",
-      "title": "Token Usage -- codex.sse_event (no cost figure: RFC-0003 confirms none emitted)",
+      "title": "Tokens",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1046,7 +1065,7 @@
     },
     {
       "id": 18,
-      "type": "piechart",
+      "type": "table",
       "title": "Tokens by model (24h)",
       "description": "sum by (attributes_model) (sum_over_time({...} | unwrap attributes_input_token_count [24h])) -- input tokens as the volume proxy. attributes_model is confirmed present directly on codex.sse_event, the same event token counts come from -- no join needed.",
       "datasource": {
@@ -1066,23 +1085,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1092,6 +1114,7 @@
           "expr": "sum by (attributes_model) (sum_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.sse_event\" | unwrap attributes_input_token_count [24h]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_model}}",
           "refId": "A"
         }
@@ -1245,7 +1268,7 @@
     {
       "id": 22,
       "type": "row",
-      "title": "Tool Health & Safety/Access -- decision vs source (codex.tool_decision)",
+      "title": "Tools & approvals",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1531,7 +1554,7 @@
     },
     {
       "id": 28,
-      "type": "piechart",
+      "type": "table",
       "title": "Sessions by client (originator, 7d)",
       "description": "sum by (attributes_originator) (count_over_time({...} | attributes_event_name=\"codex.turn_ttft\" [7d])) -- an EVENT count, not a distinct-session count (see the module docstring's \u26a0\ufe0f on why the simpler shape was used here). 25266's own analogue groups its `codex.thread.started` metric by the same `originator` dimension; confirmed live value so far: \"Codex_Desktop\" only -- unfiltered so a CLI-originated value shows up the moment one exists, no dashboard change required.",
       "datasource": {
@@ -1551,23 +1574,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1577,6 +1603,7 @@
           "expr": "sum by (attributes_originator) (count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.turn_ttft\" [7d]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_originator}}",
           "refId": "A"
         }
@@ -1584,7 +1611,7 @@
     },
     {
       "id": 29,
-      "type": "piechart",
+      "type": "table",
       "title": "Sessions by approval policy (7d)",
       "description": "sum by (attributes_approval_policy) (count_over_time({...} | attributes_event_name=\"codex.conversation_starts\" [7d])). 25266's own \"Tool calls by sandbox policy\" panel groups individual tool-call events by a per-call sandbox_policy dimension this dashboard's tool_decision/tool_result events do not carry (confirmed absent) -- this is the closest available analogue: session-level approval_policy from conversation_starts, the same field the \"Session config\" table already reads. approval_policy=\"never\" means no human is ever asked, at the sandbox's own config level -- context for the approvals panels above.",
       "datasource": {
@@ -1604,23 +1631,26 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "pieType": "pie"
+        "showHeader": true,
+        "cellHeight": "sm"
       },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "attributes_model": "Model",
+              "attributes_originator": "Client",
+              "attributes_approval_policy": "Approval policy",
+              "attributes_query_source": "Invocation source",
+              "Value #A": "Value"
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -1630,6 +1660,7 @@
           "expr": "sum by (attributes_approval_policy) (count_over_time({job=~\"codex-app-server|codex_cli_rs\"} | json | attributes_event_name=\"codex.conversation_starts\" [7d]))",
           "queryType": "instant",
           "instant": true,
+          "format": "table",
           "legendFormat": "{{attributes_approval_policy}}",
           "refId": "A"
         }
@@ -1687,7 +1718,7 @@
     {
       "id": 31,
       "type": "row",
-      "title": "Reliability (codex.api_request / .auth_recovery / .sse_event)",
+      "title": "Reliability",
       "collapsed": false,
       "gridPos": {
         "h": 1,

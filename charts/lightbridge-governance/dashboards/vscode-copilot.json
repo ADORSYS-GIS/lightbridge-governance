@@ -1,0 +1,452 @@
+{
+  "id": null,
+  "uid": "governance-vscode-copilot",
+  "title": "VS Code Copilot",
+  "description": "Editor sessions, tools, code edits and acceptance from VS Code Copilot Chat. GitHub daily reports and seat assignments live in the separate Copilot reports dashboard.",
+  "tags": [
+    "governance"
+  ],
+  "style": "dark",
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "Export PNG",
+      "icon": "external link",
+      "url": "/render/d/governance-vscode-copilot?width=1280&height=-1&scale=1&fullPageImage=true&kiosk=true&hideNav=true&timeout=180",
+      "targetBlank": true,
+      "includeTime": true,
+      "includeVars": true,
+      "tooltip": "Full dashboard image; allow up to 3 minutes. Uses the selected time range and filters."
+    },
+    {
+      "type": "link",
+      "title": "Governance overview",
+      "url": "/d/governance-ai-cli-telemetry",
+      "includeTime": true,
+      "includeVars": false,
+      "targetBlank": false
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Code changes",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Lines added / removed, by language",
+      "description": "sum by (copilot_chat_language_id, type) (increase(copilot_chat_lines_of_code_count_total[$__interval])). Confirmed live in Mimir with real, non-empty history over the last 7 days -- languages seen: just, rust, yaml, shellscript. Not filtered by `job`: both copilot-chat (pre-#272 file exporter) and ai-cli/copilot-chat (post-#272 daemon) already report the same metric, and comparing the two paths' adoption is a separate question this panel does not answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "sum by (copilot_chat_language_id, type) (increase(copilot_chat_lines_of_code_count_total[$__interval]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{copilot_chat_language_id}} ({{type}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Net lines (7d)",
+      "description": "sum(increase(...{type=\"added\"}[7d])) - sum(increase(...{type=\"removed\"}[7d])). A single top-line answer to 'is the agent writing code, on net' -- the same question 'lines of code the agents are writing' asks, reduced to one number.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "gray",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "sum(increase(copilot_chat_lines_of_code_count_total{type=\"added\"}[7d])) - sum(increase(copilot_chat_lines_of_code_count_total{type=\"removed\"}[7d]))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Lines added by language (7d)",
+      "description": "topk(10, sum by (copilot_chat_language_id) (increase(...{type=\"added\"}[7d]))), as an instant snapshot table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "topk(10, sum by (copilot_chat_language_id) (increase(copilot_chat_lines_of_code_count_total{type=\"added\"}[7d])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Sessions (7d)",
+      "description": "sum(increase(copilot_chat_session_count_total[7d])).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 8,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "gray",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "sum(increase(copilot_chat_session_count_total[7d]))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Tool calls (7d)",
+      "description": "sum(increase(copilot_chat_tool_call_count_total[7d])).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 12,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "gray",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "sum(increase(copilot_chat_tool_call_count_total[7d]))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Edit acceptance rate (7d)",
+      "description": "accepted / (accepted + rejected), from copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=...}. A dropping rate is the signal worth a human's attention -- the same edit outcomes reported by VS Code Copilot.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "__DS_PROMETHEUS__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "NO DATA",
+                  "color": "gray",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "__DS_PROMETHEUS__"
+          },
+          "expr": "sum(increase(copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=\"accepted\"}[7d])) / sum(increase(copilot_chat_chat_edit_outcome_count_total[7d]))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

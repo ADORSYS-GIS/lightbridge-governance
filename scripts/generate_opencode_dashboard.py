@@ -116,6 +116,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dashboard_common import dashboard_links
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PATH = REPO_ROOT / "charts" / "lightbridge-governance" / "dashboards" / "opencode-telemetry.json"
 
@@ -336,7 +338,7 @@ def build_dashboard() -> dict[str, Any]:
     # Section 1 -- Volume & adoption. Confirmed live 2026-09-09: 288
     # sessions, 31 distinct hosts, 9+ distinct repos over the trailing 7d.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Volume & adoption (RFC-0003 OpenCode row)", y))
+    panels.append(row(ids, "Activity", y))
     y += 1
 
     panels.append(
@@ -461,7 +463,7 @@ def build_dashboard() -> dict[str, Any]:
     # filters to assistant_response specifically (session_idle carries an
     # overlapping, not additive, per-session cumulative figure).
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Cost & tokens -- self-reported by the client (opencode.assistant_response)", y))
+    panels.append(row(ids, "Cost & tokens", y))
     y += 1
 
     panels.append(
@@ -608,7 +610,7 @@ def build_dashboard() -> dict[str, Any]:
     # Section 3 -- Tool activity (opencode.tool_result / .tool_decision).
     # What the agent is actually doing.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Tool activity (opencode.tool_result / .tool_decision)", y))
+    panels.append(row(ids, "Tools", y))
     y += 1
 
     panels.append(
@@ -696,7 +698,7 @@ def build_dashboard() -> dict[str, Any]:
     # confirmed 1248 api_error events against 21604 assistant_response over
     # the same trailing 7d on the live cluster, ~5.8%, not noise.
     # ---------------------------------------------------------------
-    panels.append(row(ids, "Reliability (opencode.api_error)", y))
+    panels.append(row(ids, "Reliability", y))
     y += 1
 
     panels.append(
@@ -793,7 +795,7 @@ def build_dashboard() -> dict[str, Any]:
         "timepicker": {},
         "templating": {"list": []},
         "annotations": {"list": []},
-        "links": [],
+        "links": dashboard_links("governance-opencode-telemetry"),
         "panels": panels,
     }
     return dashboard

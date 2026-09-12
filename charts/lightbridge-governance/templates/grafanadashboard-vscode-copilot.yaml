@@ -1,9 +1,9 @@
 {{- if .Values.grafanaDashboard.enabled }}
-{{/* Governance overview keeps the former AI CLI resource name and UID. */}}
-{{- $dashboardPath := "dashboards/ai-cli-telemetry.json" }}
+{{/* VS Code Copilot editor telemetry, separate from GitHub reports and seats. */}}
+{{- $dashboardPath := "dashboards/vscode-copilot.json" }}
 {{- $rawJson := .Files.Get $dashboardPath }}
 {{- if not $rawJson }}
-{{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/ai-cli-telemetry.json (scripts/generate_ai_cli_dashboard.py generates it)." $dashboardPath) }}
+{{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/vscode-copilot.json (scripts/generate_vscode_copilot_dashboard.py generates it)." $dashboardPath) }}
 {{- end }}
 {{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid | replace "__DS_PROMETHEUS__" .Values.grafanaDashboard.datasources.prometheusUid }}
 {{- if or (contains "__DS_LOKI__" $dashboardJson) (contains "__DS_PROMETHEUS__" $dashboardJson) }}
@@ -21,7 +21,7 @@ above cannot.
 apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaDashboard
 metadata:
-  name: {{ .Values.name }}-ai-cli-telemetry
+  name: {{ .Values.name }}-vscode-copilot
   # Created alongside Grafana, not in the release namespace -- see
   # values.yaml's grafanaDashboard.namespace.
   namespace: {{ .Values.grafanaDashboard.namespace }}
@@ -32,12 +32,12 @@ spec:
   # the full caveat and the deployed-cluster evidence for its current value.
   instanceSelector:
 {{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
-  {{- if .Values.grafanaDashboard.aiCliFolder.enabled }}
+  {{- if .Values.grafanaDashboard.vscodeCopilotFolder.enabled }}
   # `folderRef` references the GrafanaFolder CR in
-  # templates/grafanafolder-ai-cli.yaml BY NAME, requiring it in the SAME
+  # templates/grafanafolder-vscode-copilot.yaml BY NAME, requiring it in the SAME
   # namespace as this dashboard -- both are created in
   # grafanaDashboard.namespace, so that holds.
-  folderRef: {{ .Values.name }}-{{ .Values.grafanaDashboard.aiCliFolder.nameSuffix }}
+  folderRef: {{ .Values.name }}-{{ .Values.grafanaDashboard.vscodeCopilotFolder.nameSuffix }}
   {{- end }}
   # ⚠️ Load-bearing whenever Grafana runs in a different namespace than this
   # chart -- see templates/grafanadashboard.yaml's own comment for the exact
