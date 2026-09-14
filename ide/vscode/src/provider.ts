@@ -7,7 +7,7 @@ import { fetchCatalogue, logCatalogueFailure } from './catalogue.js';
 import { readConfig } from './config.js';
 import { errorMessage, log, redact } from './log.js';
 import { toWireMessages, toWireToolChoice, toWireTools } from './messages.js';
-import { fetchWithRetry } from './retry.js';
+import { fetchWithRetry, requestSignal } from './retry.js';
 import { pumpStream } from './stream.js';
 import { estimateTokens, extractText } from './tokens.js';
 import type { LightbridgeModel } from './types.js';
@@ -117,9 +117,10 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       throw err;
     }
 
-    const controller = new AbortController();
-    const cancel = token.onCancellationRequested(() => controller.abort());
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    // A single chat request is owned by this caller, so both the caller's
+    // cancellation and `requestTimeoutMs` bound it — shared helper so the
+    // cleanup (dispose the token subscription + timer) is written once.
+    const { signal, dispose: disposeSignal } = requestSignal(config.requestTimeoutMs, token);
 
     const url = `${config.gatewayUrl}/v1/chat/completions`;
     const body = {
@@ -162,7 +163,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
             accept: 'text/event-stream',
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal,
         },
         {
           retryOn: 'throttle-only',
@@ -196,7 +197,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
 
       await pumpStream(res.body, progress, token);
     } catch (err) {
-      if (controller.signal.aborted && token.isCancellationRequested) {
+      if (signal.aborted && token.isCancellationRequested) {
         return; // A user cancellation is not a failure.
       }
       if (err instanceof vscode.LanguageModelError) {
@@ -204,8 +205,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       }
       throw new Error(`Chat request failed: ${errorMessage(err)}`);
     } finally {
-      clearTimeout(timeout);
-      cancel.dispose();
+      disposeSignal();
     }
   }
 

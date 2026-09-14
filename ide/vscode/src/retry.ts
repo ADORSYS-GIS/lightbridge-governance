@@ -197,3 +197,33 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
+
+/** The part of a VS Code `CancellationToken` this helper needs (vscode-free). */
+export interface CancellationSource {
+  onCancellationRequested(fn: () => void): { dispose(): void };
+}
+
+/**
+ * An `AbortSignal` bounded by an optional caller cancellation token and a hard
+ * timeout — the two things that bound a gateway request.
+ *
+ * Callers must call `dispose()` (in a `finally`) to release the token
+ * subscription and the timer: a leaked timer fires an abort on a controller
+ * nobody is watching, and a leaked subscription leaks per call on a path VS
+ * Code invokes repeatedly.
+ */
+export function requestSignal(
+  timeoutMs: number,
+  token?: CancellationSource,
+): { readonly signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const cancel = token?.onCancellationRequested(() => controller.abort());
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      cancel?.dispose();
+    },
+  };
+}

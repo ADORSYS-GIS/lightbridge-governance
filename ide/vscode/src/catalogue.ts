@@ -1,6 +1,6 @@
 import { getToken } from './auth.js';
 import { errorMessage, log, redact } from './log.js';
-import { fetchWithRetry } from './retry.js';
+import { fetchWithRetry, requestSignal } from './retry.js';
 import type * as vscode from 'vscode';
 import type { Config } from './config.js';
 import type { CatalogueEntry, CatalogueResponse, LightbridgeModel } from './types.js';
@@ -64,8 +64,12 @@ export async function fetchCatalogue(
   // Join the fetch already running for this gateway rather than starting a
   // second one. Keyed on the URL so a settings change cannot make a caller
   // receive the previous gateway's catalogue.
+  //
+  // Per-caller cancellation: a caller gives up on its OWN token via
+  // `withCancel`; it must NOT abort the shared fetch other callers are
+  // awaiting — that is the rule `invalidateCatalogue` states above.
   if (inflight && inflight.gatewayUrl === gatewayUrl) {
-    return inflight.promise;
+    return withCancel(inflight.promise, cancelToken);
   }
 
   // A within-TTL catalogue is served by the entry guard above without any
@@ -73,20 +77,16 @@ export async function fetchCatalogue(
   // exists. If this fetch fails after retries it propagates — we deliberately
   // do NOT fall back to a stale (beyond-TTL) catalogue, because serving one
   // is how a model that policy has withdrawn stays selectable (provider.ts).
-  const promise = fetchFresh(config, gatewayUrl, cancelToken).finally(() => {
+  const promise = fetchFresh(config, gatewayUrl).finally(() => {
     if (inflight?.promise === promise) {
       inflight = undefined;
     }
   });
   inflight = { gatewayUrl, promise };
-  return promise;
+  return withCancel(promise, cancelToken);
 }
 
-async function fetchFresh(
-  config: Config,
-  gatewayUrl: string,
-  cancelToken?: vscode.CancellationToken,
-): Promise<LightbridgeModel[]> {
+async function fetchFresh(config: Config, gatewayUrl: string): Promise<LightbridgeModel[]> {
   const token = await getToken(config);
   // `/v1/models/info`, verified live against the gateway. The first version of
   // this file used `/models/info`, which 404s — and a 404 here presents as an
@@ -98,22 +98,19 @@ async function fetchFresh(
   // are returned on the first attempt — retrying them burns rate limit
   // without any hope of success (AGENTS.md).
   //
-  // The controller bounds the whole retry ladder two ways: the caller's
-  // CancellationToken (forwarded from provideLanguageModelChatInformation, so
-  // dismissing the picker aborts immediately) and `requestTimeoutMs`. Without
-  // either, a pair of `Retry-After: 30` responses would park the model picker
-  // for a minute with nothing able to stop it. The signal is threaded into
-  // `fetchWithRetry` so the abort also interrupts the sleep between attempts,
-  // not just the next fetch.
-  const controller = new AbortController();
-  const cancel = cancelToken?.onCancellationRequested(() => controller.abort());
-  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  // This fetch is SHARED across concurrent picker queries (the inflight
+  // de-duplication above), so no single caller's cancellation aborts it — each
+  // caller gives up on its own token via `withCancel` in fetchCatalogue, and
+  // the shared request is bounded only by `requestTimeoutMs`. The signal is
+  // threaded into `fetchWithRetry` so the abort also interrupts the sleep
+  // between attempts, not just the next fetch.
+  const { signal, dispose } = requestSignal(config.requestTimeoutMs);
   try {
     const res = await fetchWithRetry(
       url,
       {
         headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-        signal: controller.signal,
+        signal,
       },
       {
         onRetry: ({ attempt, delayMs, status }) =>
@@ -158,9 +155,37 @@ async function fetchFresh(
     cache = { models, at: Date.now(), gatewayUrl };
     return models;
   } finally {
-    clearTimeout(timeout);
-    cancel?.dispose();
+    dispose();
   }
+}
+
+/**
+ * Per-caller cancellation for a promise the caller does not own.
+ *
+ * The catalogue fetch is shared (callers join `inflight`), so a single
+ * caller's cancellation must reject only that caller's wait — never the
+ * shared underlying fetch other callers are relying on. That is the rule
+ * `invalidateCatalogue` states: "cancelling would fail them for no reason."
+ */
+function withCancel<T>(promise: Promise<T>, token?: vscode.CancellationToken): Promise<T> {
+  if (!token) {
+    return promise;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const sub = token.onCancellationRequested(() =>
+      reject(new DOMException('The operation was aborted.', 'AbortError')),
+    );
+    promise.then(
+      (value) => {
+        sub.dispose();
+        resolve(value);
+      },
+      (err) => {
+        sub.dispose();
+        reject(err);
+      },
+    );
+  });
 }
 
 /**

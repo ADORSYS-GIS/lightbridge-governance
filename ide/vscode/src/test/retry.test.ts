@@ -110,6 +110,23 @@ test('fetchWithRetry: retries a 429 then returns the successful response', async
   }
 });
 
+test('fetchWithRetry: honours Retry-After over the computed backoff', async () => {
+  // Header says 1s; the attempt-1 backoff would be 500ms. Only actually reading
+  // the header can produce an elapsed time at or above 1s — passing `null`
+  // instead would stay ~500ms and fail the lower bound. This is the PR's
+  // headline behaviour made falsifiable (port of the Rust retry.rs test).
+  const restore = stubFetch((n) => (n === 1 ? res(429, { 'retry-after': '1' }) : res(200)));
+  try {
+    const start = Date.now();
+    await fetchWithRetry('https://gw/v1/models/info', {}, { retryOn: 'transient' });
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 950, `expected the header's 1s wait, waited ${elapsed}ms`);
+    assert.ok(elapsed < 2000, `retry took implausibly long: ${elapsed}ms`);
+  } finally {
+    restore();
+  }
+});
+
 test('fetchWithRetry: does NOT retry a 5xx under throttle-only', async () => {
   const restore = stubFetch(() => res(503));
   try {

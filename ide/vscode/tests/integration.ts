@@ -530,8 +530,10 @@ await scenario('THROTTLE: dismissing the picker aborts the catalogue fetch promp
   gw.throttleNext(99);
   try {
     // The suite's shared `token` returns a no-op subscription, so build one
-    // whose cancellation handler is actually registered and fireable — proving
-    // the token threaded through fetchCatalogue interrupts the retry back-off.
+    // whose cancellation handler is actually registered and fireable. The
+    // caller's token rejects its OWN wait (withCancel in fetchCatalogue), so
+    // dismissing the picker must return promptly rather than sleep out the
+    // retry back-off.
     const handlers: Array<() => void> = [];
     const cancelToken = {
       isCancellationRequested: false,
@@ -545,8 +547,7 @@ await scenario('THROTTLE: dismissing the picker aborts the catalogue fetch promp
       { silent: false },
       cancelToken as never,
     );
-    // Abort shortly after the fetch begins, i.e. mid-Retry-After. A wired token
-    // must cut the back-off short; an unwired one would sleep out ~2 s.
+    // Abort shortly after the fetch begins, i.e. mid-Retry-After.
     await new Promise((r) => setTimeout(r, 20));
     handlers.forEach((fn) => fn());
     cancelToken.isCancellationRequested = true;
@@ -554,8 +555,43 @@ await scenario('THROTTLE: dismissing the picker aborts the catalogue fetch promp
     assert.equal(models.length, 0, 'a cancelled fetch must withhold models, not stall');
     assert.ok(
       Date.now() - started < 500,
-      'the abort must interrupt the retry back-off, not wait it out',
+      'the caller must not wait out the retry back-off after cancellation',
     );
+  } finally {
+    gw.throttleNext(0);
+  }
+});
+
+await scenario('THROTTLE: cancelling one caller does not blank a concurrent caller', async () => {
+  configure('good-auth.sh');
+  // Keep the shared fetch in flight so the second call joins the inflight
+  // promise rather than the cache: two throttled attempts before success.
+  gw.throttleNext(2);
+  try {
+    const handlers: Array<() => void> = [];
+    const cancelToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: (fn: () => void) => {
+        handlers.push(fn);
+        return { dispose() {} };
+      },
+    };
+    const provider = new LightbridgeChatProvider();
+    const cancelable = provider.provideLanguageModelChatInformation(
+      { silent: false },
+      cancelToken as never,
+    );
+    // Let the first call register the shared in-flight fetch (it is now inside
+    // a ~1s Retry-After wait), then have a silent caller join it.
+    await new Promise((r) => setTimeout(r, 100));
+    const silent = provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+    // Cancel the first caller. Its own wait must reject, but the shared fetch
+    // — and therefore the silent caller joined to it — must survive.
+    handlers.forEach((fn) => fn());
+    cancelToken.isCancellationRequested = true;
+    const [cancelled, other] = await Promise.all([cancelable, silent]);
+    assert.equal(cancelled.length, 0, 'a cancelled caller withholds its own models');
+    assert.equal(other.length, 1, 'cancelling one caller must not blank a concurrent caller');
   } finally {
     gw.throttleNext(0);
   }
