@@ -51,6 +51,20 @@ test('extractText: ignores parts that carry no prompt text', () => {
   assert.equal(extractText(message), 'Hello world');
 });
 
+test('extractText: descends into a tool result to count its nested text', () => {
+  // A LanguageModelToolResultPart nests its text under `content`, not `value`.
+  // toWireMessages sends that text on the wire, so extractText must count it —
+  // otherwise an agentic prompt full of tool output estimates as ~0 tokens.
+  const message = {
+    content: [
+      { value: 'User: ' },
+      { callId: 'call_1', content: [{ value: 'Hello' }, { value: ' world' }] },
+      { value: '!' },
+    ],
+  };
+  assert.equal(extractText(message), 'User: Hello world!');
+});
+
 test('extractText: duck-types structurally matching parts from another realm', () => {
   // A plain object, e.g. deserialized from JSON, that is not an `instanceof`
   // LanguageModelTextPart but has a string `value`.

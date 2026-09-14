@@ -145,7 +145,7 @@ await scenario('streaming: text arrives and a fragmented tool call is reassemble
   assert.deepEqual(calls[0]!.input, { path: 'src/a.ts' });
 });
 
-await scenario('token count: provideTokenCount returns a sensible estimate', async () => {
+await scenario('token count: provideTokenCount estimates a plain string', async () => {
   configure('good-auth.sh');
   const provider = new LightbridgeChatProvider();
   const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
@@ -153,6 +153,41 @@ await scenario('token count: provideTokenCount returns a sensible estimate', asy
   // Math.ceil(35 / 3.5) = 10
   const count = await provider.provideTokenCount(models[0]!, text, token as never);
   assert.equal(count, 10, `expected 10 tokens for 35 characters, got ${count}`);
+});
+
+await scenario('token count: provideTokenCount estimates a message with a text part', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // A real message from the bundled stub exercises provideTokenCount's
+  // extractText dispatch (the string branch above never reaches it) — the path
+  // issue #231 was originally about.
+  const vscode = await import('vscode');
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [new vscode.LanguageModelTextPart('This is exactly 35 characters long!')],
+  };
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(count, 10, `expected 10 tokens for a 35-char message, got ${count}`);
+});
+
+await scenario('token count: provideTokenCount counts nested tool-result text', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // A tool result nests its text under `content`; that text is what toWireMessages
+  // sends on the wire, so it must be counted or an agentic prompt under-counts.
+  const vscode = await import('vscode');
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [
+      new vscode.LanguageModelToolResultPart('call_1', [
+        new vscode.LanguageModelTextPart('This is exactly 35 characters long!'),
+      ]),
+    ],
+  };
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(count, 10, `expected 10 tokens for a 35-char tool result, got ${count}`);
 });
 
 await scenario('modelOptions: supported params pass, Copilot internals are dropped', async () => {

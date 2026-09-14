@@ -17,26 +17,41 @@ export interface MessageContent {
 }
 
 /**
- * Extracts plain text from a chat message's content parts.
+ * Extracts the text a chat message will put on the wire.
  *
- * Accepts a `LanguageModelTextPart` — or anything structurally matching one,
- * i.e. an object with a string `value`. The structural check is what makes
- * this testable and realm-safe: unit tests construct part-like objects that
- * are deliberately not `instanceof` the real class, and a part deserialized
- * across a module realm would fail that check too. Parts without a string
- * `value` (tool calls, data and image parts) carry no prompt text and are
- * dropped.
+ * The goal is to match `toWireMessages`/`flattenResult` in `messages.ts`, which
+ * decide what is actually sent and therefore what counts against the context
+ * window:
+ *
+ * - a text part's `value` is counted;
+ * - a tool result (`LanguageModelToolResultPart`) carries its text one level
+ *   down under `content` — that text IS sent on the wire, so it is counted too,
+ *   by descending into the nested array;
+ * - parts with no prompt text at all (data, image parts) are dropped.
+ *
+ * The structural check is deliberately wider than `instanceof`: it accepts any
+ * object with a string `value`, which is what makes this realm-safe and
+ * unit-testable. That also means a non-text part that happens to carry a string
+ * `value` (e.g. a prompt-tsx part) is counted rather than guessed at — a
+ * conservative over-estimate, which is the safe direction for a token budget.
  */
 export function extractText(message: MessageContent): string {
   const chunks: string[] = [];
   for (const part of message.content) {
-    if (
-      typeof part === 'object' &&
-      part !== null &&
-      'value' in part &&
-      typeof (part as { value: unknown }).value === 'string'
-    ) {
-      chunks.push((part as { value: string }).value);
+    if (typeof part !== 'object' || part === null) {
+      continue;
+    }
+    const value = (part as { value?: unknown }).value;
+    if (typeof value === 'string') {
+      chunks.push(value);
+      continue;
+    }
+    // A tool result nests its text one level down, and that text is sent by
+    // toWireMessages — so it has to be counted here too, or an agentic prompt
+    // full of tool output would estimate as ~0 tokens.
+    const nested = (part as { content?: unknown }).content;
+    if (Array.isArray(nested)) {
+      chunks.push(extractText({ content: nested }));
     }
   }
   return chunks.join('');
