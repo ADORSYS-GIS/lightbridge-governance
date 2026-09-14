@@ -190,6 +190,29 @@ await scenario('token count: provideTokenCount counts nested tool-result text', 
   assert.equal(count, 10, `expected 10 tokens for a 35-char tool result, got ${count}`);
 });
 
+await scenario('token count: provideTokenCount counts a tool call name and serialised arguments', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // toWireMessages sends a tool call as its name plus JSON.stringify(input),
+  // often the largest payload in an agentic turn — so it must be counted.
+  const vscode = await import('vscode');
+  const name = 'write_file';
+  const serialized = JSON.stringify({ path: 'a.ts' });
+  const wireText = `${name}${serialized}`;
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [new vscode.LanguageModelToolCallPart('call_1', name, { path: 'a.ts' })],
+  };
+  const expected = Math.ceil(wireText.length / 3.5);
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(
+    count,
+    expected,
+    `expected ${expected} tokens for ${wireText.length} chars of tool call, got ${count}`,
+  );
+});
+
 await scenario('modelOptions: supported params pass, Copilot internals are dropped', async () => {
   configure('good-auth.sh');
   const provider = new LightbridgeChatProvider();

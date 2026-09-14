@@ -65,6 +65,19 @@ test('extractText: descends into a tool result to count its nested text', () => 
   assert.equal(extractText(message), 'User: Hello world!');
 });
 
+test('extractText: counts a tool call name and serialised arguments', () => {
+  // A LanguageModelToolCallPart is sent by toWireMessages as its name plus the
+  // JSON serialisation of its input — often the largest payload in the turn —
+  // so both must be counted here too.
+  const message = {
+    content: [
+      { value: 'Assistant: ' },
+      { callId: 'call_2', name: 'write_file', input: { path: 'a.ts', content: 'hello' } },
+    ],
+  };
+  assert.equal(extractText(message), 'Assistant: write_file{"path":"a.ts","content":"hello"}');
+});
+
 test('extractText: duck-types structurally matching parts from another realm', () => {
   // A plain object, e.g. deserialized from JSON, that is not an `instanceof`
   // LanguageModelTextPart but has a string `value`.

@@ -24,6 +24,8 @@ export interface MessageContent {
  * window:
  *
  * - a text part's `value` is counted;
+ * - a tool call (`LanguageModelToolCallPart`) sends its `name` and
+ *   JSON-serialised `input` on the wire, so both are counted;
  * - a tool result (`LanguageModelToolResultPart`) carries its text one level
  *   down under `content` — that text IS sent on the wire, so it is counted too,
  *   by descending into the nested array;
@@ -44,6 +46,16 @@ export function extractText(message: MessageContent): string {
     const value = (part as { value?: unknown }).value;
     if (typeof value === 'string') {
       chunks.push(value);
+      continue;
+    }
+    // A tool call is sent by toWireMessages as its name plus the JSON
+    // serialisation of its input — often the largest payload in the turn (an
+    // edit call carries replacement text). Neither lives under `value` or a
+    // nested array, so it has to be counted explicitly or an agentic prompt
+    // under-counts by exactly the text that dominates it.
+    const name = (part as { name?: unknown }).name;
+    if (typeof name === 'string' && 'input' in part) {
+      chunks.push(name, JSON.stringify((part as { input?: unknown }).input ?? {}));
       continue;
     }
     // A tool result nests its text one level down, and that text is sent by
