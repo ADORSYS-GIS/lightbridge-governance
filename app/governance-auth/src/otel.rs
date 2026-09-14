@@ -672,6 +672,24 @@ pub(crate) fn claude_code_env(settings: &OtelSettings) -> Vec<(&'static str, Str
     entries.push(("OTEL_METRICS_EXPORTER", "otlp".to_owned()));
     entries.push(("OTEL_LOGS_EXPORTER", "otlp".to_owned()));
     entries.push(("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf".to_owned()));
+    // Without this, Claude Code's own documented default (`delta`) applies.
+    // Confirmed live 2026-09-14: a daemon-side byte-level capture showed
+    // every `claude_code.*` Sum metric (cost.usage, token.usage,
+    // lines_of_code.count, session.count, code_edit_tool.decision) arriving
+    // fully populated with real data points -- and every hop from there
+    // (this org's `ai-cli-otel` collector, Alloy's OTLP receiver, Alloy's
+    // otelcol.exporter.prometheus) reported clean accept/forward counters,
+    // zero refused, zero failed. Yet no `claude_code.*` series ever became
+    // queryable in Mimir, under any name or label -- only `target_info`
+    // (a resource marker with no temporality concept) survived. Prometheus's
+    // data model has no delta concept: a Sum needs `cumulative` temporality
+    // to exist as a coherent series over time, and neither this org's
+    // collector nor Alloy's config runs a `deltatocumulative` processor to
+    // convert one. This is the missing piece, not a pipeline drop.
+    entries.push((
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+        "cumulative".to_owned(),
+    ));
     entries.push(("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone()));
     entries.push((
         "OTEL_RESOURCE_ATTRIBUTES",

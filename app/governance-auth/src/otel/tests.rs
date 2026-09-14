@@ -308,6 +308,16 @@ fn claude_code_env_carries_every_key_the_docs_require() {
     );
     let entrypoint = env.get("OTEL_METRICS_INCLUDE_ENTRYPOINT");
     assert_eq!(entrypoint, Some(&"1".to_owned()));
+    // Claude Code's own documented default is `delta`, which Prometheus/Mimir
+    // cannot represent as a coherent series for a Sum metric -- confirmed
+    // live 2026-09-14 (docs/integrations/claude-code-dashboard.md): every
+    // claude_code.* Sum arrived fully populated at this org's collector and
+    // was forwarded cleanly through Alloy, yet never became a queryable
+    // Mimir series, because nothing downstream converts delta to cumulative.
+    assert_eq!(
+        env.get("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"),
+        Some(&"cumulative".to_owned())
+    );
 }
 
 #[test]
@@ -723,6 +733,7 @@ fn gateway_only_writes_claude_code_inference_keys_with_no_telemetry_keys() {
         "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_EXPORTER_OTLP_HEADERS",
         "OTEL_METRICS_INCLUDE_ENTRYPOINT",
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
     ] {
         assert!(
             value["env"].get(key).is_none(),
