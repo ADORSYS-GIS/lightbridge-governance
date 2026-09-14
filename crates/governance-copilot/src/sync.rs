@@ -12,12 +12,46 @@ use crate::{
     auth::AppAuth,
     client::GithubClient,
     error::{CopilotError, Result},
+    model::{OrgDaily, RepoDaily, SeatSnapshot, UserDaily, UserTeam},
     parse::{parse_org_daily, parse_repo_daily, parse_seats, parse_user_daily, parse_user_team},
     store::{
         upsert_manifest, upsert_org_daily, upsert_repo_daily, upsert_seat_snapshot,
         upsert_user_daily, upsert_user_team,
     },
 };
+
+/// The normalized rows a report's raw bytes parse into, tagged by report kind.
+///
+/// Exposed so the collector CLI can emit the rows as OTLP log records (the
+/// ADR-0014 sink) without re-parsing or reaching into the connector's
+/// internals. The parse itself is unchanged -- this is the same
+/// `parse_*` code path `replay_report` uses, just surfaced.
+#[derive(Debug, Clone)]
+pub enum ParsedRows {
+    Org(Vec<OrgDaily>),
+    User(Vec<UserDaily>),
+    Repo(Vec<RepoDaily>),
+    UserTeam(Vec<UserTeam>),
+    Seat(Vec<SeatSnapshot>),
+}
+
+/// Parse raw report bytes into the normalized rows for `report`, without
+/// persisting anything. `day` is `report_day` for the four day-based reports
+/// and `snapshot_day` for `billing-seats`.
+pub fn parse_report_rows(report: &str, bytes: &[u8], day: &str) -> Result<ParsedRows> {
+    match report {
+        "organization-1-day" => Ok(ParsedRows::Org(parse_org_daily(bytes, report, day)?)),
+        "users-1-day" => Ok(ParsedRows::User(parse_user_daily(bytes, report, day)?)),
+        "repos-1-day" => Ok(ParsedRows::Repo(parse_repo_daily(bytes, report, day)?)),
+        "user-teams-1-day" => Ok(ParsedRows::UserTeam(parse_user_team(bytes, report, day)?)),
+        crate::SEATS_REPORT_TYPE => Ok(ParsedRows::Seat(parse_seats(bytes, report, day)?)),
+        other => Err(CopilotError::github(
+            "sync",
+            0,
+            format!("unknown report type {other} in REPORTS"),
+        )),
+    }
+}
 
 /// Key under which a report's raw NDJSON is archived, relative to the sink's
 /// own prefix (`copilot-governance/raw/` on S3, `RAW_DIR` locally; RFC-0001).

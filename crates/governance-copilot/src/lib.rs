@@ -93,5 +93,6 @@ pub use store::{
     verify_manifests,
 };
 pub use sync::{
-    ReportOutcome, archive_key, replay_report, seats_archive_key, sync_day, sync_seats,
+    ParsedRows, ReportOutcome, archive_key, parse_report_rows, replay_report, seats_archive_key,
+    sync_day, sync_seats,
 };

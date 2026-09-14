@@ -20,6 +20,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod archive;
+mod emit;
 mod metrics;
 mod sync;
 #[cfg(test)]
@@ -107,7 +108,8 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let result = sync::run_backfill(&client, &pool, &cfg).await?;
+            let sink = emit::Sink::from_env();
+            let result = sync::run_backfill(&client, &pool, &cfg, sink.as_ref()).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
                 metrics::push_run_metrics(
                     &endpoint,
@@ -116,6 +118,15 @@ async fn main() -> Result<()> {
                     result.covered as u64,
                 )
                 .await;
+            }
+            // AC 7: surface the OTLP emit outcome -- accepted rows by report
+            // and any partial accept as an error metric -- so a rejected
+            // record is never silently swallowed.
+            if let Some(sink) = &sink {
+                let (accepted, rejected) = sink.stats();
+                if let Some(endpoint) = metrics::endpoint_from_env() {
+                    metrics::push_emit_metrics(&endpoint, &accepted, rejected).await;
+                }
             }
             // BLOCKER 1: a non-empty window where every day failed must exit
             // non-zero so the CronJob's backoffLimit/alerting engage instead
@@ -127,9 +138,16 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day).await?;
+            let sink = emit::Sink::from_env();
+            let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day, sink.as_ref()).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
                 metrics::push_run_metrics(&endpoint, "sync_day", &outcomes, 1).await;
+            }
+            if let Some(sink) = &sink {
+                let (accepted, rejected) = sink.stats();
+                if let Some(endpoint) = metrics::endpoint_from_env() {
+                    metrics::push_emit_metrics(&endpoint, &accepted, rejected).await;
+                }
             }
         }
         Command::Replay { from, to } => {
