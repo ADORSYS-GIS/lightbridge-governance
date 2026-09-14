@@ -162,29 +162,33 @@ initial implementation as approval to grow a monolithic daemon for every client.
 No automatic refactor was authorized by the request for an explanation; propose
 and validate the central pricing boundary separately.
 
-## Claude Code: next-agent work
+## Claude Code: done, 2026-09-14
 
-Start with `scripts/generate_claude_code_dashboard.py` and its generated JSON.
-Its existing queries already consume native `api_request` cost fields, session
-IDs, model usage, user email and tool outcomes. Its long introductory comments
-contain historical statements about the overview that predate the separation;
-use current executable queries and ownership tests as the implementation truth.
+Reshaped in `scripts/generate_claude_code_dashboard.py` to the same
+user/session contract as Codex's dashboard. Full semantics, the live
+2026-09-14 validation against this development conversation's own session,
+and what remains open: [Claude Code dashboard contract](claude-code-dashboard.md).
 
-1. Verify official [monitoring documentation](https://code.claude.com/docs/en/monitoring-usage)
-   and live allowlisted field samples for the deployed version. Record exact
-   cost/session/token field names, units, event grain and optionality. Inspect
-   `cost_usd_micros` where present before introducing a new estimate calculation.
-2. Reshape the source view into user/session summaries, one meaningful activity
-   trend, model-share views and one session table. Replace fixed 24h/7d usage
-   windows with the selected range. Keep snapshots instant.
-3. Prefer source-emitted cost; establish whether it is reported/estimated API
-   cost, not an authoritative invoice. Do not copy Codex pricing or its scanner.
-4. Verify terminal lifecycle and repository attributes before adding duration or
-   repository panels. First/last event timestamps remain observed bounds.
-5. Keep permission decisions separate from edit acceptance. Existing config-based
-   approvals cannot establish proposed/accepted/retained code contributions.
-6. Prove query results against a controlled live session, missing-identity cases,
-   repeats and date boundaries. Add deterministic regression tests and verify PNG.
+Summary against the six items this section used to list:
+
+1. **Done.** `attributes_cost_usd`/`attributes_cost_usd_micros` confirmed
+   consistent live on the same lines; no new estimate calculation was added
+   -- Claude Code's cost is source-emitted, unlike Codex's.
+2. **Done.** Textbox `user`/`session` filters, one session table with
+   drilldown, model-share donuts, `$__range`/`$__interval` throughout; no
+   fixed `[24h]`/`[7d]` window remains; every stat is an instant snapshot.
+3. **Done.** Source-emitted cost used as-is; no rate card or scanner copied
+   from Codex.
+4. **Still open.** No terminal lifecycle or repository attribute has been
+   confirmed for Claude Code; no duration/repository panel was added.
+5. **Done.** The `tool_decision` `source=config` vs. a person split is
+   unchanged and still the load-bearing dimension for every approval panel.
+6. **Partly done.** Query fields were proven live against this exact running
+   conversation (not a fixture) and 10 new deterministic regression tests
+   were added (`scripts/test_claude_code_user_dashboard.py`). Not done:
+   importing a preview Grafana dashboard and confirming PNG export against a
+   live instance -- left for an explicit go-ahead, since it means creating a
+   cluster-visible resource.
 
 ## VS Code Copilot: next-agent work
 
@@ -222,6 +226,7 @@ separate data source from GitHub reports/seats (`scripts/generate_dashboards.py`
 | Shared navigation/export | `scripts/dashboard_common.py` |
 | Ownership and snapshot contracts | `scripts/test_dashboard_ownership.py`, `scripts/test_loki_dashboards.py` |
 | Codex generator/regressions | `scripts/generate_codex_dashboard.py`, `scripts/test_codex_user_dashboard.py` |
+| Claude Code generator/regressions | `scripts/generate_claude_code_dashboard.py`, `scripts/test_claude_code_user_dashboard.py` |
 | Native estimate adapter | `app/governance-auth/src/otel_daemon/codex_cost.rs` and adjacent tests |
 | Local metadata parser, serializer, scan | `app/governance-auth/src/codex_measurements/` |
 | Automatic scan scheduling | `app/governance-auth/src/otel_daemon/codex_sessions.rs` |

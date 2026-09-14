@@ -9,9 +9,12 @@ verification note and the datasource-token substitution rationale ((b):
 Helm-side string replace over literal placeholder tokens, resolved entirely
 at `helm template` time); this file only restates what differs.
 
-This dashboard has no `templating` variables, same as its three siblings --
-Loki's own label selectors are this dashboard's filtering surface, not a
-Grafana template variable.
+User and session searches filter JSON event attributes. They are textbox
+variables because those attributes are not indexed Loki stream labels --
+same reasoning and mechanism as templates/grafanadashboard-codex.yaml's own
+`user`/`session` textboxes. Reshaped 2026-09-14 from the earlier
+fleet-wide, no-`templating` version of this dashboard to match Codex's
+user/session contract (see the generator's own docstring).
 
 A DEEPER, dedicated replacement for generate_ai_cli_dashboard.py's own
 Claude Code section, not a duplicate of it -- see
@@ -21,19 +24,23 @@ left in place (it's still the only place Copilot Chat's Mimir metrics live)
 while Claude Code gets its own, richer dashboard here, matching the split
 already applied to OpenCode and Codex.
 
-ONE datasource token: `__DS_LOKI__`, reusing the SAME `lokiUid` value the
+TWO datasource tokens: `__DS_LOKI__`, reusing the SAME `lokiUid` value the
 other three Loki-backed dashboards already substitute -- same Grafana
 instance, same unconfirmed provisioning path (see values.yaml's own loud
-caveat on that), not a second guess to confirm.
+caveat on that), not a second guess to confirm -- and, since 2026-09-14,
+`__DS_PROMETHEUS__` for the lines-of-code/active-time/commits/pull-requests
+panels sourced from Mimir instead of Loki (the metrics-temporality fix,
+lightbridge-governance#335). Same `prometheusUid` value
+`generate_vscode_copilot_dashboard.py`'s own dashboard already substitutes.
 */}}
 {{- $dashboardPath := "dashboards/claude-code-telemetry.json" }}
 {{- $rawJson := .Files.Get $dashboardPath }}
 {{- if not $rawJson }}
 {{- fail (printf "grafanaDashboard.enabled is true but %s is missing or empty -- nothing to embed. See charts/lightbridge-governance/dashboards/claude-code-telemetry.json (scripts/generate_claude_code_dashboard.py generates it)." $dashboardPath) }}
 {{- end }}
-{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid }}
-{{- if contains "__DS_LOKI__" $dashboardJson }}
-{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from that contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every affected panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
+{{- $dashboardJson := $rawJson | replace "__DS_LOKI__" .Values.grafanaDashboard.datasources.lokiUid | replace "__DS_PROMETHEUS__" .Values.grafanaDashboard.datasources.prometheusUid }}
+{{- if or (contains "__DS_LOKI__" $dashboardJson) (contains "__DS_PROMETHEUS__" $dashboardJson) }}
+{{- fail (printf "%s still contains an unsubstituted __DS_LOKI__/__DS_PROMETHEUS__ token after replace -- the dashboard JSON's placeholder token spelling has drifted from that contract this template substitutes. An unsubstituted token ships as a literal (invalid) datasource UID: Grafana renders the dashboard but every affected panel silently shows 'Datasource not found' or stays empty, with no error surfaced anywhere -- failing here at render time instead." $dashboardPath) }}
 {{- end }}
 {{- /*
 Same broader, pattern-based guard as the other three GrafanaDashboard
