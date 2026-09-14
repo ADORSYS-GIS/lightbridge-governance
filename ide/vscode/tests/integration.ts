@@ -503,7 +503,8 @@ await scenario('THROTTLE: a within-TTL cache is served without contacting the ga
   // A fresh fetch populates the cache; a long TTL keeps it within budget for
   // the second call. This is the guarantee that a throttle cannot blank the
   // picker: within the TTL the entry guard serves the cache with NO network
-  // call, so a 429 cannot even occur on that path.
+  // call, so a 429 cannot even occur on that path. (The next `configure()` at
+  // the top of every scenario resets `catalogueTtlMs` to 0.)
   __settings.catalogueTtlMs = 300_000;
   const provider = new LightbridgeChatProvider();
   const before = gw.requests.filter((r) => r.method === 'GET').length;
@@ -519,6 +520,42 @@ await scenario('THROTTLE: a within-TTL cache is served without contacting the ga
     assert.equal(second.length, 1, 'a throttle must not blank a picker with a fresh cache');
     const fetched = gw.requests.filter((r) => r.method === 'GET').length - before;
     assert.equal(fetched, 1, 'expected the second call to be served from cache, not the gateway');
+  } finally {
+    gw.throttleNext(0);
+  }
+});
+
+await scenario('THROTTLE: dismissing the picker aborts the catalogue fetch promptly', async () => {
+  configure('good-auth.sh');
+  gw.throttleNext(99);
+  try {
+    // The suite's shared `token` returns a no-op subscription, so build one
+    // whose cancellation handler is actually registered and fireable — proving
+    // the token threaded through fetchCatalogue interrupts the retry back-off.
+    const handlers: Array<() => void> = [];
+    const cancelToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: (fn: () => void) => {
+        handlers.push(fn);
+        return { dispose() {} };
+      },
+    };
+    const started = Date.now();
+    const pending = new LightbridgeChatProvider().provideLanguageModelChatInformation(
+      { silent: false },
+      cancelToken as never,
+    );
+    // Abort shortly after the fetch begins, i.e. mid-Retry-After. A wired token
+    // must cut the back-off short; an unwired one would sleep out ~2 s.
+    await new Promise((r) => setTimeout(r, 20));
+    handlers.forEach((fn) => fn());
+    cancelToken.isCancellationRequested = true;
+    const models = await pending;
+    assert.equal(models.length, 0, 'a cancelled fetch must withhold models, not stall');
+    assert.ok(
+      Date.now() - started < 500,
+      'the abort must interrupt the retry back-off, not wait it out',
+    );
   } finally {
     gw.throttleNext(0);
   }

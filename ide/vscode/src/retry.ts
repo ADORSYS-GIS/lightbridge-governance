@@ -117,9 +117,13 @@ export async function fetchWithRetry(
 
     if (outcome.kind === 'response') {
       const res = outcome.response;
+      // `isRetryableStatus` is the single source of truth for "is this status
+      // transient" — the exported predicate the unit tests pin. The mode is
+      // layered on top: a 429 is retried under either mode, a 5xx only under
+      // 'transient'.
       const retryable =
-        (res.status === 429 ||
-          (res.status >= 500 && res.status < 600 && retryOn === 'transient')) &&
+        isRetryableStatus(res.status) &&
+        (res.status === 429 || retryOn === 'transient') &&
         attempt < maxAttempts;
       if (!retryable) {
         return res;

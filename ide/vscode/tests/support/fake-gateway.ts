@@ -75,9 +75,15 @@ export async function startGateway(): Promise<GatewayHandle> {
   const permissiveHits: string[] = [];
   let throttleRemaining = 0;
 
-  function handleThrottle(res: import('node:http').ServerResponse): boolean {
+  function handleThrottle(
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+  ): boolean {
     if (throttleRemaining > 0) {
       throttleRemaining--;
+      // A 429 is still a request the extension made — record it so assertions
+      // counting gateway hits stay load-bearing even under throttling.
+      requests.push({ method: req.method ?? '', url: req.url ?? '' });
       res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
       res.end(JSON.stringify({ error: 'rate limited' }));
       return true;
@@ -92,7 +98,7 @@ export async function startGateway(): Promise<GatewayHandle> {
       return res.end(JSON.stringify({ error: 'missing bearer' }));
     }
 
-    if (handleThrottle(res)) {
+    if (handleThrottle(req, res)) {
       return;
     }
 

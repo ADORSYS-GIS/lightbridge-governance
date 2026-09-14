@@ -1,6 +1,7 @@
 import { getToken } from './auth.js';
 import { errorMessage, log, redact } from './log.js';
 import { fetchWithRetry } from './retry.js';
+import type * as vscode from 'vscode';
 import type { Config } from './config.js';
 import type { CatalogueEntry, CatalogueResponse, LightbridgeModel } from './types.js';
 
@@ -46,7 +47,10 @@ export function invalidateCatalogue(): void {
  * time a model changes, and the observable symptom is not "wrong metadata" but
  * a truncated conversation nobody traces back to the plugin.
  */
-export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]> {
+export async function fetchCatalogue(
+  config: Config,
+  cancelToken?: vscode.CancellationToken,
+): Promise<LightbridgeModel[]> {
   const gatewayUrl = config.gatewayUrl;
   if (gatewayUrl === undefined) {
     log().warn('No lightbridge.gatewayUrl configured; contributing no models.');
@@ -69,7 +73,7 @@ export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]
   // exists. If this fetch fails after retries it propagates — we deliberately
   // do NOT fall back to a stale (beyond-TTL) catalogue, because serving one
   // is how a model that policy has withdrawn stays selectable (provider.ts).
-  const promise = fetchFresh(config, gatewayUrl).finally(() => {
+  const promise = fetchFresh(config, gatewayUrl, cancelToken).finally(() => {
     if (inflight?.promise === promise) {
       inflight = undefined;
     }
@@ -78,7 +82,11 @@ export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]
   return promise;
 }
 
-async function fetchFresh(config: Config, gatewayUrl: string): Promise<LightbridgeModel[]> {
+async function fetchFresh(
+  config: Config,
+  gatewayUrl: string,
+  cancelToken?: vscode.CancellationToken,
+): Promise<LightbridgeModel[]> {
   const token = await getToken(config);
   // `/v1/models/info`, verified live against the gateway. The first version of
   // this file used `/models/info`, which 404s — and a 404 here presents as an
@@ -90,13 +98,15 @@ async function fetchFresh(config: Config, gatewayUrl: string): Promise<Lightbrid
   // are returned on the first attempt — retrying them burns rate limit
   // without any hope of success (AGENTS.md).
   //
-  // Unlike the chat path, this call site has no user cancellation token, so
-  // the controller and timeout are the only thing that can interrupt a retry
-  // back-off. Without it a pair of `Retry-After: 30` responses would park the
-  // model picker for a minute with nothing able to stop it. The signal is
-  // threaded into `fetchWithRetry` so the abort also interrupts the sleep
-  // between attempts, not just the next fetch.
+  // The controller bounds the whole retry ladder two ways: the caller's
+  // CancellationToken (forwarded from provideLanguageModelChatInformation, so
+  // dismissing the picker aborts immediately) and `requestTimeoutMs`. Without
+  // either, a pair of `Retry-After: 30` responses would park the model picker
+  // for a minute with nothing able to stop it. The signal is threaded into
+  // `fetchWithRetry` so the abort also interrupts the sleep between attempts,
+  // not just the next fetch.
   const controller = new AbortController();
+  const cancel = cancelToken?.onCancellationRequested(() => controller.abort());
   const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
   try {
     const res = await fetchWithRetry(
@@ -149,6 +159,7 @@ async function fetchFresh(config: Config, gatewayUrl: string): Promise<Lightbrid
     return models;
   } finally {
     clearTimeout(timeout);
+    cancel?.dispose();
   }
 }
 

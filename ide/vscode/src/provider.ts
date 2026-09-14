@@ -43,7 +43,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
    */
   async provideLanguageModelChatInformation(
     options: { readonly silent: boolean },
-    _token: vscode.CancellationToken,
+    token: vscode.CancellationToken,
   ): Promise<LightbridgeModel[]> {
     const config = readConfig();
 
@@ -65,7 +65,10 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     }
 
     try {
-      return await fetchCatalogue(config);
+      // The token is forwarded so a dismissed picker aborts the catalogue
+      // fetch (and its retry back-off) immediately rather than sleeping out a
+      // `Retry-After` wait.
+      return await fetchCatalogue(config, token);
     } catch (err) {
       // Withhold rather than guess. There is no cached-model fallback here on
       // purpose: serving a stale catalogue after the gateway has stopped
