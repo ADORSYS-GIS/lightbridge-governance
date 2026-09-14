@@ -64,25 +64,16 @@ export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]
     return inflight.promise;
   }
 
-  const promise = fetchFresh(config, gatewayUrl)
-    .catch((err) => {
-      // A transient failure (including exhausted 429 retries) must not blank
-      // the picker when we have a catalogue that is still within its TTL. A
-      // genuinely withdrawn model disappears after the TTL expires — the
-      // stale cache is only served while it is still fresh.
-      if (cache && cache.gatewayUrl === gatewayUrl && Date.now() - cache.at < config.catalogueTtlMs) {
-        log().warn(
-          `Model catalogue fetch failed; serving ${cache.models.length} model(s) from cache: ${errorMessage(err)}`,
-        );
-        return cache.models;
-      }
-      throw err;
-    })
-    .finally(() => {
-      if (inflight?.promise === promise) {
-        inflight = undefined;
-      }
-    });
+  // A within-TTL catalogue is served by the entry guard above without any
+  // network call, so a throttle cannot blank the picker while a fresh cache
+  // exists. If this fetch fails after retries it propagates — we deliberately
+  // do NOT fall back to a stale (beyond-TTL) catalogue, because serving one
+  // is how a model that policy has withdrawn stays selectable (provider.ts).
+  const promise = fetchFresh(config, gatewayUrl).finally(() => {
+    if (inflight?.promise === promise) {
+      inflight = undefined;
+    }
+  });
   inflight = { gatewayUrl, promise };
   return promise;
 }
@@ -98,43 +89,67 @@ async function fetchFresh(config: Config, gatewayUrl: string): Promise<Lightbrid
   // server's `Retry-After` header. Deterministic failures (401, 403, 404)
   // are returned on the first attempt — retrying them burns rate limit
   // without any hope of success (AGENTS.md).
-  const res = await fetchWithRetry(url, {
-    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Model catalogue at ${redact(url)} returned ${res.status}.`);
-  }
-
-  const body = (await res.json()) as CatalogueResponse;
-  const entries = body.data ?? [];
-  const models: LightbridgeModel[] = [];
-
-  for (const entry of entries) {
-    const model = toModel(entry);
-    if (model) {
-      models.push(model);
-    }
-  }
-
-  // Entries came back but none mapped: say so loudly. This almost always means
-  // the catalogue schema moved and this file is reading fields that no longer
-  // exist — which is exactly what happened when it was written against an
-  // assumed LiteLLM shape. Without this the symptom is a bare
-  // "Catalogue: 0 model(s)", an empty picker, and no hint that the fault is
-  // here rather than at the gateway.
-  if (entries.length > 0 && models.length === 0) {
-    log().error(
-      `Catalogue at ${redact(url)} returned ${entries.length} entr(ies) but NONE could be ` +
-        `mapped. Expected OpenRouter-shaped fields (id, context_length, ` +
-        `top_provider.max_completion_tokens). This is likely a schema mismatch in the ` +
-        `extension, not a gateway fault.`,
+  //
+  // Unlike the chat path, this call site has no user cancellation token, so
+  // the controller and timeout are the only thing that can interrupt a retry
+  // back-off. Without it a pair of `Retry-After: 30` responses would park the
+  // model picker for a minute with nothing able to stop it. The signal is
+  // threaded into `fetchWithRetry` so the abort also interrupts the sleep
+  // between attempts, not just the next fetch.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+        signal: controller.signal,
+      },
+      {
+        onRetry: ({ attempt, delayMs, status }) =>
+          log().warn(
+            `Model catalogue attempt ${attempt} failed (${status ?? 'transport'}); ` +
+              `retrying in ${delayMs}ms`,
+          ),
+      },
     );
-  }
 
-  log().info(`Catalogue: ${models.length} model(s) from ${redact(url)}.`);
-  cache = { models, at: Date.now(), gatewayUrl };
-  return models;
+    if (!res.ok) {
+      throw new Error(`Model catalogue at ${redact(url)} returned ${res.status}.`);
+    }
+
+    const body = (await res.json()) as CatalogueResponse;
+    const entries = body.data ?? [];
+    const models: LightbridgeModel[] = [];
+
+    for (const entry of entries) {
+      const model = toModel(entry);
+      if (model) {
+        models.push(model);
+      }
+    }
+
+    // Entries came back but none mapped: say so loudly. This almost always
+    // means the catalogue schema moved and this file is reading fields that no
+    // longer exist — which is exactly what happened when it was written against
+    // an assumed LiteLLM shape. Without this the symptom is a bare
+    // "Catalogue: 0 model(s)", an empty picker, and no hint that the fault is
+    // here rather than at the gateway.
+    if (entries.length > 0 && models.length === 0) {
+      log().error(
+        `Catalogue at ${redact(url)} returned ${entries.length} entr(ies) but NONE could be ` +
+          `mapped. Expected OpenRouter-shaped fields (id, context_length, ` +
+          `top_provider.max_completion_tokens). This is likely a schema mismatch in the ` +
+          `extension, not a gateway fault.`,
+      );
+    }
+
+    log().info(`Catalogue: ${models.length} model(s) from ${redact(url)}.`);
+    cache = { models, at: Date.now(), gatewayUrl };
+    return models;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /**

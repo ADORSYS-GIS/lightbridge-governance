@@ -487,12 +487,41 @@ await scenario('THROTTLE: exhausted retries with no cache return empty (fail-clo
   // TTL=0 means no cache hit. Throttle all retries — should return [] without
   // crashing, preserving the fail-closed contract.
   gw.throttleNext(99);
-  const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
-    { silent: false },
-    token as never,
-  );
-  assert.equal(models.length, 0, 'expected empty list when all retries exhaust with no cache');
-  gw.throttleNext(0); // reset
+  try {
+    const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
+      { silent: false },
+      token as never,
+    );
+    assert.equal(models.length, 0, 'expected empty list when all retries exhaust with no cache');
+  } finally {
+    gw.throttleNext(0); // reset so subsequent scenarios work
+  }
+});
+
+await scenario('THROTTLE: a within-TTL cache is served without contacting the gateway', async () => {
+  configure('good-auth.sh');
+  // A fresh fetch populates the cache; a long TTL keeps it within budget for
+  // the second call. This is the guarantee that a throttle cannot blank the
+  // picker: within the TTL the entry guard serves the cache with NO network
+  // call, so a 429 cannot even occur on that path.
+  __settings.catalogueTtlMs = 300_000;
+  const provider = new LightbridgeChatProvider();
+  const before = gw.requests.filter((r) => r.method === 'GET').length;
+  const first = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  assert.equal(first.length, 1, 'expected the cached model list to be served');
+
+  // Throttle everything: had this second call hit the gateway it would 429
+  // and, with no fallback, blank the picker. It must be answered from cache
+  // instead, with no additional request.
+  gw.throttleNext(99);
+  try {
+    const second = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+    assert.equal(second.length, 1, 'a throttle must not blank a picker with a fresh cache');
+    const fetched = gw.requests.filter((r) => r.method === 'GET').length - before;
+    assert.equal(fetched, 1, 'expected the second call to be served from cache, not the gateway');
+  } finally {
+    gw.throttleNext(0);
+  }
 });
 
 await scenario('THROTTLE: a single 429 on the chat path is retried and text arrives', async () => {
@@ -538,6 +567,14 @@ await scenario('THROTTLE: exhausted chat retries surface a rate-limit error, not
     gw.throttleNext(0); // reset so subsequent scenarios work
   }
   assert.ok(thrown, 'expected a throw when retries exhaust on the chat path');
+  // A bare Error would surface as a generic "something went wrong". Assert the
+  // TYPE, not just the message: the 429 must reach chat as a first-class
+  // LanguageModelError so the developer can attribute it to the gateway.
+  const vscode = await import('vscode');
+  assert.ok(
+    thrown instanceof vscode.LanguageModelError,
+    `expected a LanguageModelError, got ${String(thrown)}`,
+  );
   assert.ok(
     (thrown as Error).message.includes('rate-limiting') ||
       (thrown as Error).message.includes('429'),

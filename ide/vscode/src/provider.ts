@@ -142,21 +142,31 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     };
 
     try {
-      // fetchWithRetry handles 429 and 5xx retries honouring `Retry-After`,
-      // but ONLY for the initial fetch — before any bytes have been reported
-      // to `progress`. Once the stream has started, a retry would re-deliver
-      // text the developer has already received. A mid-stream transient
-      // failure surfaces as an error instead.
-      const res = await fetchWithRetry(url, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
+      // fetchWithRetry retries ONLY on 429 here (`retryOn: 'throttle-only'`),
+      // and only for the initial fetch — before any bytes have been reported
+      // to `progress`. A 5xx or transport failure is not retried on this path:
+      // the gateway may have already accepted and billed the request, and a
+      // re-POSTed completion would be billed again and leave a second audit
+      // record for one user action. A mid-stream transient failure surfaces as
+      // an error instead of re-delivering text the developer has received.
+      const res = await fetchWithRetry(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
         },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+        {
+          retryOn: 'throttle-only',
+          onRetry: ({ attempt, delayMs }) =>
+            log().warn(`Chat request attempt ${attempt} was rate-limited; retrying in ${delayMs}ms`),
+        },
+      );
 
       if (res.status === 401 || res.status === 403) {
         throw vscode.LanguageModelError.NoPermissions(
@@ -164,13 +174,18 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
         );
       }
       if (res.status === 429) {
-        throw new Error(
+        // A `LanguageModelError`, not a bare `Error`: chat gives it a
+        // first-class, gateway-attributable presentation, whereas a bare Error
+        // reads as a generic "something went wrong". The outer catch re-throws
+        // it untouched. Rate limiting is the case where attribution matters
+        // most — the correct action is simply to wait.
+        throw vscode.LanguageModelError.Blocked(
           `The gateway is rate-limiting requests (429). Please wait a moment and try again.`,
         );
       }
       if (!res.ok) {
         // The status, not the body: an error body can echo the prompt back.
-        throw new Error(`${redact(url)} returned ${res.status}`);
+        throw new Error(`${redact(url)} returned ${res.status}.`);
       }
       if (!res.body) {
         throw new Error(`${redact(url)} returned no response body.`);
