@@ -1,5 +1,7 @@
 import { getToken } from './auth.js';
 import { errorMessage, log, redact } from './log.js';
+import { fetchWithRetry, requestSignal } from './retry.js';
+import type * as vscode from 'vscode';
 import type { Config } from './config.js';
 import type { CatalogueEntry, CatalogueResponse, LightbridgeModel } from './types.js';
 
@@ -45,7 +47,10 @@ export function invalidateCatalogue(): void {
  * time a model changes, and the observable symptom is not "wrong metadata" but
  * a truncated conversation nobody traces back to the plugin.
  */
-export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]> {
+export async function fetchCatalogue(
+  config: Config,
+  cancelToken?: vscode.CancellationToken,
+): Promise<LightbridgeModel[]> {
   const gatewayUrl = config.gatewayUrl;
   if (gatewayUrl === undefined) {
     log().warn('No lightbridge.gatewayUrl configured; contributing no models.');
@@ -59,17 +64,26 @@ export async function fetchCatalogue(config: Config): Promise<LightbridgeModel[]
   // Join the fetch already running for this gateway rather than starting a
   // second one. Keyed on the URL so a settings change cannot make a caller
   // receive the previous gateway's catalogue.
+  //
+  // Per-caller cancellation: a caller gives up on its OWN token via
+  // `withCancel`; it must NOT abort the shared fetch other callers are
+  // awaiting — that is the rule `invalidateCatalogue` states above.
   if (inflight && inflight.gatewayUrl === gatewayUrl) {
-    return inflight.promise;
+    return withCancel(inflight.promise, cancelToken);
   }
 
+  // A within-TTL catalogue is served by the entry guard above without any
+  // network call, so a throttle cannot blank the picker while a fresh cache
+  // exists. If this fetch fails after retries it propagates — we deliberately
+  // do NOT fall back to a stale (beyond-TTL) catalogue, because serving one
+  // is how a model that policy has withdrawn stays selectable (provider.ts).
   const promise = fetchFresh(config, gatewayUrl).finally(() => {
     if (inflight?.promise === promise) {
       inflight = undefined;
     }
   });
   inflight = { gatewayUrl, promise };
-  return promise;
+  return withCancel(promise, cancelToken);
 }
 
 async function fetchFresh(config: Config, gatewayUrl: string): Promise<LightbridgeModel[]> {
@@ -79,43 +93,99 @@ async function fetchFresh(config: Config, gatewayUrl: string): Promise<Lightbrid
   // empty picker, not as an error anyone traces to a URL.
   const url = `${gatewayUrl}/v1/models/info`;
 
-  const res = await fetch(url, {
-    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Model catalogue at ${redact(url)} returned ${res.status}.`);
-  }
-
-  const body = (await res.json()) as CatalogueResponse;
-  const entries = body.data ?? [];
-  const models: LightbridgeModel[] = [];
-
-  for (const entry of entries) {
-    const model = toModel(entry);
-    if (model) {
-      models.push(model);
-    }
-  }
-
-  // Entries came back but none mapped: say so loudly. This almost always means
-  // the catalogue schema moved and this file is reading fields that no longer
-  // exist — which is exactly what happened when it was written against an
-  // assumed LiteLLM shape. Without this the symptom is a bare
-  // "Catalogue: 0 model(s)", an empty picker, and no hint that the fault is
-  // here rather than at the gateway.
-  if (entries.length > 0 && models.length === 0) {
-    log().error(
-      `Catalogue at ${redact(url)} returned ${entries.length} entr(ies) but NONE could be ` +
-        `mapped. Expected OpenRouter-shaped fields (id, context_length, ` +
-        `top_provider.max_completion_tokens). This is likely a schema mismatch in the ` +
-        `extension, not a gateway fault.`,
+  // fetchWithRetry handles 429 and 5xx with bounded back-off, honouring the
+  // server's `Retry-After` header. Deterministic failures (401, 403, 404)
+  // are returned on the first attempt — retrying them burns rate limit
+  // without any hope of success (AGENTS.md).
+  //
+  // This fetch is SHARED across concurrent picker queries (the inflight
+  // de-duplication above), so no single caller's cancellation aborts it — each
+  // caller gives up on its own token via `withCancel` in fetchCatalogue, and
+  // the shared request is bounded only by `requestTimeoutMs`. The signal is
+  // threaded into `fetchWithRetry` so the abort also interrupts the sleep
+  // between attempts, not just the next fetch.
+  const { signal, dispose } = requestSignal(config.requestTimeoutMs);
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+        signal,
+      },
+      {
+        onRetry: ({ attempt, delayMs, status }) =>
+          log().warn(
+            `Model catalogue attempt ${attempt} failed (${status ?? 'transport'}); ` +
+              `retrying in ${delayMs}ms`,
+          ),
+      },
     );
-  }
 
-  log().info(`Catalogue: ${models.length} model(s) from ${redact(url)}.`);
-  cache = { models, at: Date.now(), gatewayUrl };
-  return models;
+    if (!res.ok) {
+      throw new Error(`Model catalogue at ${redact(url)} returned ${res.status}.`);
+    }
+
+    const body = (await res.json()) as CatalogueResponse;
+    const entries = body.data ?? [];
+    const models: LightbridgeModel[] = [];
+
+    for (const entry of entries) {
+      const model = toModel(entry);
+      if (model) {
+        models.push(model);
+      }
+    }
+
+    // Entries came back but none mapped: say so loudly. This almost always
+    // means the catalogue schema moved and this file is reading fields that no
+    // longer exist — which is exactly what happened when it was written against
+    // an assumed LiteLLM shape. Without this the symptom is a bare
+    // "Catalogue: 0 model(s)", an empty picker, and no hint that the fault is
+    // here rather than at the gateway.
+    if (entries.length > 0 && models.length === 0) {
+      log().error(
+        `Catalogue at ${redact(url)} returned ${entries.length} entr(ies) but NONE could be ` +
+          `mapped. Expected OpenRouter-shaped fields (id, context_length, ` +
+          `top_provider.max_completion_tokens). This is likely a schema mismatch in the ` +
+          `extension, not a gateway fault.`,
+      );
+    }
+
+    log().info(`Catalogue: ${models.length} model(s) from ${redact(url)}.`);
+    cache = { models, at: Date.now(), gatewayUrl };
+    return models;
+  } finally {
+    dispose();
+  }
+}
+
+/**
+ * Per-caller cancellation for a promise the caller does not own.
+ *
+ * The catalogue fetch is shared (callers join `inflight`), so a single
+ * caller's cancellation must reject only that caller's wait — never the
+ * shared underlying fetch other callers are relying on. That is the rule
+ * `invalidateCatalogue` states: "cancelling would fail them for no reason."
+ */
+function withCancel<T>(promise: Promise<T>, token?: vscode.CancellationToken): Promise<T> {
+  if (!token) {
+    return promise;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const sub = token.onCancellationRequested(() =>
+      reject(new DOMException('The operation was aborted.', 'AbortError')),
+    );
+    promise.then(
+      (value) => {
+        sub.dispose();
+        resolve(value);
+      },
+      (err) => {
+        sub.dispose();
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
