@@ -420,6 +420,42 @@ expression -- each is evaluated independently. Verified live: a bare
 `X-Forwarded-For:` and a trailing-comma `X-Forwarded-For: 1.2.3.4,` both now
 produce no `client.address` attribute at all, not an empty one.
 */}}
+{{- /*
+⚠️ governance.retry_key CARDINALITY LEAK (found 2026-09-15, investigating
+VS Code Copilot's dashboard): `governance-auth`'s daemon (otel_daemon/
+normalize/mod.rs) stamps a fresh `governance.retry_key` resource attribute
+on every JSON-encoded record it forwards, unique per record, to let a
+downstream ingest handler dedupe a drain retry (the same bytes re-offered
+after a kill mid-forward is a duplicate export, not data loss -- see that
+module's own doc). Checked live: `lightbridge-authz-usage/src/handlers/
+ingest.rs` (the ingest handler that module's own doc names) has zero
+references to this key or to any ON CONFLICT/dedup logic keyed on it --
+today it is written, never read. Protobuf-encoded clients (Claude Code,
+Codex) never see it at all (the daemon's stamp() only touches JSON
+bodies), but VS Code Copilot Chat sends JSON, so every one of its records
+gets a distinct key -- and because Prometheus has no concept of "resource"
+separate from a metric's own labels, a metric exporter's `target_info`
+series (built from resource attributes, unconditionally, regardless of
+`resource_to_telemetry_conversion`) inherits it: confirmed live, 5,094
+distinct `governance_retry_key` values across 5,105 `target_info` entries
+for `job="copilot-chat"` in a single 7-day window -- one new series-set
+per record, forever, not per session (13) or per user (4).
+
+Scoped to METRICS ONLY, not logs/traces: the key may still be exactly
+what a future usage-ingest dedup path needs on the signal that actually
+carries billing-relevant events (logs), and this leak is a
+metrics/Prometheus-specific problem (Loki has no equivalent per-resource
+synthetic series the way a Prometheus exporter's target_info does). A
+`transform` processor with only a `metric_statements` block is
+structurally a no-op for logs/traces -- not "also delete it there, just
+not from this list" -- so there is no path to accidentally strip it from
+the signal that might need it.
+*/}}
+      transform/strip_retry_key_from_metrics:
+        metric_statements:
+          - context: resource
+            statements:
+              - delete_key(attributes, "governance.retry_key")
       transform/client_address_from_xff:
         log_statements:
           - context: resource
@@ -569,7 +605,24 @@ payload past this point must never carry it forward).
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         metrics:
           receivers: [otlp]
-          processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
+          # transform/strip_retry_key_from_metrics is metrics-only (see its
+          # own doc above) -- applies to whatever this pipeline exports,
+          # which today is both otlp/alloy and, when s3.enabled, the raw
+          # awss3 archive. The archive losing this one field for metrics
+          # specifically is an accepted tradeoff, not an oversight: nothing
+          # downstream reads it yet (see the same doc), and giving the S3 leg
+          # its own untouched copy would need a second pipeline/connector
+          # fork for one field with no known consumer.
+          #
+          # Placed BEFORE resource, not after it: assert-client-address-xff.sh
+          # requires the exact adjacent triplet
+          # "resource,transform/client_address_from_xff,batch" with nothing
+          # interposed (it substring-matches the rendered processor list), and
+          # there is no actual ordering dependency the other way -- this
+          # processor only touches governance.retry_key, an attribute the
+          # daemon already stamped before this collector ever received the
+          # record, unrelated to anything `resource` or the xff transform do.
+          processors: [memory_limiter, transform/strip_retry_key_from_metrics, resource, transform/client_address_from_xff, batch]
           exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
         logs:
           receivers: [otlp]
