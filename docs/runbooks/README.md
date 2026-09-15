@@ -12,6 +12,7 @@ user complaint -- not with the subsystem name, because at 3am you know the sympt
 | [replay-from-the-raw-archive.md](./replay-from-the-raw-archive.md) | Normalized data is wrong or missing and the source objects are intact |
 | [otel-daemon-misrouted-signals.md](./otel-daemon-misrouted-signals.md) | Codex metrics receive log decoder errors; includes Claude Code and Copilot endpoint checks |
 | [otel-daemon-wedged.md](./otel-daemon-wedged.md) | The local `serve --otel` daemon stops forwarding telemetry, logging repeated "collector refused ... held, not discarded" |
+| [verify-codex-metrics-temporality.md](./verify-codex-metrics-temporality.md) | Confirming whether Codex has the same delta-vs-cumulative metrics gap Claude Code had (#335) -- Mimir has only `target_info` for Codex's job labels, never a named metric, but this hasn't been byte-confirmed live yet |
 
 ## House rules
 
