@@ -104,7 +104,13 @@ class ClaudeCodeUserDashboardTest(unittest.TestCase):
         self.assertIn('var-session=${__value.raw:percentencode}', link)
         variables = self.dashboard['templating']['list']
         self.assertEqual([v['name'] for v in variables], ['user', 'session'])
-        self.assertTrue(all(v['type'] == 'textbox' and v['current']['value'] == '' for v in variables))
+        user_var, session_var = variables
+        self.assertEqual(user_var['type'], 'query')
+        self.assertEqual(user_var['definition'], 'label_values(claude_code_session_count_total, user_email)')
+        self.assertTrue(user_var['includeAll'])
+        self.assertEqual(user_var['allValue'], '.*')
+        self.assertEqual(session_var['type'], 'textbox')
+        self.assertEqual(session_var['current']['value'], '')
 
     def test_layout_has_no_overlapping_panels_or_invented_measurements(self):
         panels = list(self.panels.values())
