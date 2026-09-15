@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.9.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.8.0...v2.9.0) (2026-09-15)
+
+
+### Features
+
+* **codex:** measure session turns and estimate token costs ([2c11391](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2c113913d8984e89134e002772c3233ee9c3bc31))
+* **dashboards:** add a user/session filter to VS Code Copilot ([4c2f1c1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4c2f1c1955f75e1732b6da9bb836097ec7ac1c7b))
+* **dashboards:** add a user/session filter to VS Code Copilot ([2112a95](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2112a959dc6779d222c3376fb7be5c57b2d06294))
+* **dashboards:** make Claude Code's user filter a dropdown ([f8fd135](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/f8fd1353e2803edb9b027447a760a7d5433e07a2))
+* **dashboards:** make Claude Code's user filter a dropdown ([b27dfc2](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/b27dfc21da0b72c01820e6873441d4f9f528bc95))
+* **dashboards:** reshape Claude Code to user/session view, add lines-of-code/active-time ([1eb3aba](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1eb3aba56fd18be74b97547fc690bfb240a6faf8))
+* **dashboards:** reshape Claude Code to user/session view, add lines-of-code/active-time ([718335b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/718335b8067c0fb170b195daeb81efab7a0aeba9))
+* **dashboards:** separate source views from governance overview ([84e0248](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/84e02481b6059de4b65b9a3e46a15e7cbe5b99b1))
+* **dashboards:** separate source views from governance overview ([#333](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/333)) ([7551bc0](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7551bc07fc1febd42dd48c0ecf5e29b55b9a55db))
+* **grafana:** focus Codex dashboard on users and sessions ([bef3bb1](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/bef3bb14e119acbda92746e9a5743a534eb6517d))
+
+
+### Bug Fixes
+
+* **dashboards:** address review — PromQL quoting, stale docs, CI gap, decimals ([71bef61](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/71bef61486a4bd204b771cfb908868fa896c0e83))
+* **dashboards:** update stale Sessions/Tool calls descriptions ([#343](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/343) review) ([d7bdf4b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d7bdf4b739f7a0cc24b72ef241f66f00216e76f7))
+* **dashboards:** use instant Loki stats for Claude and Codex ([#331](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/331)) ([4e984ad](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4e984ad0f1a712f8955755f8f9576dd6554ebfa3))
+* **dashboards:** VS Code Copilot edit-acceptance metric was wrong; lines-of-code was just a usage gap ([d757eb2](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d757eb2a771b03745090fd7c68e138a16a96a8fa))
+* **dashboards:** VS Code Copilot edit-acceptance rate queried the wrong metric ([36d531e](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/36d531e0412c46c3915fd4c2df33f81a00e2fdd0))
+* **deps:** bump rustls to 0.23.45, clearing RUSTSEC-2026-0285 ([1ab4bf8](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1ab4bf8280a8d59b8518ac4904d3400740b08688))
+* **deps:** bump rustls to 0.23.45, clearing RUSTSEC-2026-0285 ([080c0b3](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/080c0b386da64fedaada5c317f6587b8885b5756))
+* **governance-auth:** set cumulative metrics temporality for Claude Code ([#335](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/335)) ([de6e63e](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/de6e63ea9eb3ca66b5ae4f273701c7a11c4bcd59))
+* **otel:** strip governance.retry_key before it reaches metrics ([25ca837](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/25ca8379bccd3296ff828b8e03d1c46a658a8a31))
+* **otel:** strip governance.retry_key before it reaches metrics ([7bc89dc](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7bc89dc9f4bd1a6d8f21d5910844d4a257b4bfef))
+* **vscode:** address retry review findings (isRetryableStatus, token, throttle count) ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([be396af](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/be396afd70fb6718c68a6fef72a1cca7a5f56128))
+* **vscode:** address retry review findings on 429/backoff ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([c1be502](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c1be502e9fa5fa7b331c6a399f64d0532626195d))
+* **vscode:** count nested tool-result text in extractText ([#231](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/231)) ([9554e48](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/9554e4844b5d07e243442c6e8c4a18013e9f659a))
+* **vscode:** count tool-call arguments in extractText ([#231](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/231)) ([aa1a638](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/aa1a638b85502c683765f9c6655b31c152e9cb2f))
+* **vscode:** honour 429 Retry-After on catalogue and chat paths ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([26dca7f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/26dca7f433e8e256a610ab7abc06c314c4cc2936))
+* **vscode:** honour 429 Retry-After on catalogue and chat paths ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([18a5fda](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/18a5fda3c720c8878bfd4f0c83591f8653c792fe))
+* **vscode:** per-caller cancellation, dedupe signal, test Retry-After wiring ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([83d6128](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/83d612834cab8fcb2fa0a1e938d0ca400663607f))
+* **vscode:** reject empty Retry-After and release abandoned retry bodies ([#232](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/232)) ([935f207](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/935f207eec02f2cdc049922e358077dd854d6cda))
+
+
+### Documentation
+
+* **dashboards:** record source ownership and implementation handoff ([63f212b](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/63f212b2f2f697d2d0cf3834b66338386862710e))
+* **runbooks:** add live verification runbook for Codex metrics temporality ([f2604ce](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/f2604ce4d9c375dc61d1ccb5d8d989392a37a013))
+* **runbooks:** add quick check for VS Code Copilot's edit metrics ([201f02f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/201f02fb7482a5d518d0c4a0c5de416bbdc988af))
+* **runbooks:** Codex metrics temporality — confirmed DELTA, env-var fix doesn't work ([d4276f6](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d4276f643c5a0a84172463ff4a655feaeaa3edd7))
+* **runbooks:** record executed Codex metrics-temporality verification ([c62fdf3](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/c62fdf3031cf25d711d3873e3f1c208d2aed2887))
+
 ## [2.8.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.7.0...v2.8.0) (2026-09-11)
 
 
