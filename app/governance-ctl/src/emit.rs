@@ -451,7 +451,7 @@ mod tests {
             net_cost_micro_usd: MicroUsd(0),
         };
         let rec = encode_org_daily("t1", "g1", &row);
-        assert_eq!(str_attr(&rec.attributes, "source"), "github_copilot");
+        assert_eq!(str_attr(&rec.attributes, "source"), "github-copilot");
         assert_eq!(str_attr(&rec.attributes, "tenant_id"), "t1");
         assert_eq!(str_attr(&rec.attributes, "org"), "g1");
         assert_eq!(str_attr(&rec.attributes, "report"), "organization-1-day");

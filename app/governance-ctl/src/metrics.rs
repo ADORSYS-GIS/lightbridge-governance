@@ -240,17 +240,23 @@ pub async fn push_verify_metrics(endpoint: &str, mismatch: usize) {
 /// the rest of this module's one-shot-push design.
 fn record_emit_metrics(meter: &Meter, accepted_by_report: &[(String, u64)], rejected: u64) {
     let accepted = meter
-let mut totals: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-for (report, count) in accepted_by_report {
-    *totals.entry(report.clone()).or_insert(0) += *count;
-}
-for (report, count) in totals {
-    accepted.record(count, &[KeyValue::new("report", report)]);
-}
+        .u64_gauge("governance.copilot.emit_accepted_rows")
         .with_description("OTLP log records the collector accepted, by report")
         .build();
+
+    // A gauge's `record()` overwrites the prior value for an identical
+    // attribute set within one collection cycle (last-value-wins). A backfill
+    // run emits several days per report type, so `accepted_by_report` carries
+    // one entry per export -- several entries sharing a `report` label.
+    // Recording each entry directly would silently drop every day but the
+    // last (the gauge-collapse defect). Sum per report so the pushed value is
+    // the run total, not whichever day's count happened to be recorded last.
+    let mut totals: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for (report, count) in accepted_by_report {
-        accepted.record(*count, &[KeyValue::new("report", report.clone())]);
+        *totals.entry(report.clone()).or_insert(0) += *count;
+    }
+    for (report, count) in totals {
+        accepted.record(count, &[KeyValue::new("report", report)]);
     }
 
     let partial = meter
@@ -610,5 +616,41 @@ mod tests {
         sort_by_report(&mut points);
         sort_by_report(&mut expected);
         assert_eq!(points, expected);
+    }
+
+    /// The gauge-collapse regression (adversarial review): a backfill run
+    /// emits several days per report type, so `accepted_by_report` carries
+    /// several entries sharing a `report` label. A gauge's `record()`
+    /// overwrites (last-value-wins) for an identical attribute set, so
+    /// recording each entry directly would report only the final day's count
+    /// instead of the run total. This proves the per-report pre-aggregation
+    /// in `record_emit_metrics` happened: two days of the same report must
+    /// sum to 3 + 5 = 8, not whichever day was recorded last.
+    ///
+    /// Confirmed against a deliberately un-aggregated version (recording
+    /// straight from the `accepted_by_report` loop): it failed with a single
+    /// point of value 5 (the second day only), exactly the silent-undercount
+    /// this test exists to catch.
+    #[test]
+    fn emit_accepted_rows_sums_duplicate_report_labels() {
+        let resource_metrics = export(|meter| {
+            record_emit_metrics(
+                meter,
+                &[
+                    ("organization-1-day".to_owned(), 3),
+                    ("organization-1-day".to_owned(), 5),
+                ],
+                0,
+            );
+        });
+        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_accepted_rows");
+        assert_eq!(
+            points,
+            vec![(
+                vec![("report".to_owned(), "organization-1-day".to_owned())],
+                8
+            )],
+            "two days of the same report must sum to the run total, not collapse to the last day"
+        );
     }
 }
