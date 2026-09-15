@@ -282,7 +282,7 @@ def build_dashboard() -> dict[str, Any]:
         prom_stat_panel(
             ids,
             title="Sessions (7d)",
-            description="sum(increase(copilot_chat_session_count_total[7d])).",
+            description="sum(increase(copilot_chat_session_count_total{user/session filter}[7d])).",
             expr=f"sum(increase({sel('copilot_chat_session_count_total')}[7d]))",
             unit="none",
             grid={"h": 8, "w": 4, "x": 8, "y": y},
@@ -293,7 +293,7 @@ def build_dashboard() -> dict[str, Any]:
         prom_stat_panel(
             ids,
             title="Tool calls (7d)",
-            description="sum(increase(copilot_chat_tool_call_count_total[7d])).",
+            description="sum(increase(copilot_chat_tool_call_count_total{user/session filter}[7d])).",
             expr=f"sum(increase({sel('copilot_chat_tool_call_count_total')}[7d]))",
             unit="none",
             grid={"h": 8, "w": 4, "x": 12, "y": y},

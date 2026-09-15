@@ -290,7 +290,7 @@
       "id": 5,
       "type": "stat",
       "title": "Sessions (7d)",
-      "description": "sum(increase(copilot_chat_session_count_total[7d])).",
+      "description": "sum(increase(copilot_chat_session_count_total{user/session filter}[7d])).",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
@@ -361,7 +361,7 @@
       "id": 6,
       "type": "stat",
       "title": "Tool calls (7d)",
-      "description": "sum(increase(copilot_chat_tool_call_count_total[7d])).",
+      "description": "sum(increase(copilot_chat_tool_call_count_total{user/session filter}[7d])).",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
