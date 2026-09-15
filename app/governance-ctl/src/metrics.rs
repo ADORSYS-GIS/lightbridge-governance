@@ -240,7 +240,13 @@ pub async fn push_verify_metrics(endpoint: &str, mismatch: usize) {
 /// the rest of this module's one-shot-push design.
 fn record_emit_metrics(meter: &Meter, accepted_by_report: &[(String, u64)], rejected: u64) {
     let accepted = meter
-        .u64_gauge("governance.copilot.emit_accepted_rows")
+let mut totals: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+for (report, count) in accepted_by_report {
+    *totals.entry(report.clone()).or_insert(0) += *count;
+}
+for (report, count) in totals {
+    accepted.record(count, &[KeyValue::new("report", report)]);
+}
         .with_description("OTLP log records the collector accepted, by report")
         .build();
     for (report, count) in accepted_by_report {
