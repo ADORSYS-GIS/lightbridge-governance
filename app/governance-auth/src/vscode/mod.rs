@@ -56,27 +56,31 @@ pub const FLAVOURS: [&str; 3] = ["Code", "Code - Insiders", "VSCodium"];
 /// false, `daemon` should fall back to the file path here, shrinking this to
 /// Codex alone; nothing else in #272 depends on it.
 pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
-    // VS Code Copilot's OTEL surface is telemetry-only -- there is no
-    // gateway/inference setting this writer could touch instead. With
-    // neither Copilot path active, turning either exporter on would either
-    // spool telemetry nothing drains (`file`) or point at an endpoint that
-    // was never configured (`otlp-http`): a quiet no-op is the honest
-    // outcome, not a `Skipped` about a tool that may not even be installed
-    // here.
+    // Two independent gates, merged through one writer (see `entries`):
     //
-    // `entries(settings).is_empty()`, not a hand-rolled copy of its two-flag
-    // branch (review round 2 on #302): a second copy of that logic here is
-    // exactly the drift `entries` exists to remove, and the two DID
-    // disagree on one input (`copilot_otlp_direct` true with `endpoint`
-    // `None` -- unreachable via `TelemetryWiring::resolve` today, but this
-    // guard let it through while `entries` itself returned nothing, hard-
-    // erroring on a JSONC file and silently reformatting a plain-JSON one
-    // for zero real keys). Never `settings.endpoint.is_none()` either,
-    // which is `Some` under `daemon` too (the loopback substitute)
-    // regardless of which Copilot path is active. Confirmed live
-    // (pre-#272): reading `endpoint` alone here left the file exporter on
-    // with the drain that used to empty it removed, and the spool grew
-    // unbounded.
+    // * Copilot's OTEL keys are telemetry-only and move with the Copilot path.
+    //   With neither Copilot path active, turning either exporter on would
+    //   either spool telemetry nothing drains (`file`) or point at an endpoint
+    //   that was never configured (`otlp-http`): a quiet no-op is the honest
+    //   outcome, not a `Skipped` about a tool that may not even be installed
+    //   here.
+    // * `lightbridge.*` is inference wiring and gates on `gateway_url`, NOT
+    //   on the OTLP endpoint (issue #233): a machine with a gateway and no
+    //   collector must still get the Lightbridge provider configured.
+    //
+    // `entries(settings).is_empty()` is therefore the right guard for both,
+    // and not a hand-rolled copy of its branches (review round 2 on #302): a
+    // second copy of that logic here is exactly the drift `entries` exists to
+    // remove, and the two DID disagree on one input (`copilot_otlp_direct`
+    // true with `endpoint` `None` -- unreachable via
+    // `TelemetryWiring::resolve` today, but this guard let it through while
+    // `entries` itself returned nothing, hard-erroring on a JSONC file and
+    // silently reformatting a plain-JSON one for zero real keys). Never
+    // `settings.endpoint.is_none()` either, which is `Some` under `daemon`
+    // too (the loopback substitute) regardless of which Copilot path is
+    // active. Confirmed live (pre-#272): reading `endpoint` alone here left
+    // the file exporter on with the drain that used to empty it removed, and
+    // the spool grew unbounded.
     if entries(settings).is_empty() {
         return Ok(Vec::new());
     }
