@@ -229,6 +229,58 @@ pub async fn push_verify_metrics(endpoint: &str, mismatch: usize) {
     }
 }
 
+/// Record the OTLP day-grain emit outcome (AC 7): the number of log records
+/// the collector accepted, by report, and a partial-accept error signal.
+///
+/// A partial accept -- some records rejected, some accepted -- must be
+/// surfaced as an error metric, not swallowed: the usage-side normalizer
+/// would otherwise silently miss rows. `rejected > 0` sets the
+/// `governance.copilot.emit_partial_accept` gauge to `1`; a fully accepted
+/// batch sets it to `0`. Both are gauges (last-value-wins per run), matching
+/// the rest of this module's one-shot-push design.
+fn record_emit_metrics(meter: &Meter, accepted_by_report: &[(String, u64)], rejected: u64) {
+    let accepted = meter
+        .u64_gauge("governance.copilot.emit_accepted_rows")
+        .with_description("OTLP log records the collector accepted, by report")
+        .build();
+
+    // A gauge's `record()` overwrites the prior value for an identical
+    // attribute set within one collection cycle (last-value-wins). A backfill
+    // run emits several days per report type, so `accepted_by_report` carries
+    // one entry per export -- several entries sharing a `report` label.
+    // Recording each entry directly would silently drop every day but the
+    // last (the gauge-collapse defect). Sum per report so the pushed value is
+    // the run total, not whichever day's count happened to be recorded last.
+    let mut totals: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for (report, count) in accepted_by_report {
+        *totals.entry(report.clone()).or_insert(0) += *count;
+    }
+    for (report, count) in totals {
+        accepted.record(count, &[KeyValue::new("report", report)]);
+    }
+
+    let partial = meter
+        .u64_gauge("governance.copilot.emit_partial_accept")
+        .with_description("1 if any OTLP record was rejected (partial accept), else 0")
+        .build();
+    partial.record(u64::from(rejected > 0), &[]);
+}
+
+/// Push the OTLP emit outcome gauges (see `record_emit_metrics`).
+pub async fn push_emit_metrics(
+    endpoint: &str,
+    accepted_by_report: &[(String, u64)],
+    rejected: u64,
+) {
+    let res = push(endpoint, |meter| {
+        record_emit_metrics(meter, accepted_by_report, rejected);
+    })
+    .await;
+    if let Err(e) = res {
+        warn!(error = %e, "otlp emit metric push failed; emit result is unaffected");
+    }
+}
+
 /// Build a one-shot meter provider, record `record`, and force-flush before
 /// the process exits (the CronJob pod dies immediately after main returns).
 async fn push(endpoint: &str, record: impl FnOnce(&Meter)) -> Result<()> {
@@ -495,5 +547,110 @@ mod tests {
             unmapped_users: 0,
         });
         assert_eq!(recording.age_seconds, Some(0));
+    }
+
+    /// AC 7: a partial accept (some records rejected) must surface as an
+    /// error metric (`emit_partial_accept = 1`), not be swallowed. A fully
+    /// accepted batch must read `0`.
+    #[test]
+    fn partial_accept_is_surfaced_as_an_error_metric() {
+        let resource_metrics = export(|meter| {
+            record_emit_metrics(meter, &[("organization-1-day".to_owned(), 3)], 1);
+        });
+        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_partial_accept");
+        assert_eq!(
+            points,
+            vec![(vec![], 1)],
+            "a rejected record must set the error gauge"
+        );
+
+        let resource_metrics = export(|meter| {
+            record_emit_metrics(meter, &[("organization-1-day".to_owned(), 3)], 0);
+        });
+        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_partial_accept");
+        assert_eq!(
+            points,
+            vec![(vec![], 0)],
+            "a fully accepted batch must read 0"
+        );
+    }
+
+    /// The `report` attribute of a gauge point, for order-independent
+    /// comparison.
+    fn report_label(p: &(Vec<(String, String)>, u64)) -> &str {
+        p.0.iter()
+            .find(|(k, _)| k == "report")
+            .map_or("", |(_, v)| v.as_str())
+    }
+
+    /// Sort gauge points by their `report` attribute so an assertion is
+    /// order-independent -- the SDK stores data points in a HashMap, so
+    /// iteration order is not guaranteed.
+    fn sort_by_report(points: &mut [(Vec<(String, String)>, u64)]) {
+        points.sort_by(|a, b| report_label(a).cmp(report_label(b)));
+    }
+
+    /// AC 7: `emit_accepted_rows` reflects the records the collector
+    /// accepted, by report.
+    #[test]
+    fn emit_accepted_rows_reflects_accepted_records_by_report() {
+        let resource_metrics = export(|meter| {
+            record_emit_metrics(
+                meter,
+                &[
+                    ("organization-1-day".to_owned(), 3),
+                    ("users-1-day".to_owned(), 5),
+                ],
+                0,
+            );
+        });
+        let mut points =
+            u64_gauge_points(&resource_metrics, "governance.copilot.emit_accepted_rows");
+        let mut expected = vec![
+            (
+                vec![("report".to_owned(), "organization-1-day".to_owned())],
+                3,
+            ),
+            (vec![("report".to_owned(), "users-1-day".to_owned())], 5),
+        ];
+        sort_by_report(&mut points);
+        sort_by_report(&mut expected);
+        assert_eq!(points, expected);
+    }
+
+    /// The gauge-collapse regression (adversarial review): a backfill run
+    /// emits several days per report type, so `accepted_by_report` carries
+    /// several entries sharing a `report` label. A gauge's `record()`
+    /// overwrites (last-value-wins) for an identical attribute set, so
+    /// recording each entry directly would report only the final day's count
+    /// instead of the run total. This proves the per-report pre-aggregation
+    /// in `record_emit_metrics` happened: two days of the same report must
+    /// sum to 3 + 5 = 8, not whichever day was recorded last.
+    ///
+    /// Confirmed against a deliberately un-aggregated version (recording
+    /// straight from the `accepted_by_report` loop): it failed with a single
+    /// point of value 5 (the second day only), exactly the silent-undercount
+    /// this test exists to catch.
+    #[test]
+    fn emit_accepted_rows_sums_duplicate_report_labels() {
+        let resource_metrics = export(|meter| {
+            record_emit_metrics(
+                meter,
+                &[
+                    ("organization-1-day".to_owned(), 3),
+                    ("organization-1-day".to_owned(), 5),
+                ],
+                0,
+            );
+        });
+        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_accepted_rows");
+        assert_eq!(
+            points,
+            vec![(
+                vec![("report".to_owned(), "organization-1-day".to_owned())],
+                8
+            )],
+            "two days of the same report must sum to the run total, not collapse to the last day"
+        );
     }
 }
