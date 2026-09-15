@@ -38,10 +38,13 @@ pub fn entries(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)
     // with the collector. `gatewayUrl` is the bare host -- the extension
     // appends `/v1/...` itself (`ide/vscode/src/catalogue.ts`) -- and the
     // trailing slash is trimmed for the same reason `anthropic_base_url` does,
-    // so a join can't produce `//v1`. `governanceAuthPath` is the absolute
-    // path to this binary: the extension spawns it without a shell, so a bare
-    // name would only work when `~/.local/bin` happens to be on VS Code's
-    // `PATH` (issue #233).
+    // so a join can't produce `//v1`. `governanceAuthPath` is this binary's
+    // own path via `binary_path()`: the extension spawns it without a shell,
+    // so the value matters. `binary_path()` returns the absolute
+    // `current_exe()` path and falls back to the bare name `governance-auth`
+    // only when that is genuinely unavailable (a failed lookup or a non-UTF-8
+    // path) -- the same accepted tradeoff as Codex's `auth.command`, not a
+    // deliberate downgrade for this key (issue #233).
     if let Some(gateway_url) = settings.gateway_url.as_deref() {
         out.push((
             "lightbridge.gatewayUrl",

@@ -163,12 +163,41 @@ fn a_gateway_without_a_collector_still_gets_the_lightbridge_wiring() {
         "github.copilot.chat.otel.enabled",
         "github.copilot.chat.otel.exporterType",
         "github.copilot.chat.otel.outfile",
+        "github.copilot.chat.otel.captureContent",
     ] {
         assert!(
             value.get(key).is_none(),
             "telemetry key {key} must not be written with no collector"
         );
     }
+}
+
+#[test]
+fn a_gateway_only_jsonc_config_is_refused_rather_than_silently_rewritten() {
+    // The JSONC refusal used to apply only to machines with a Copilot path;
+    // since the `lightbridge.*` gate (issue #233) a gateway-only machine now
+    // has real keys to write, so it reaches the same refuse-don't-clobber path
+    // and must pin it: the error tells the developer exactly what to add
+    // (including the inference keys), and the file comes back untouched.
+    let home = tempdir();
+    let user = user_dir(home.path(), "Code");
+    fs::create_dir_all(&user).expect("create VS Code User dir");
+    let original = "{\n  // my carefully explained setting\n  \"editor.fontSize\": 14\n}\n";
+    fs::write(user.join("settings.json"), original).expect("seed JSONC settings");
+
+    let error = configure(home.path(), &settings_gateway_only())
+        .expect_err("a JSONC config must be refused, not silently rewritten");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("lightbridge.gatewayUrl"),
+        "the error must tell the developer the inference key to add; got: {rendered}"
+    );
+
+    assert_eq!(
+        fs::read_to_string(user.join("settings.json")).expect("read back"),
+        original,
+        "the file must be left byte-for-byte untouched"
+    );
 }
 
 // #272 AC3's daemon-profile Copilot path has its own file, `daemon.rs`, for
