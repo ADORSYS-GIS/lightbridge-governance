@@ -24,22 +24,24 @@
       {
         "name": "user",
         "label": "User email",
-        "type": "textbox",
-        "query": "",
-        "current": {
-          "text": "",
-          "value": ""
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "__DS_PROMETHEUS__"
         },
-        "options": [
-          {
-            "text": "",
-            "value": "",
-            "selected": true
-          }
-        ],
+        "definition": "label_values(claude_code_session_count_total, user_email)",
+        "query": "label_values(claude_code_session_count_total, user_email)",
+        "refresh": 2,
+        "sort": 1,
+        "regex": "",
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {},
+        "options": [],
         "hide": 0,
         "skipUrlSync": false,
-        "description": "Literal email search; blank includes everyone, including unattributed traffic."
+        "description": "Pick a user, or All to include everyone, including unattributed traffic."
       },
       {
         "name": "session",
@@ -88,7 +90,7 @@
     {
       "type": "link",
       "title": "Clear user & session",
-      "url": "/d/governance-claude-code-telemetry?var-user=&var-session=",
+      "url": "/d/governance-claude-code-telemetry?var-user=All&var-session=",
       "keepTime": true,
       "includeVars": false,
       "targetBlank": false

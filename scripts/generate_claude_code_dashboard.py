@@ -165,6 +165,25 @@ UID = "governance-claude-code-telemetry"
 # (fleet-wide queries have nothing to escape).
 PROM_FILTER = 'user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`'
 
+# Sourced from Mimir, not Loki: `claude_code_session_count_total` carries a real
+# user_email label on every series (confirmed live 2026-09-15 against
+# mimir-nginx), unlike Loki's `attributes_user_email`, which only exists after
+# `| json` parsing and can't back a label-values query (Loki's
+# /loki/api/v1/label/<name>/values only accepts a stream selector, not a
+# parsing pipeline -- confirmed against Loki's own HTTP API docs). `allValue`
+# is regex-safe (".*") so ${user:regex} keeps working unmodified in every
+# existing query built with PROM_FILTER/logs(), matching the old blank-textbox
+# "everyone" default exactly.
+USER_DROPDOWN_VAR = {
+    "name": "user", "label": "User email", "type": "query", "datasource": PROM_DS,
+    "definition": "label_values(claude_code_session_count_total, user_email)",
+    "query": "label_values(claude_code_session_count_total, user_email)",
+    "refresh": 2, "sort": 1, "regex": "", "multi": False,
+    "includeAll": True, "allValue": ".*", "current": {}, "options": [],
+    "hide": 0, "skipUrlSync": False,
+    "description": "Pick a user, or All to include everyone, including unattributed traffic.",
+}
+
 # Every job label value this daemon's Claude Code traffic has been confirmed
 # under across this epic's history -- matched together since they all carry
 # the identical event shape (`generate_ai_cli_dashboard.py`'s own
@@ -737,12 +756,12 @@ def build_dashboard() -> dict[str, Any]:
         "docs/integrations/claude-code-dashboard.md."), panels)
     d["tags"].append("claude-code")
     d["time"] = {"from": "now-24h", "to": "now"}
-    d["templating"]["list"] = [{"name": name, "label": label, "type": "textbox", "query": "",
+    d["templating"]["list"] = [USER_DROPDOWN_VAR, {
+        "name": "session", "label": "Session", "type": "textbox", "query": "",
         "current": {"text": "", "value": ""}, "options": [{"text": "", "value": "", "selected": True}],
-        "hide": 0, "skipUrlSync": False, "description": description} for name, label, description in [
-            ("user", "User email", "Literal email search; blank includes everyone, including unattributed traffic."),
-            ("session", "Session", "Literal session ID search; blank includes all sessions. Click a session row to select it.")]]
-    d["links"].append({"type": "link", "title": "Clear user & session", "url": "/d/" + UID + "?var-user=&var-session=",
+        "hide": 0, "skipUrlSync": False,
+        "description": "Literal session ID search; blank includes all sessions. Click a session row to select it."}]
+    d["links"].append({"type": "link", "title": "Clear user & session", "url": "/d/" + UID + "?var-user=All&var-session=",
                         "keepTime": True, "includeVars": False, "targetBlank": False})
     return d
 
