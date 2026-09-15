@@ -381,7 +381,7 @@
       "id": 7,
       "type": "stat",
       "title": "Edit acceptance rate (7d)",
-      "description": "accepted / (accepted + rejected), from copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=...}. A dropping rate is the signal worth a human's attention -- the same edit outcomes reported by VS Code Copilot.",
+      "description": "accepted / (accepted + rejected), from copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome=...}. Corrected 2026-09-15: this dashboard originally queried copilot_chat_chat_edit_outcome_count_total, a name matching the official docs' dotted form (copilot_chat.chat_edit.outcome.count) but never actually emitted -- confirmed absent from Mimir even after a real accept dialogue, autosave on, in the same live check that found the real name. copilot_chat_edit_acceptance_count_total matches copilot_chat.edit.acceptance.count instead, and captured that exact accept action live (copilot_chat_edit_outcome=\"accepted\", copilot_chat_edit_source=\"chat_editing_hunk\", value 1) -- see docs/runbooks/verify-vscode-copilot-edit-metrics.md. A dropping rate is the signal worth a human's attention -- the same edit outcomes reported by VS Code Copilot.",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
@@ -440,7 +440,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=\"accepted\"}[7d])) / sum(increase(copilot_chat_chat_edit_outcome_count_total[7d]))",
+          "expr": "sum(increase(copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome=\"accepted\"}[7d])) / sum(increase(copilot_chat_edit_acceptance_count_total[7d]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
