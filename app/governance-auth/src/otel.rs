@@ -308,7 +308,17 @@ pub fn configure_all(
             flag: "--no-vscode",
         });
     } else {
-        outcomes.extend(crate::vscode::configure(home, settings)?);
+        match crate::vscode::configure(home, settings) {
+            Ok(written) => outcomes.extend(written),
+            // Refusing an annotated JSONC settings.json is a partial outcome,
+            // not a failed configure: Claude and Codex above were written, and
+            // the shell env and the manifest below must still run. Treating it
+            // as fatal would let one annotated file silently cost the
+            // developer their exports and leave the ownership ledger
+            // describing the previous run -- the inverse of the "must never
+            // undo a successful configure" rule retraction abides by.
+            Err(error) => eprintln!("warning: could not configure VS Code: {error:#}"),
+        }
     }
     outcomes.extend(configure_shell_env(home, settings)?);
 
