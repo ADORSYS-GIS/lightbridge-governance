@@ -1,10 +1,128 @@
 # Verify (or refute) Codex's OTLP metrics temporality, live
 
-**Status: handoff runbook, not yet executed against a real interactive
-session.** Everything in this document is either (a) already confirmed --
-marked as such, with the evidence -- or (b) a step for whoever runs this to
-execute and record the result of. Do not treat an unexecuted step's expected
-outcome as having happened.
+**Status: executed on 2026-09-15 with Codex CLI 0.154.0. Both the baseline
+and the cumulative-environment comparison emitted DELTA on the wire.** The
+standard environment variable did not change temporality in this build.
+See [Observed result](#observed-result-2026-09-15) for the captured evidence
+and limits. The procedure below remains available for retesting later builds;
+its conditional outcomes are instructions, not additional observed results.
+
+## Observed result (2026-09-15)
+
+**Confirmed: DELTA in both runs; the environment-only workaround does not
+work in Codex CLI 0.154.0.** This establishes the wire behavior, not whether
+Codex overrides the preference or its SDK ignores it. Downstream conversion
+and the eventual appearance of named Mimir series remain unverified fixes.
+
+| Run | Temporality process environment | Metric records | Distinct names | Sum of data-point counts | Wire temporality |
+|---|---|---:|---:|---:|---|
+| Baseline | Explicitly unset | 122 | 72 | 508 | DELTA (`Some(1)`) for all records |
+| Comparison | `cumulative` | 126 | 72 | 512 | DELTA (`Some(1)`) for all records |
+
+Counts include periodic exports and the shutdown flush; they are not counts
+of unique series. All emitted Sum records reported `is_monotonic=true`;
+Histogram records omit that field. No Gauge or UNSPECIFIED/CUMULATIVE record
+was observed in these two captures. The diagnostic's Histogram arm does not
+cover ExponentialHistogram; none appeared as an unhandled record here.
+
+**Evidence:** [all 248 metric metadata records](evidence/codex-metrics-temporality-2026-09-15.log).
+The baseline capture spans **10:24:29.721112–10:27:05.908989 UTC**;
+the comparison spans **10:24:49.891222–10:27:05.912469 UTC**. Both TUIs
+remained open for more than three minutes, with two rounds of real shell
+activity: reading the runbook, `git status --short`, and `date -u`.
+The TUI confirmed `runtime_metrics` enabled. Process-environment inspection
+confirmed the baseline unset (PID 145420) and comparison `cumulative`
+(PID 147094). These are the installed interactive CLI, not `codex exec`.
+
+```mermaid
+sequenceDiagram
+    participant B as Baseline interactive Codex
+    participant C as Comparison interactive Codex
+    participant D as Diagnostic daemon
+    B->>D: /codex-diag-baseline/v1/metrics (preference unset)
+    D->>D: Decode 122 metric records: DELTA
+    C->>D: /codex-diag-cumulative/v1/metrics (preference cumulative)
+    D->>D: Decode 126 metric records: still DELTA
+    Note over B,D: No CUMULATIVE record in either attributed capture
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> OriginalDaemon
+    OriginalDaemon --> DiagnosticDaemon: Back up actual executable, stop, replace, start
+    DiagnosticDaemon --> Captured: Two attributed interactive runs
+    Captured --> OriginalRestored: Stop, restore, restart, compare bytes
+    OriginalRestored --> [*]
+```
+
+The receive/classify/instrumentation boundary is
+[`app/governance-auth/src/otel_daemon/mod.rs:176`](../../app/governance-auth/src/otel_daemon/mod.rs#L176),
+before `retained_response` at line 184 in source commit
+`f2604ce`. The temporary diagnostic in Step 2 added only the incoming path
+and the listed metric metadata; no values, tokens, log/trace bodies, or
+arbitrary resource attributes were recorded. The lifecycle above was
+executed with an EXIT/INT/TERM restoration trap and a 15-minute timeout.
+
+### Official Codex documentation checked (2026-09-15)
+
+The [Configuration Reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+lists `otel.metrics_exporter` choices (`none`, `statsig`, `otlp-http`,
+`otlp-grpc`), but no temporality key. The
+[advanced configuration guide](https://learn.chatgpt.com/docs/config-file/config-advanced#otel-metrics-emitted)
+documents the OTel counters and histograms. Neither page documents
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` or promises cumulative
+export. Documentation silence alone is not evidence of runtime behavior;
+the captures above establish the behavior of 0.154.0.
+
+The guide explicitly scopes
+[`shell_environment_policy`](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy)
+to spawned commands. It is not a documented configuration mechanism for
+Codex's own OTel initialization. A wrapper that merely sets the tested
+variable has no demonstrated benefit: the comparison already supplied it
+to the actual Codex process.
+
+**Decision for this build:** stop pursuing the environment-only workaround.
+Evaluate downstream delta-to-cumulative conversion, or an upstream Codex
+change that exposes a working selector. Do not generalize the measured
+result to every future build, or claim the docs prove an SDK bug.
+
+### Live pipeline configuration checked
+
+- Deployment `governance/lightbridge-governance-ai-cli-otel-collector`
+  mounted ConfigMap `lightbridge-governance-ai-cli-otel-collector-2f4b2e77`.
+  Its `collector.yaml` lines 138–148 route metrics through
+  `memory_limiter`, `resource`, `transform/client_address_from_xff`, and
+  `batch`, then export to `otlp/alloy` and `awss3`. No delta converter.
+- ConfigMap `observability/alloy`, `config.alloy` lines 321–330, routes
+  OTLP metrics directly to `otelcol.exporter.prometheus.default.input`.
+  Lines 553–555 forward Prometheus samples to the existing relabel/remote
+  write chain. No delta converter.
+
+These live checks corroborate the pipeline configuration described below.
+They do not prove end-to-end recovery: no cluster change, converter test,
+or new Mimir-series verification was performed. The next fix to evaluate
+is `deltatocumulative` before Prometheus conversion, with appropriate
+handling of state and routing across collector replicas.
+
+### Runbook corrections and cleanup
+
+- The current host environment already contained `cumulative`. Explicitly
+  unsetting it was necessary for an uncontaminated baseline.
+- Existing sessions also emit metrics. The first untagged exploratory run
+  observed `codex-app-server` DELTA records, but is excluded from the table.
+  Both final runs used distinct loopback paths (command-line overrides
+  only). Their resource `service.name` was `Codex Desktop`, so future
+  searches must not assume only the two historical job names below.
+- The service executable was the repository's `target/debug/governance-auth`,
+  not `~/.local/bin/governance-auth`. Steps 3 and 6 now use the actual
+  running executable. The CLI on PATH reported v2.7.0, but that alone
+  would not identify the service binary.
+- The original executable was restored byte-for-byte, and the service
+  reported `active`. Original and restored SHA-256:
+  `672b59d0541ae5b837ea59c9b7d3dbca493bbef7fdecb04b4f018a572cb097a2`.
+  Temporary instrumentation was confined to the disposable worktree, which
+  was removed after capture. No diagnostic records appeared after restoration.
+  Persistent Codex configuration and cluster configuration were not changed.
 
 ## Why this exists
 
@@ -36,66 +154,21 @@ protobuf bytes).
   `telemetry.sdk.version=0.31.0`, confirmed via the matching Loki log lines
   for that session) believed it successfully POSTed 12 metric points to the
   daemon. That timestamp falls inside the 7-day Mimir window above.
-- **What is NOT confirmed:** the actual wire-level `aggregation_temporality`
-  value (0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE per the OTel proto spec) of
-  those 12 points. The symptom is identical to Claude Code's pre-fix state,
-  and delta-vs-cumulative is the only mechanism this investigation found
-  anywhere that produces exactly this signature (every layer reports
-  success, zero resulting series) -- but that is an inference from a
-  matching fingerprint, not a byte-level confirmation. This runbook gets
-  that confirmation.
-- **A methodology trap already found, do not repeat it:** `codex exec`
-  (the one-shot non-interactive CLI mode) writes **nothing** to
-  `logs_2.sqlite`, ever -- confirmed by running real, multi-minute `codex
-  exec` sessions (including with `--enable runtime_metrics` explicitly set)
-  and finding zero new rows in the log table afterward. Only the
-  interactive TUI / app-server path exercises the metrics pipeline. Use a
-  real interactive session for this verification, not `codex exec`.
-- Also confirmed, not load-bearing for the above but worth knowing: `codex
-  features list` shows `runtime_metrics` as `under development`, `false`
-  (disabled) by default in this build (`codex-cli 0.154.0`). Enabling it
-  (`--enable runtime_metrics`, or persist with `codex features enable
-  runtime_metrics`) did not change the `codex exec` result -- expected,
-  since `codex exec` doesn't reach the metrics pipeline at all regardless of
-  this flag. Whether the *baseline* metric catalog (the instruments visible
-  in the 2026-09-11 log -- `codex.startup_phase`, `codex.thread.started`,
-  `codex.shell_snapshot`, `codex.remote_models.*`) requires this flag at all
-  is itself unconfirmed; that session's flag state at the time is unknown.
-  Enable it for this verification anyway, to maximize the metric surface
-  captured and remove it as a variable.
-
-## What this runbook settles
-
-1. The actual `aggregation_temporality` Codex's Rust SDK puts on the wire
-   for its Sum/Histogram metrics, captured directly (not inferred).
-2. Whether the standard, spec-defined
-   `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` environment variable
-   -- not a Claude-Code-specific setting; it is part of the
-   [OpenTelemetry SDK environment variable
-   specification](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)
-   -- is honored by Codex's Rust SDK at all. Codex's own docs never mention
-   it, but that does not mean the underlying `opentelemetry` crate ignores
-   it; many SDKs implement the spec's standard surface even when the CLI's
-   own docs don't call it out. If it works, the fix is exactly as small as
-   Claude Code's was. If Codex ignores it, the fix has to live elsewhere
-   (a `deltatocumulative` processor in the collector/Alloy pipeline,
-   discussed at the end).
-
-## Prerequisites
-
-- `kubectl` access to the cluster (`observability` namespace: Mimir, Alloy).
-- This repo cloned, on a machine that also runs the `governance-auth-serve-otel`
-  systemd user service (the loopback OTLP daemon every AI CLI client already
-  points at -- confirm with `systemctl --user status
-  governance-auth-serve-otel.service`).
-- A real Codex CLI install pointed at that daemon (`~/.codex/config.toml`'s
-  `[otel.metrics_exporter.otlp-http]` should already read
-  `endpoint = "http://127.0.0.1:17457/v1/metrics"` -- `governance-auth
-  configure` writes this; if it's missing, run `governance-auth configure`
-  first).
-- Willingness to have one real interactive Codex session run for a few
-  minutes -- this uses real API calls/tokens, same as any normal Codex
-  usage.
+- **Now confirmed by the run below:** Codex CLI 0.154.0 emitted
+  `aggregation_temporality=1` (DELTA), including when
+  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative` was set.
+  The exact 2026-09-11 payload was not retained by this diagnostic; the
+  historical symptom is consistent with the newly captured behavior.
+- **Methodology limitation:** earlier `codex exec` experiments reportedly
+  produced no new `logs_2.sqlite` rows, including with `runtime_metrics`
+  enabled. Absence from that local log is not proof that every non-interactive
+  build can never export metrics. This verification used actual interactive
+  TUIs and captured their OTLP exports directly; use that proven method to
+  reproduce these results.
+- The installed 0.154.0 build listed `runtime_metrics` as under development
+  and disabled by default. Both recorded runs enabled it to maximize the
+  metric surface. Whether every baseline instrument requires that flag was
+  not tested.
 
 ## Step 1 -- isolate the work
 
@@ -105,7 +178,7 @@ working branch:
 
 ```sh
 cd /path/to/lightbridge-governance
-git worktree add /tmp/codex-metrics-diag main
+git worktree add --detach /tmp/codex-metrics-diag HEAD
 cd /tmp/codex-metrics-diag
 ```
 
@@ -150,7 +223,7 @@ Insert this block between those two lines (before `let body = ...`):
                                 Some(Data::Histogram(d)) => (d.data_points.len(), Some(d.aggregation_temporality), None),
                                 _ => (0, None, None),
                             };
-                            tracing::info!(service_name, name = %m.name, data_points, ?temporality, is_monotonic, "DIAG metric");
+                            tracing::info!(path = %incoming.path, service_name, name = %m.name, data_points, ?temporality, is_monotonic, "DIAG metric");
                         }
                     }
                 }
@@ -171,14 +244,19 @@ any client hitting the daemon's `/v1/metrics`.
 ```sh
 cargo build -p governance-auth --bin governance-auth
 
-# Stop the daemon FIRST -- the binary is memory-mapped while running and
-# `cp` over a running executable fails with "Text file busy".
+# Resolve the executable actually running: ExecStart may point at a repository
+# target/debug binary rather than ~/.local/bin/governance-auth.
+# Keep these variables in this shell through Step 6.
+daemon_pid=$(systemctl --user show governance-auth-serve-otel.service -p MainPID --value)
+daemon_binary=$(readlink -f "/proc/$daemon_pid/exe")
+test -x "$daemon_binary" || exit 1
+backup="${daemon_binary}.temporality-backup"
+test ! -e "$backup" || exit 1
+cp -p "$daemon_binary" "$backup"
+
+# Stop FIRST: overwriting a running executable fails with "Text file busy".
 systemctl --user stop governance-auth-serve-otel.service
-
-# Back this up. You will restore it in Step 6 -- do not skip this.
-cp ~/.local/bin/governance-auth ~/.local/bin/governance-auth.prod-backup
-
-cp target/debug/governance-auth ~/.local/bin/governance-auth
+cp target/debug/governance-auth "$daemon_binary"
 systemctl --user start governance-auth-serve-otel.service
 systemctl --user status governance-auth-serve-otel.service --no-pager | head -6
 ```
@@ -198,19 +276,24 @@ see the methodology trap above) for at least 2-3 minutes of real activity
 periodic metrics reader to tick at least once (Codex's own log showed a
 ~40-60s interval). Two runs are worth doing:
 
-1. **Baseline**, your normal environment, `runtime_metrics` enabled for
-   maximum coverage:
+1. **Baseline**, explicitly unset the temporality preference; the host may
+   already inherit `cumulative`. Enable `runtime_metrics` for maximum coverage.
+   A distinct loopback path attributes the diagnostic to this run:
    ```sh
-   codex --enable runtime_metrics
+   env -u OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE \
+     codex --enable runtime_metrics \
+     -c 'otel.metrics_exporter.otlp-http.endpoint="http://127.0.0.1:17457/codex-diag-baseline/v1/metrics"'
    ```
    (or `codex features enable runtime_metrics` once, if you'd rather not
    pass the flag every time -- remember to `codex features disable
    runtime_metrics` afterward if you do, since it's `under development`).
 
 2. **With the standard OTel env var set**, to test whether Codex's Rust SDK
-   honors it despite Codex's own docs never mentioning it:
+   honors it despite its absence from the checked Codex documentation:
    ```sh
-   OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative codex --enable runtime_metrics
+   OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative \
+     codex --enable runtime_metrics \
+     -c 'otel.metrics_exporter.otlp-http.endpoint="http://127.0.0.1:17457/codex-diag-cumulative/v1/metrics"'
    ```
 
 Do some real work in each session (ask it to read a file, make an edit,
@@ -221,7 +304,8 @@ before exiting.
 
 ## Step 5 -- read the result
 
-For each of the two runs, record every `DIAG metric` line: `name`,
+Filter by the run-specific `path` so another desktop session cannot contaminate
+its result. For each of the two runs, record every `DIAG metric` line: `name`,
 `data_points`, `temporality`, `is_monotonic`. Then:
 
 - **If `temporality` is ever `Some(1)` (DELTA) in the baseline run**: root
@@ -274,26 +358,43 @@ For each of the two runs, record every `DIAG metric` line: `name`,
 
 ```sh
 systemctl --user stop governance-auth-serve-otel.service
-cp ~/.local/bin/governance-auth.prod-backup ~/.local/bin/governance-auth
+cp -p "$backup" "$daemon_binary"
 systemctl --user start governance-auth-serve-otel.service
-rm ~/.local/bin/governance-auth.prod-backup
+cmp "$backup" "$daemon_binary"  # must match byte-for-byte
+rm "$backup"
 
 cd /path/to/lightbridge-governance
 git worktree remove /tmp/codex-metrics-diag --force
 ```
 
-Confirm the restored daemon is the real one: `governance-auth --version`
-should print the same version it did before Step 3, and
+Confirm the restored daemon is the real one: the byte comparison above must
+succeed, `systemctl --user is-active governance-auth-serve-otel.service` must
+report `active`, and
 `journalctl --user -u governance-auth-serve-otel.service -n 5` should show
 a normal restart with no diagnostic output.
 
 ## After this runbook
 
-Update this file (or fold its result into
-`docs/integrations/claude-code-dashboard.md`-style documentation for
-Codex, if one gets written) with what was actually observed -- the
-"What is NOT confirmed" section above should either be resolved to a
-confirmed root cause and fix, or replaced with whatever the real
-mechanism turned out to be. Don't leave this document's speculative parts
-sitting next to confirmed ones without saying which is which, the same
-discipline the Claude Code investigation held throughout.
+Done for Codex CLI 0.154.0: root cause confirmed (DELTA on the wire,
+in both the baseline and the standard-env-var comparison), and the
+environment-only fix ruled out for this build -- see "Observed result"
+above. Not yet done, and the actual next step:
+
+- Evaluate adding a `deltatocumulative` processor to the metrics pipeline
+  (the `ai-cli-otel` collector or Alloy -- see "Live pipeline configuration
+  checked" above for exactly which config files and line ranges have no
+  such processor today). This is a cluster-wide, `ai-helm`/`ai-helm-values`
+  change, not something this repo alone can land -- it protects every
+  future client hitting this pipeline, not just Codex.
+- After that processor exists, re-run Steps 3-5 of this runbook (or check
+  Mimir directly for a named `codex_*`/`codex.*` series) to confirm the
+  fix actually produces a queryable series end-to-end, the same way
+  `claude_code_lines_of_code_count_total` etc. were confirmed live after
+  #335.
+- If a Codex-specific dashboard/measurement doc gets written (mirroring
+  `docs/integrations/claude-code-dashboard.md`), fold this runbook's
+  confirmed result into it rather than leaving this as the only record.
+- Retest against later Codex CLI builds if the upstream project changes
+  its OTel SDK configuration or exposes a working temporality selector --
+  this result is dated and version-scoped, not a permanent property of
+  Codex.
