@@ -1,10 +1,28 @@
 #!/usr/bin/env python3
 """Generate VS Code Copilot's dashboard. Standard-library, dev-time tool.
 
-Moved from AI CLI without changing the six validated Mimir queries. These
-copilot_chat_* counters were confirmed against production; they are distinct
-from the GitHub reports/seat API consumed by governance-ctl. No user identity
-is inferred from a host, session or metric series.
+Moved from AI CLI without changing the six Mimir queries at the time. These
+copilot_chat_* counters are distinct from the GitHub reports/seat API
+consumed by governance-ctl. No user identity is inferred from a host,
+session or metric series.
+
+## The "confirmed against production" claim did not hold for one query
+
+Checked live on 2026-09-15 while investigating whether every AI-CLI client
+had Claude Code's/Codex's metrics-temporality gap (see
+docs/integrations/claude-code-dashboard.md): 26 of this dashboard's
+underlying metric names were genuinely populated in Mimir, including a real
+Histogram (rules out that same bug -- it would break every Sum uniformly,
+not select ones). But `copilot_chat_chat_edit_outcome_count_total` --
+matching the official docs' dotted name (`copilot_chat.chat_edit.outcome.count`)
+correctly converted -- was completely absent, even after a real accept
+dialogue with autosave on. The actual metric that fired for that exact
+accept action was `copilot_chat_edit_acceptance_count_total`
+(`copilot_chat.edit.acceptance.count`, a different name from the one this
+generator had queried), carrying `copilot_chat_edit_outcome="accepted"` and
+`copilot_chat_edit_source="chat_editing_hunk"`. Fixed to query the metric
+that is actually real. See docs/runbooks/verify-vscode-copilot-edit-metrics.md
+for the full live check.
 """
 from __future__ import annotations
 
@@ -248,14 +266,24 @@ def build_dashboard() -> dict[str, Any]:
             title="Edit acceptance rate (7d)",
             description=(
                 "accepted / (accepted + rejected), from "
-                "copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome=...}. "
-                "A dropping rate is the signal worth a human's attention -- the same "
-                "edit outcomes reported by VS Code Copilot."
+                "copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome=...}. "
+                "Corrected 2026-09-15: this dashboard originally queried "
+                "copilot_chat_chat_edit_outcome_count_total, a name matching the "
+                "official docs' dotted form (copilot_chat.chat_edit.outcome.count) but "
+                "never actually emitted -- confirmed absent from Mimir even after a "
+                "real accept dialogue, autosave on, in the same live check that found "
+                "the real name. copilot_chat_edit_acceptance_count_total matches "
+                "copilot_chat.edit.acceptance.count instead, and captured that exact "
+                "accept action live (copilot_chat_edit_outcome=\"accepted\", "
+                "copilot_chat_edit_source=\"chat_editing_hunk\", value 1) -- see "
+                "docs/runbooks/verify-vscode-copilot-edit-metrics.md. A dropping rate "
+                "is the signal worth a human's attention -- the same edit outcomes "
+                "reported by VS Code Copilot."
             ),
             expr=(
-                'sum(increase(copilot_chat_chat_edit_outcome_count_total{copilot_chat_edit_outcome="accepted"}[7d])) '
+                'sum(increase(copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome="accepted"}[7d])) '
                 "/ "
-                "sum(increase(copilot_chat_chat_edit_outcome_count_total[7d]))"
+                "sum(increase(copilot_chat_edit_acceptance_count_total[7d]))"
             ),
             unit="percentunit",
             grid={"h": 8, "w": 8, "x": 16, "y": y},

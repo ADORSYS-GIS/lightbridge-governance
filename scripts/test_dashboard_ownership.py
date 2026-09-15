@@ -29,7 +29,7 @@ class DashboardOwnershipTest(unittest.TestCase):
 
     def test_editor_metrics_have_one_owner(self):
         expected = {'copilot_chat_lines_of_code_count_total', 'copilot_chat_session_count_total',
-                    'copilot_chat_tool_call_count_total', 'copilot_chat_chat_edit_outcome_count_total'}
+                    'copilot_chat_tool_call_count_total', 'copilot_chat_edit_acceptance_count_total'}
         editor_exprs = [t['expr'] for p in vscode()['panels'] for t in p.get('targets', [])]
         self.assertEqual(len(editor_exprs), 6)
         for metric in expected:
