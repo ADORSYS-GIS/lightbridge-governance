@@ -151,7 +151,19 @@ UID = "governance-claude-code-telemetry"
 # labels verbatim (confirmed live, see the module docstring's 2026-09-14
 # section). Kept as a plain string, not an f-string: PromQL's own `{}` label
 # syntax and Python's f-string brace-escaping don't mix cleanly.
-PROM_FILTER = 'user_email=~".*${user:regex}.*", session_id=~".*${session:regex}.*"'
+#
+# Backtick-quoted (raw), NOT double-quoted -- caught in review (#336):
+# Grafana's `:regex` format escapes regex metacharacters, so a `.` in an
+# email becomes `\.` in the substituted value. Inside a PromQL
+# DOUBLE-quoted string that backslash is interpreted as an escape sequence
+# (same string-literal grammar `logs()` below already routes around with
+# backticks for LogQL); a backtick string is raw, no escape processing, so
+# the same `\.` a `.`-bearing user_email search always produces survives
+# intact. Every panel using this filter broke the moment the User email
+# textbox held anything with a dot -- which is every real email -- until
+# this fix; the PR's own live verification never exercised that path
+# (fleet-wide queries have nothing to escape).
+PROM_FILTER = 'user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`'
 
 # Every job label value this daemon's Claude Code traffic has been confirmed
 # under across this epic's history -- matched together since they all carry
@@ -232,14 +244,24 @@ def metric_increase(name: str, *, extra: str = "", group: str = "", window: str 
 
 def prom_stat_panel(
     ids: Ids, *, title: str, description: str, expr: str, unit: str, grid: dict[str, int],
+    decimals: int = 0,
 ) -> dict[str, Any]:
     """Same shape and `NO_DATA_MAPPING` convention as `loki_stat_panel` --
     see that function's own docstring for why an instant query with no
-    sparkline is used, not a range query."""
+    sparkline is used, not a range query.
+
+    `decimals` defaults to 0: `increase()` over a counter yields a
+    fractional result (Prometheus extrapolates to the range boundary, it
+    does not do an exact integer reconciliation), so an un-rounded "Commits"
+    or "Pull requests" stat can render `1.14` -- caught in review (#336).
+    Every current caller is a count or a duration in whole seconds, so 0 is
+    the right default everywhere this is used today, not just a fallback."""
+    field_config = _base_field_config(unit=unit, mappings=[NO_DATA_MAPPING])
+    field_config["defaults"]["decimals"] = decimals
     return {
         "id": ids.take(), "type": "stat", "title": title, "description": description,
         "datasource": PROM_DS, "gridPos": grid,
-        "fieldConfig": _base_field_config(unit=unit, mappings=[NO_DATA_MAPPING]),
+        "fieldConfig": field_config,
         "options": {
             "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
             "orientation": "auto", "textMode": "auto", "colorMode": "none", "graphMode": "none",
@@ -674,8 +696,9 @@ def build_dashboard() -> dict[str, Any]:
         grid={"x": 6, "y": 78, "w": 6, "h": 6}))
     panels.append(prom_stat_panel(ids, title="Active time", unit="s",
         description="sum(increase(claude_code_active_time_seconds_total{...}[$__range])), both "
-        "type=user (keyboard) and type=cli (tool execution/AI responses) combined -- see the "
-        "breakdown trend to the right for the split." + coverage_note,
+        "type=user (keyboard) and type=cli (tool execution/AI responses) combined -- this stat "
+        "does not split by type; query by the `type` label directly (e.g. in Explore) if the "
+        "split matters." + coverage_note,
         expr=metric_increase("claude_code_active_time_seconds_total"),
         grid={"x": 12, "y": 78, "w": 6, "h": 6}))
     panels.append(prom_stat_panel(ids, title="Commits", unit="short",

@@ -2219,7 +2219,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -2243,7 +2244,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\", type=\"added\"}[$__range]))",
+          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"added\"}[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -2290,7 +2291,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -2314,7 +2316,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\", type=\"removed\"}[$__range]))",
+          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"removed\"}[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -2326,7 +2328,7 @@
       "id": 32,
       "type": "stat",
       "title": "Active time",
-      "description": "sum(increase(claude_code_active_time_seconds_total{...}[$__range])), both type=user (keyboard) and type=cli (tool execution/AI responses) combined -- see the breakdown trend to the right for the split. Only a machine running a governance-auth build with the 2026-09-14 metrics-temporality fix, that has re-run configure, emits this -- NO DATA means an un-updated machine, not zero activity.",
+      "description": "sum(increase(claude_code_active_time_seconds_total{...}[$__range])), both type=user (keyboard) and type=cli (tool execution/AI responses) combined -- this stat does not split by type; query by the `type` label directly (e.g. in Explore) if the split matters. Only a machine running a governance-auth build with the 2026-09-14 metrics-temporality fix, that has re-run configure, emits this -- NO DATA means an un-updated machine, not zero activity.",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
@@ -2361,7 +2363,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -2385,7 +2388,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_active_time_seconds_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\"}[$__range]))",
+          "expr": "sum(increase(claude_code_active_time_seconds_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -2432,7 +2435,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -2456,7 +2460,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_commit_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\"}[$__range]))",
+          "expr": "sum(increase(claude_code_commit_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -2503,7 +2507,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -2527,7 +2532,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_pull_request_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\"}[$__range]))",
+          "expr": "sum(increase(claude_code_pull_request_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -2584,7 +2589,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\", type=\"added\"}[$__interval]))",
+          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"added\"}[$__interval]))",
           "instant": false,
           "range": true,
           "legendFormat": "added",
@@ -2595,7 +2600,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~\".*${user:regex}.*\", session_id=~\".*${session:regex}.*\", type=\"removed\"}[$__interval]))",
+          "expr": "sum(increase(claude_code_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"removed\"}[$__interval]))",
           "instant": false,
           "range": true,
           "legendFormat": "removed",

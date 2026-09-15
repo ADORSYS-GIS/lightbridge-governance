@@ -1,10 +1,11 @@
 # Claude Code user and session dashboard
 
 The generator (`scripts/generate_claude_code_dashboard.py`) owns the committed
-JSON; Helm substitutes the Loki datasource UID and Grafana Operator
-provisions it. This reads existing forwarded OTLP logs, without a new
-persistence or collector path (ADR-0014). Reshaped 2026-09-14 from the
-original fleet-wide dashboard (PR #317, #331) to match
+JSON; Helm substitutes two datasource UIDs -- Loki (existing forwarded OTLP
+logs, no new persistence or collector path, ADR-0014) and, since the
+lines-of-code/active-time/commits/pull-requests panels below, Mimir/
+Prometheus -- and Grafana Operator provisions it. Reshaped 2026-09-14 from
+the original fleet-wide dashboard (PR #317, #331) to match
 [Codex's](codex-dashboard.md) user/session contract, per
 [dashboard direction and implementation handoff](dashboard-direction-and-handoff.md).
 
@@ -70,12 +71,22 @@ original fleet-wide dashboard (PR #317, #331) to match
   decisions (`Edit`/`Write`/`NotebookEdit`) over 7d were `accept`/`config`
   with zero `source=user` observed. The "Code edits · source=config share"
   panel keeps that split, now over the selected range instead of a fixed 7d.
-- Lines of code, commits and active time are `claude_code.*` OTLP **metrics**,
-  not the log events this generator (and Loki) reads. The 2026-09-09
-  investigation found them absent from this org's Mimir under any
-  `claude_code_*`/`claude*` prefix; not rechecked on 2026-09-14, so still
-  treated as absent rather than reasserted stale. No substitute proxy is
-  shown for these.
+- Lines of code, active time, commits and pull requests are `claude_code.*`
+  OTLP **metrics** (Mimir/Prometheus), not the log events this generator's
+  other panels read from Loki. The 2026-09-09 investigation found them
+  absent from this org's Mimir and left them unshown, reasoning there was
+  no honest substitute for a literal line count. Root cause, found later the
+  same day: Claude Code's documented default for
+  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` is `delta`, which has
+  no representation in Prometheus/Mimir's cumulative-only data model, and
+  nothing downstream converted one to the other -- fixed in `governance-auth`
+  (lightbridge-governance#335). These four panels are real Mimir data,
+  scoped by the same `user`/`session` filters (translated to PromQL label
+  matchers on `user_email`/`session_id`), verified live after the fix.
+  Coverage is partial by design: only a machine running a `governance-auth`
+  build with #335 that has re-run `configure` emits `cumulative`
+  temporality, so a blank panel here means an un-updated machine, never
+  zero activity -- each panel's own `NO DATA` mapping says so.
 - Hooks (`hook_execution_start`/`.complete`), MCP server connections
   (`mcp_server_connection`), plugin loads (`plugin_loaded`) and data-retention
   hygiene (`retention_sweep`) have no analogue in Grafana's own official
@@ -89,7 +100,9 @@ explicitly fleet-wide), one meaningful-activity trend, two model-share
 donuts, one session table with drilldown links, tool-decision/success/
 invocation-source panels, a waiting-time trend, an error trend plus raw error
 log lines, a hooks section (outcomes trend + top-hooks table), an MCP/plugins
-section, and four retention stats.
+section, four retention stats, and (section 7, Mimir/Prometheus) five stats
+-- lines added, lines removed, active time, commits, pull requests -- plus
+a lines-added-vs-removed trend.
 
 ## Cross-client handoff
 
@@ -110,14 +123,16 @@ helm template dashboard-check charts/lightbridge-governance --set grafanaDashboa
 
 ### 2026-09-14 verification
 
-All 27 dashboard tests pass (10 new to `test_claude_code_user_dashboard.py`,
+All 30 dashboard tests pass (11 in `test_claude_code_user_dashboard.py`,
 mirroring `test_codex_user_dashboard.py`'s contract style: deterministic
 output, every usage query carries the user/session/range filters except the
 one fleet-wide coverage indicator, no fixed `[24h]`/`[7d]` windows remain, the
 model-share donuts use named-field rows without a timestamp label, the
 session join preserves missing signals and the drilldown link, no panel
-overlaps another, and no invented measurement -- "accepted", "retained",
-"lines of code", "active duration" -- appears in any title). All three
+overlaps another, no invented measurement -- "accepted", "retained", "active
+duration" -- appears in any title ("lines of code" was in that list until
+the metrics-temporality fix made it real), and the Mimir panels are
+correctly sourced, scoped, `NO DATA`-mapped, and decimal-rounded). All six
 generator `--check`s and `helm lint`/`helm template` (with the Grafana CR
 enabled) pass; the embedded dashboard JSON round-trips through Python's
 `json.loads` and carries the `user`/`session` textbox variables.
@@ -171,3 +186,64 @@ handle Grafana credentials):
 The preview `GrafanaDashboard` CR was deleted immediately after this check;
 production is unaffected until this branch is released and deployed through
 the normal pipeline.
+
+### Lines of code / active time / commits: live Mimir verification (2026-09-14)
+
+Done, same mechanism, a second temporary preview CR (`governance-claude-code-
+preview2`), deleted immediately after. Grafana Operator again reported
+`DashboardSynchronized`/`ApplySuccessful`. Queried the five new panels' exact
+PromQL expressions directly against Mimir (fleet-wide, last 24h, no
+user/session filter):
+
+- Lines added: 187.2. Lines removed: 26.1. Active time: 466s. All real,
+  plausible numbers, not zero or an error.
+- Commits and pull requests both returned no data -- correct: nobody in this
+  fleet had made a commit or opened a pull request through Claude Code
+  recently. The panels' `NO DATA` mapping shows this honestly rather than a
+  fabricated zero, exactly the "unknown is not zero" contract this
+  dashboard's own generator and `dashboard-direction-and-handoff.md`'s
+  measurement agreement both require.
+
+### Review findings and fixes (PR #336, review by stephane-segning)
+
+An adversarial review of this PR caught three things this document's own
+first draft did not, and the fixes are recorded here rather than only in
+the PR diff, since a future reader of this file needs the same warning:
+
+- **P1 (shipped broken, now fixed):** `PROM_FILTER` originally quoted the
+  `user`/`session` textbox substitution with PromQL double quotes. Grafana's
+  `:regex` format escapes a `.` in an email to `\.`; a PromQL double-quoted
+  string interprets that backslash as an escape sequence, which the
+  generator's own `logs()` function already routes around for LogQL with
+  backtick (raw) strings. `PROM_FILTER` didn't, so every one of the six new
+  Mimir panels broke the moment the User email textbox held a real email --
+  exactly the drilldown case they were built for. This PR's own live
+  verification above only exercised the fleet-wide (unfiltered) case, which
+  has nothing to escape and never triggered it. Fixed by quoting
+  `PROM_FILTER` with backticks instead; the regression test that used to
+  assert the double-quoted (broken) string now asserts the backtick one and
+  additionally asserts the double-quoted form is absent, and was confirmed
+  to fail for the predicted reason when the bug was reintroduced.
+- **P2, this file:** contradicted `dashboard-direction-and-handoff.md` on
+  whether the live preview had happened, said "one datasource token" where
+  there are now two, omitted section 7 from the Layout list, still claimed
+  lines-of-code/active-time/commits were absent with "no substitute proxy"
+  after the fix had already landed, and reported 27 tests (10 new) where the
+  real counts are 30 (11 new). All fixed above.
+- **P3:** `increase()` over a Prometheus counter is a fractional
+  extrapolation to the range boundary, not an exact integer reconciliation,
+  so an un-rounded "Commits"/"Pull requests" stat could render `1.14`. Fixed
+  with an explicit `decimals: 0` on every panel `prom_stat_panel` produces
+  (the only unit these five panels use is a count or whole seconds, so 0 is
+  correct everywhere it currently applies, not merely a default).
+
+Also flagged, and fixed in the same pass: no CI job ran `python3 -m
+unittest discover -s scripts -p 'test_*.py'` or any of the six generators'
+`--check`, so the "committed JSON matches the generator" guarantee this
+document repeatedly claims was enforced by convention only -- a stale
+commit (hand-edited JSON, or a generator changed without regenerating)
+would have merged clean. Added as `dashboard-checks` in `.github/workflows/
+ci.yml`, enumerating all six generator scripts by name rather than a glob
+(`generate_dashboards.py`, the AI CLI overview's own historical name,
+doesn't match a `generate_*_dashboard.py` shape and a glob would have
+silently skipped it).

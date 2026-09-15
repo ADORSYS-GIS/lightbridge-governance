@@ -142,8 +142,16 @@ class ClaudeCodeUserDashboardTest(unittest.TestCase):
             for t in self.panels[title]['targets']:
                 self.assertEqual(t['datasource']['type'], 'prometheus')
                 self.assertIn(metric, t['expr'])
-                self.assertIn('user_email=~".*${user:regex}.*"', t['expr'])
-                self.assertIn('session_id=~".*${session:regex}.*"', t['expr'])
+                # Backtick-quoted (PromQL raw strings, no escape processing),
+                # NOT double-quoted -- caught in review (#336): Grafana's
+                # `:regex` format escapes a `.` in an email to `\.`, which a
+                # double-quoted PromQL string tries to interpret as an
+                # escape sequence and breaks on. A double-quoted assertion
+                # here would pin that bug instead of catching it.
+                self.assertIn('user_email=~`.*${user:regex}.*`', t['expr'])
+                self.assertIn('session_id=~`.*${session:regex}.*`', t['expr'])
+                self.assertNotIn('user_email=~".*${user:regex}.*"', t['expr'])
+                self.assertNotIn('session_id=~".*${session:regex}.*"', t['expr'])
         for title in ('Lines added', 'Lines removed'):
             self.assertIn('type="added"' if title == 'Lines added' else 'type="removed"',
                            self.panels[title]['targets'][0]['expr'])
@@ -154,6 +162,11 @@ class ClaudeCodeUserDashboardTest(unittest.TestCase):
                     mapping['fieldConfig']['defaults']['mappings'],
                     f'{panel_title} must map NO DATA explicitly -- a blank panel here is an '
                     'un-updated machine, never a fabricated zero')
+                # increase() over a counter is a fractional extrapolation,
+                # not an exact integer reconciliation -- an un-rounded
+                # "Commits"/"Pull requests" stat can render 1.14. Caught in
+                # review (#336).
+                self.assertEqual(mapping['fieldConfig']['defaults']['decimals'], 0, panel_title)
 
     def test_hooks_mcp_and_retention_are_scoped_not_only_fleet_wide(self):
         # Pre-reshape, these panels were the only ones NOT restricted to the

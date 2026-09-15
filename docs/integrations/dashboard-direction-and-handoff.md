@@ -183,12 +183,14 @@ Summary against the six items this section used to list:
    confirmed for Claude Code; no duration/repository panel was added.
 5. **Done.** The `tool_decision` `source=config` vs. a person split is
    unchanged and still the load-bearing dimension for every approval panel.
-6. **Partly done.** Query fields were proven live against this exact running
-   conversation (not a fixture) and 10 new deterministic regression tests
-   were added (`scripts/test_claude_code_user_dashboard.py`). Not done:
-   importing a preview Grafana dashboard and confirming PNG export against a
-   live instance -- left for an explicit go-ahead, since it means creating a
-   cluster-visible resource.
+6. **Done.** Query fields were proven live against this exact running
+   conversation (not a fixture) and 11 deterministic regression tests were
+   added (`scripts/test_claude_code_user_dashboard.py`). A preview Grafana
+   dashboard was imported (twice: once for the reshape, once for the later
+   lines-of-code/active-time addition) and PNG export/live queries confirmed
+   against the real cluster -- see
+   [claude-code-dashboard.md](claude-code-dashboard.md)'s own "Live Grafana
+   preview verification" sections for both.
 
 ## VS Code Copilot: next-agent work
 
