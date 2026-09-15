@@ -273,6 +273,17 @@ jobs:
       - name: Assert rendered otel collector configs decode under the pinned image
         run: charts/lightbridge-governance/tests/assert-otel-config-validates.sh charts/lightbridge-governance
 
+      # Found 2026-09-15 investigating VS Code Copilot's dashboard: the
+      # daemon's per-record idempotency key (governance.retry_key, JSON-only
+      # clients) was leaking through `resource_to_telemetry_conversion`-style
+      # promotion into a metrics exporter's `target_info` series unbounded --
+      # 5,094 distinct values across 5,105 entries for one client in one 7d
+      # window. Runtime-checked against the real pinned image, same reasoning
+      # as the X-Forwarded-For assertion above: an OTTL typo or a processor
+      # wired into the wrong pipeline would still pass a structural-only test.
+      - name: Assert governance.retry_key is stripped from metrics, kept on logs
+        run: charts/lightbridge-governance/tests/assert-retry-key-stripped-from-metrics.sh charts/lightbridge-governance
+
       # `transform/classify_refusal`'s 7 branches match the upstream
       # `oidcauthextension`'s exact warn-log text, verified only once,
       # manually, when #275 landed -- nothing before this re-ran that check,
