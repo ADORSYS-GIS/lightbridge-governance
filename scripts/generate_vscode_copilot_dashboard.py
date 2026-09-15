@@ -23,6 +23,19 @@ generator had queried), carrying `copilot_chat_edit_outcome="accepted"` and
 `copilot_chat_edit_source="chat_editing_hunk"`. Fixed to query the metric
 that is actually real. See docs/runbooks/verify-vscode-copilot-edit-metrics.md
 for the full live check.
+
+## User/session filtering added 2026-09-15
+
+Copilot's SDK only ever put identity on the OTel Resource, so none of these
+metrics carried a per-user/session label -- only a `target_info` series built
+from the Resource did. ai-helm-values#442 adds a shared Alloy processor that
+promotes `user.email`/`user.id`/`user.name`/`session.id` onto every metric
+datapoint, the same place Claude Code's and Codex's own SDKs already put
+identity natively (lightbridge-governance#341 measured and closed the
+`governance.retry_key` cardinality leak that had to be fixed first). Coverage
+depends on that Alloy config having actually rolled out AND on new telemetry
+having landed since -- a blank user dropdown, or an unfiltered-looking fleet
+total, is a coverage gap on an old sample, not zero adoption.
 """
 from __future__ import annotations
 
@@ -38,6 +51,33 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PATH = REPO_ROOT / "charts/lightbridge-governance/dashboards/vscode-copilot.json"
 PROM_DS = {"type": "prometheus", "uid": "__DS_PROMETHEUS__"}
 NO_DATA_MAPPING = {"type": "special", "options": {"match": "null+nan", "result": {"text": "NO DATA", "color": "gray", "index": 0}}}
+
+# Same contract as generate_claude_code_dashboard.py's own PROM_FILTER: a
+# blank ${user}/${session} textbox value must keep matching everyone, so the
+# wrapping `.*...*` substring match (not an exact match) is load-bearing --
+# see that file's own comment for the backtick-vs-double-quote escaping trap
+# this already sidesteps by using PromQL's backtick raw-string syntax.
+PROM_FILTER = 'user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`'
+
+USER_DROPDOWN_VAR = {
+    "name": "user", "label": "User email", "type": "query", "datasource": PROM_DS,
+    "definition": "label_values(copilot_chat_session_count_total, user_email)",
+    "query": "label_values(copilot_chat_session_count_total, user_email)",
+    "refresh": 2, "sort": 1, "regex": "", "multi": False,
+    "includeAll": True, "allValue": ".*", "current": {}, "options": [],
+    "hide": 0, "skipUrlSync": False,
+    "description": "Pick a user, or All to include everyone, including unattributed traffic "
+    "(everyone, until ai-helm-values#442 has rolled out and new telemetry has landed).",
+}
+
+
+def sel(name: str, extra: str = "") -> str:
+    """`name{user/session filter[, extra]}` -- the selector every panel below
+    builds on, so the ${user}/${session} template variables reach each one
+    the same way generate_claude_code_dashboard.py's metric_increase() does."""
+    labels = PROM_FILTER + (f", {extra}" if extra else "")
+    return f"{name}{{{labels}}}"
+
 
 class Ids:
     """Deterministic panel identifiers."""
@@ -194,7 +234,7 @@ def build_dashboard() -> dict[str, Any]:
             ),
             expr=(
                 "sum by (copilot_chat_language_id, type) "
-                "(increase(copilot_chat_lines_of_code_count_total[$__interval]))"
+                f"(increase({sel('copilot_chat_lines_of_code_count_total')}[$__interval]))"
             ),
             legend="{{copilot_chat_language_id}} ({{type}})",
             unit="short",
@@ -212,8 +252,8 @@ def build_dashboard() -> dict[str, Any]:
                 "one number."
             ),
             expr=(
-                'sum(increase(copilot_chat_lines_of_code_count_total{type="added"}[7d])) - '
-                'sum(increase(copilot_chat_lines_of_code_count_total{type="removed"}[7d]))'
+                f"sum(increase({sel('copilot_chat_lines_of_code_count_total', 'type=\"added\"')}[7d])) - "
+                f"sum(increase({sel('copilot_chat_lines_of_code_count_total', 'type=\"removed\"')}[7d]))"
             ),
             unit="short",
             grid={"h": 8, "w": 8, "x": 16, "y": y},
@@ -232,7 +272,7 @@ def build_dashboard() -> dict[str, Any]:
             ),
             expr=(
                 "topk(10, sum by (copilot_chat_language_id) "
-                '(increase(copilot_chat_lines_of_code_count_total{type="added"}[7d])))'
+                f"(increase({sel('copilot_chat_lines_of_code_count_total', 'type=\"added\"')}[7d])))"
             ),
             unit="short",
             grid={"h": 8, "w": 8, "x": 0, "y": y},
@@ -242,8 +282,8 @@ def build_dashboard() -> dict[str, Any]:
         prom_stat_panel(
             ids,
             title="Sessions (7d)",
-            description="sum(increase(copilot_chat_session_count_total[7d])).",
-            expr="sum(increase(copilot_chat_session_count_total[7d]))",
+            description="sum(increase(copilot_chat_session_count_total{user/session filter}[7d])).",
+            expr=f"sum(increase({sel('copilot_chat_session_count_total')}[7d]))",
             unit="none",
             grid={"h": 8, "w": 4, "x": 8, "y": y},
             mappings=[NO_DATA_MAPPING],
@@ -253,8 +293,8 @@ def build_dashboard() -> dict[str, Any]:
         prom_stat_panel(
             ids,
             title="Tool calls (7d)",
-            description="sum(increase(copilot_chat_tool_call_count_total[7d])).",
-            expr="sum(increase(copilot_chat_tool_call_count_total[7d]))",
+            description="sum(increase(copilot_chat_tool_call_count_total{user/session filter}[7d])).",
+            expr=f"sum(increase({sel('copilot_chat_tool_call_count_total')}[7d]))",
             unit="none",
             grid={"h": 8, "w": 4, "x": 12, "y": y},
             mappings=[NO_DATA_MAPPING],
@@ -281,9 +321,9 @@ def build_dashboard() -> dict[str, Any]:
                 "reported by VS Code Copilot."
             ),
             expr=(
-                'sum(increase(copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome="accepted"}[7d])) '
+                f"sum(increase({sel('copilot_chat_edit_acceptance_count_total', 'copilot_chat_edit_outcome=\"accepted\"')}[7d])) "
                 "/ "
-                "sum(increase(copilot_chat_edit_acceptance_count_total[7d]))"
+                f"sum(increase({sel('copilot_chat_edit_acceptance_count_total')}[7d]))"
             ),
             unit="percentunit",
             grid={"h": 8, "w": 8, "x": 16, "y": y},
@@ -292,12 +332,21 @@ def build_dashboard() -> dict[str, Any]:
     )
     y += 8
 
-    return dashboard_shell(
-        "governance-vscode-copilot", "VS Code Copilot",
+    UID = "governance-vscode-copilot"
+    d = dashboard_shell(
+        UID, "VS Code Copilot",
         "Editor sessions, tools, code edits and acceptance from VS Code Copilot Chat. "
         "GitHub daily reports and seat assignments live in the separate Copilot reports dashboard.",
         panels,
     )
+    d["templating"]["list"] = [USER_DROPDOWN_VAR, {
+        "name": "session", "label": "Session", "type": "textbox", "query": "",
+        "current": {"text": "", "value": ""}, "options": [{"text": "", "value": "", "selected": True}],
+        "hide": 0, "skipUrlSync": False,
+        "description": "Literal session ID search; blank includes all sessions."}]
+    d["links"].append({"type": "link", "title": "Clear user & session", "url": "/d/" + UID + "?var-user=All&var-session=",
+                        "keepTime": True, "includeVars": False, "targetBlank": False})
+    return d
 
 
 def render(dashboard: dict[str, Any]) -> str:

@@ -19,7 +19,50 @@
   },
   "timepicker": {},
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "user",
+        "label": "User email",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "__DS_PROMETHEUS__"
+        },
+        "definition": "label_values(copilot_chat_session_count_total, user_email)",
+        "query": "label_values(copilot_chat_session_count_total, user_email)",
+        "refresh": 2,
+        "sort": 1,
+        "regex": "",
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {},
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false,
+        "description": "Pick a user, or All to include everyone, including unattributed traffic (everyone, until ai-helm-values#442 has rolled out and new telemetry has landed)."
+      },
+      {
+        "name": "session",
+        "label": "Session",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "text": "",
+            "value": "",
+            "selected": true
+          }
+        ],
+        "hide": 0,
+        "skipUrlSync": false,
+        "description": "Literal session ID search; blank includes all sessions."
+      }
+    ]
   },
   "annotations": {
     "list": []
@@ -39,6 +82,14 @@
       "type": "link",
       "title": "Governance overview",
       "url": "/d/governance-ai-cli-telemetry",
+      "keepTime": true,
+      "includeVars": false,
+      "targetBlank": false
+    },
+    {
+      "type": "link",
+      "title": "Clear user & session",
+      "url": "/d/governance-vscode-copilot?var-user=All&var-session=",
       "keepTime": true,
       "includeVars": false,
       "targetBlank": false
@@ -107,7 +158,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum by (copilot_chat_language_id, type) (increase(copilot_chat_lines_of_code_count_total[$__interval]))",
+          "expr": "sum by (copilot_chat_language_id, type) (increase(copilot_chat_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[$__interval]))",
           "instant": false,
           "range": true,
           "legendFormat": "{{copilot_chat_language_id}} ({{type}})",
@@ -178,7 +229,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(copilot_chat_lines_of_code_count_total{type=\"added\"}[7d])) - sum(increase(copilot_chat_lines_of_code_count_total{type=\"removed\"}[7d]))",
+          "expr": "sum(increase(copilot_chat_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"added\"}[7d])) - sum(increase(copilot_chat_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"removed\"}[7d]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -217,7 +268,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "topk(10, sum by (copilot_chat_language_id) (increase(copilot_chat_lines_of_code_count_total{type=\"added\"}[7d])))",
+          "expr": "topk(10, sum by (copilot_chat_language_id) (increase(copilot_chat_lines_of_code_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, type=\"added\"}[7d])))",
           "instant": true,
           "range": false,
           "format": "table",
@@ -239,7 +290,7 @@
       "id": 5,
       "type": "stat",
       "title": "Sessions (7d)",
-      "description": "sum(increase(copilot_chat_session_count_total[7d])).",
+      "description": "sum(increase(copilot_chat_session_count_total{user/session filter}[7d])).",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
@@ -298,7 +349,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(copilot_chat_session_count_total[7d]))",
+          "expr": "sum(increase(copilot_chat_session_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[7d]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -310,7 +361,7 @@
       "id": 6,
       "type": "stat",
       "title": "Tool calls (7d)",
-      "description": "sum(increase(copilot_chat_tool_call_count_total[7d])).",
+      "description": "sum(increase(copilot_chat_tool_call_count_total{user/session filter}[7d])).",
       "datasource": {
         "type": "prometheus",
         "uid": "__DS_PROMETHEUS__"
@@ -369,7 +420,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(copilot_chat_tool_call_count_total[7d]))",
+          "expr": "sum(increase(copilot_chat_tool_call_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[7d]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
@@ -440,7 +491,7 @@
             "type": "prometheus",
             "uid": "__DS_PROMETHEUS__"
           },
-          "expr": "sum(increase(copilot_chat_edit_acceptance_count_total{copilot_chat_edit_outcome=\"accepted\"}[7d])) / sum(increase(copilot_chat_edit_acceptance_count_total[7d]))",
+          "expr": "sum(increase(copilot_chat_edit_acceptance_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`, copilot_chat_edit_outcome=\"accepted\"}[7d])) / sum(increase(copilot_chat_edit_acceptance_count_total{user_email=~`.*${user:regex}.*`, session_id=~`.*${session:regex}.*`}[7d]))",
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
