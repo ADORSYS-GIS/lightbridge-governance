@@ -9,7 +9,11 @@
 mod daemon;
 mod retraction;
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use super::*;
 use crate::managed::testutil::tempdir;
@@ -33,7 +37,7 @@ pub(super) fn settings() -> OtelSettings {
     }
 }
 
-fn settings_gateway_only() -> OtelSettings {
+pub(super) fn settings_gateway_only() -> OtelSettings {
     OtelSettings {
         endpoint: None,
         copilot_drain_available: false,
@@ -126,24 +130,45 @@ fn vscode_insiders_and_vscodium_are_configured_too() {
 }
 
 #[test]
-fn the_file_exporter_is_not_enabled_without_a_collector_to_drain_to() {
-    // Not merely "nothing to configure": turning the file exporter on with no
-    // endpoint would have Copilot spool telemetry to disk for ever with
-    // nothing draining it -- the disk cost of the feature and none of its
-    // value. A gateway-only configure must leave settings.json alone.
+fn a_gateway_without_a_collector_still_gets_the_lightbridge_wiring() {
+    // The two gates split on purpose (issue #233): with a gateway but no
+    // collector, the Lightbridge provider keys must still be written -- a
+    // developer only setting up inference, not telemetry, is the exact case
+    // that used to get nothing. The Copilot telemetry exporter stays off:
+    // turning it on with no endpoint would spool telemetry to disk for ever
+    // with nothing draining it -- the disk cost of the feature and none of its
+    // value.
     let home = tempdir();
     let user = user_dir(home.path(), "Code");
     fs::create_dir_all(&user).expect("create VS Code User dir");
     fs::write(user.join("settings.json"), r#"{"editor.fontSize":14}"#).expect("seed settings");
 
     let outcomes = configure(home.path(), &settings_gateway_only()).expect("configure");
-    assert!(outcomes.is_empty(), "nothing to write, so nothing reported");
+    assert!(matches!(outcomes.as_slice(), [Outcome::Written(_)]));
 
-    let text = fs::read_to_string(user.join("settings.json")).expect("read back");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(user.join("settings.json")).expect("read"))
+            .expect("valid JSON out");
     assert_eq!(
-        text, r#"{"editor.fontSize":14}"#,
-        "file must be left untouched"
+        value["lightbridge.gatewayUrl"], "https://api.example",
+        "bare host, the extension appends /v1/... itself"
     );
+    assert!(
+        value["lightbridge.governanceAuthPath"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).is_absolute()),
+        "governanceAuthPath must be absolute -- the extension spawns without a shell"
+    );
+    for key in [
+        "github.copilot.chat.otel.enabled",
+        "github.copilot.chat.otel.exporterType",
+        "github.copilot.chat.otel.outfile",
+    ] {
+        assert!(
+            value.get(key).is_none(),
+            "telemetry key {key} must not be written with no collector"
+        );
+    }
 }
 
 // #272 AC3's daemon-profile Copilot path has its own file, `daemon.rs`, for

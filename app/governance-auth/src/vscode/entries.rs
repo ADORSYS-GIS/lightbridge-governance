@@ -1,17 +1,28 @@
-//! The exact `settings.json` entries this module owns, for whichever Copilot
-//! path is active. Split out of [`super`] purely for the LoC ceiling: this is
-//! pure data, the module doc's actual reasoning lives with [`super::configure`].
+//! The exact `settings.json` entries this module owns: whichever Copilot
+//! telemetry path is active, plus the Lightbridge provider wiring. Split out
+//! of [`super`] purely for the LoC ceiling: this is pure data, the module
+//! doc's actual reasoning lives with [`super::configure`].
 
 use std::path::Path;
 
-use crate::otel::OtelSettings;
+use crate::otel::{OtelSettings, binary_path};
 
 /// One place so the "what do we touch" question, the paste-this-by-hand
 /// fallback, and `managed::plan`'s retraction candidate list can never drift
-/// apart from what [`super::configure`] actually writes. Empty when neither
-/// Copilot path is active -- see that function's own guard.
+/// apart from what [`super::configure`] actually writes.
+///
+/// Two groups, with deliberately separate gates:
+///
+/// * the Copilot telemetry keys, present only while a Copilot path is active
+///   ([`Self`]'s two flags), and
+/// * the `lightbridge.*` inference keys, present whenever `gateway_url` is
+///   set -- *not* gated on the OTLP endpoint, so a machine with a gateway but
+///   no collector still gets the Lightbridge provider wired (issue #233).
+///
+/// Empty only when neither a Copilot path nor a gateway is configured -- see
+/// [`super::configure`]'s own guard.
 pub fn entries(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)> {
-    if settings.copilot_otlp_direct {
+    let mut out = if settings.copilot_otlp_direct {
         settings
             .endpoint
             .as_deref()
@@ -21,7 +32,28 @@ pub fn entries(settings: &OtelSettings) -> Vec<(&'static str, serde_json::Value)
         file_settings(&settings.copilot_spool)
     } else {
         Vec::new()
+    };
+
+    // `lightbridge.*` is inference wiring, so it moves with the gateway, not
+    // with the collector. `gatewayUrl` is the bare host -- the extension
+    // appends `/v1/...` itself (`ide/vscode/src/catalogue.ts`) -- and the
+    // trailing slash is trimmed for the same reason `anthropic_base_url` does,
+    // so a join can't produce `//v1`. `governanceAuthPath` is the absolute
+    // path to this binary: the extension spawns it without a shell, so a bare
+    // name would only work when `~/.local/bin` happens to be on VS Code's
+    // `PATH` (issue #233).
+    if let Some(gateway_url) = settings.gateway_url.as_deref() {
+        out.push((
+            "lightbridge.gatewayUrl",
+            serde_json::Value::String(gateway_url.trim_end_matches('/').to_owned()),
+        ));
+        out.push((
+            "lightbridge.governanceAuthPath",
+            serde_json::Value::String(binary_path()),
+        ));
     }
+
+    out
 }
 
 /// `manual`'s path: Copilot's file exporter, drained out of band by
