@@ -24,7 +24,7 @@ use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
 
 /// The trusted-source stamp carried on every record (ADR-0013 invariant 2 /
 /// RFC-0001 contract). The usage-side normalizer keys on this.
-pub const SOURCE: &str = "github_copilot";
+pub const SOURCE: &str = "github-copilot";
 
 /// A pure, transport-agnostic log record: a human-readable body plus typed
 /// attributes. Encoding produces these; [`emit`] turns them into OTLP log
