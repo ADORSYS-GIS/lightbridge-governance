@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.7.0...v2.8.0) (2026-09-11)
+
+
+### Features
+
+* **governance-auth:** status --json, otel spool row, doctor, self-update reapply, install doc fix ([#329](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/329)) ([13cb4dd](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/13cb4dda9208199348c492ff1ee9618ebb902a4a))
+
 ## [2.7.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.6.0...v2.7.0) (2026-09-11)
 
 

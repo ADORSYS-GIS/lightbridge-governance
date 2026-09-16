@@ -71,7 +71,7 @@
         "lightbridge.requestTimeoutMs": {
           "type": "number",
           "default": 120000,
-          "description": "Abort a chat request that has produced no further output within this many milliseconds."
+          "description": "Abort a request that has produced no further output within this many milliseconds. Bounds both a chat request and a catalogue fetch (including any retry back-off)."
         },
         "lightbridge.catalogueTtlMs": {
           "type": "number",

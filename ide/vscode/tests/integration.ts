@@ -145,13 +145,72 @@ await scenario('streaming: text arrives and a fragmented tool call is reassemble
   assert.deepEqual(calls[0]!.input, { path: 'src/a.ts' });
 });
 
-await scenario('token count: provideTokenCount returns a sensible estimate', async () => {
+await scenario('token count: provideTokenCount estimates a plain string', async () => {
   configure('good-auth.sh');
   const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
   const text = 'This is exactly 35 characters long!';
   // Math.ceil(35 / 3.5) = 10
-  const count = await provider.provideTokenCount(text, token as never);
+  const count = await provider.provideTokenCount(models[0]!, text, token as never);
   assert.equal(count, 10, `expected 10 tokens for 35 characters, got ${count}`);
+});
+
+await scenario('token count: provideTokenCount estimates a message with a text part', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // A real message from the bundled stub exercises provideTokenCount's
+  // extractText dispatch (the string branch above never reaches it) — the path
+  // issue #231 was originally about.
+  const vscode = await import('vscode');
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [new vscode.LanguageModelTextPart('This is exactly 35 characters long!')],
+  };
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(count, 10, `expected 10 tokens for a 35-char message, got ${count}`);
+});
+
+await scenario('token count: provideTokenCount counts nested tool-result text', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // A tool result nests its text under `content`; that text is what toWireMessages
+  // sends on the wire, so it must be counted or an agentic prompt under-counts.
+  const vscode = await import('vscode');
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [
+      new vscode.LanguageModelToolResultPart('call_1', [
+        new vscode.LanguageModelTextPart('This is exactly 35 characters long!'),
+      ]),
+    ],
+  };
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(count, 10, `expected 10 tokens for a 35-char tool result, got ${count}`);
+});
+
+await scenario('token count: provideTokenCount counts a tool call name and serialised arguments', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // toWireMessages sends a tool call as its name plus JSON.stringify(input),
+  // often the largest payload in an agentic turn — so it must be counted.
+  const vscode = await import('vscode');
+  const name = 'write_file';
+  const serialized = JSON.stringify({ path: 'a.ts' });
+  const wireText = `${name}${serialized}`;
+  const message = {
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [new vscode.LanguageModelToolCallPart('call_1', name, { path: 'a.ts' })],
+  };
+  const expected = Math.ceil(wireText.length / 3.5);
+  const count = await provider.provideTokenCount(models[0]!, message as never, token as never);
+  assert.equal(
+    count,
+    expected,
+    `expected ${expected} tokens for ${wireText.length} chars of tool call, got ${count}`,
+  );
 });
 
 await scenario('modelOptions: supported params pass, Copilot internals are dropped', async () => {
@@ -408,6 +467,192 @@ await scenario('FAIL CLOSED: no gateway configured offers no models', async () =
     token as never,
   );
   assert.equal(models.length, 0);
+});
+
+// ── 429 / throttle scenarios ────────────────────────────────────────────────
+
+await scenario('THROTTLE: a single 429 on the catalogue path is retried and succeeds', async () => {
+  configure('good-auth.sh');
+  // Throttle the first request; the second (retry) goes through.
+  gw.throttleNext(1);
+  const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
+    { silent: false },
+    token as never,
+  );
+  assert.equal(models.length, 1, 'expected 1 model after retry; got an empty picker instead');
+});
+
+await scenario('THROTTLE: exhausted retries with no cache return empty (fail-closed)', async () => {
+  configure('good-auth.sh');
+  // TTL=0 means no cache hit. Throttle all retries — should return [] without
+  // crashing, preserving the fail-closed contract.
+  gw.throttleNext(99);
+  try {
+    const models = await new LightbridgeChatProvider().provideLanguageModelChatInformation(
+      { silent: false },
+      token as never,
+    );
+    assert.equal(models.length, 0, 'expected empty list when all retries exhaust with no cache');
+  } finally {
+    gw.throttleNext(0); // reset so subsequent scenarios work
+  }
+});
+
+await scenario('THROTTLE: a within-TTL cache is served without contacting the gateway', async () => {
+  configure('good-auth.sh');
+  // A fresh fetch populates the cache; a long TTL keeps it within budget for
+  // the second call. This is the guarantee that a throttle cannot blank the
+  // picker: within the TTL the entry guard serves the cache with NO network
+  // call, so a 429 cannot even occur on that path. (The next `configure()` at
+  // the top of every scenario resets `catalogueTtlMs` to 0.)
+  __settings.catalogueTtlMs = 300_000;
+  const provider = new LightbridgeChatProvider();
+  const before = gw.requests.filter((r) => r.method === 'GET').length;
+  const first = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  assert.equal(first.length, 1, 'expected the cached model list to be served');
+
+  // Throttle everything: had this second call hit the gateway it would 429
+  // and, with no fallback, blank the picker. It must be answered from cache
+  // instead, with no additional request.
+  gw.throttleNext(99);
+  try {
+    const second = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+    assert.equal(second.length, 1, 'a throttle must not blank a picker with a fresh cache');
+    const fetched = gw.requests.filter((r) => r.method === 'GET').length - before;
+    assert.equal(fetched, 1, 'expected the second call to be served from cache, not the gateway');
+  } finally {
+    gw.throttleNext(0);
+  }
+});
+
+await scenario('THROTTLE: dismissing the picker aborts the catalogue fetch promptly', async () => {
+  configure('good-auth.sh');
+  gw.throttleNext(99);
+  try {
+    // The suite's shared `token` returns a no-op subscription, so build one
+    // whose cancellation handler is actually registered and fireable. The
+    // caller's token rejects its OWN wait (withCancel in fetchCatalogue), so
+    // dismissing the picker must return promptly rather than sleep out the
+    // retry back-off.
+    const handlers: Array<() => void> = [];
+    const cancelToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: (fn: () => void) => {
+        handlers.push(fn);
+        return { dispose() {} };
+      },
+    };
+    const started = Date.now();
+    const pending = new LightbridgeChatProvider().provideLanguageModelChatInformation(
+      { silent: false },
+      cancelToken as never,
+    );
+    // Abort shortly after the fetch begins, i.e. mid-Retry-After.
+    await new Promise((r) => setTimeout(r, 20));
+    handlers.forEach((fn) => fn());
+    cancelToken.isCancellationRequested = true;
+    const models = await pending;
+    assert.equal(models.length, 0, 'a cancelled fetch must withhold models, not stall');
+    assert.ok(
+      Date.now() - started < 500,
+      'the caller must not wait out the retry back-off after cancellation',
+    );
+  } finally {
+    gw.throttleNext(0);
+  }
+});
+
+await scenario('THROTTLE: cancelling one caller does not blank a concurrent caller', async () => {
+  configure('good-auth.sh');
+  // Keep the shared fetch in flight so the second call joins the inflight
+  // promise rather than the cache: two throttled attempts before success.
+  gw.throttleNext(2);
+  try {
+    const handlers: Array<() => void> = [];
+    const cancelToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: (fn: () => void) => {
+        handlers.push(fn);
+        return { dispose() {} };
+      },
+    };
+    const provider = new LightbridgeChatProvider();
+    const cancelable = provider.provideLanguageModelChatInformation(
+      { silent: false },
+      cancelToken as never,
+    );
+    // Let the first call register the shared in-flight fetch (it is now inside
+    // a ~1s Retry-After wait), then have a silent caller join it.
+    await new Promise((r) => setTimeout(r, 100));
+    const silent = provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+    // Cancel the first caller. Its own wait must reject, but the shared fetch
+    // — and therefore the silent caller joined to it — must survive.
+    handlers.forEach((fn) => fn());
+    cancelToken.isCancellationRequested = true;
+    const [cancelled, other] = await Promise.all([cancelable, silent]);
+    assert.equal(cancelled.length, 0, 'a cancelled caller withholds its own models');
+    assert.equal(other.length, 1, 'cancelling one caller must not blank a concurrent caller');
+  } finally {
+    gw.throttleNext(0);
+  }
+});
+
+await scenario('THROTTLE: a single 429 on the chat path is retried and text arrives', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // Throttle the first chat POST; the retry goes through.
+  gw.throttleNext(1);
+  const parts: unknown[] = [];
+  await provider.provideLanguageModelChatResponse(
+    models[0]!,
+    [{ role: 1, content: [new (await import('vscode')).LanguageModelTextPart('hi')] }] as never,
+    { toolMode: 1, tools: [] } as never,
+    { report: (p: unknown) => parts.push(p) },
+    token as never,
+  );
+  const vscode = await import('vscode');
+  const text = parts
+    .filter((p) => p instanceof vscode.LanguageModelTextPart)
+    .map((p) => (p as { value: string }).value)
+    .join('');
+  assert.ok(text.length > 0, 'no text arrived after retry; got an empty response');
+});
+
+await scenario('THROTTLE: exhausted chat retries surface a rate-limit error, not a crash', async () => {
+  configure('good-auth.sh');
+  const provider = new LightbridgeChatProvider();
+  const models = await provider.provideLanguageModelChatInformation({ silent: false }, token as never);
+  // Throttle more times than MAX_ATTEMPTS (3) so all attempts return 429.
+  gw.throttleNext(99);
+  let thrown: unknown;
+  try {
+    await provider.provideLanguageModelChatResponse(
+      models[0]!,
+      [] as never,
+      { toolMode: 1, tools: [] } as never,
+      { report: () => {} },
+      token as never,
+    );
+  } catch (err) {
+    thrown = err;
+  } finally {
+    gw.throttleNext(0); // reset so subsequent scenarios work
+  }
+  assert.ok(thrown, 'expected a throw when retries exhaust on the chat path');
+  // A bare Error would surface as a generic "something went wrong". Assert the
+  // TYPE, not just the message: the 429 must reach chat as a first-class
+  // LanguageModelError so the developer can attribute it to the gateway.
+  const vscode = await import('vscode');
+  assert.ok(
+    thrown instanceof vscode.LanguageModelError,
+    `expected a LanguageModelError, got ${String(thrown)}`,
+  );
+  assert.ok(
+    (thrown as Error).message.includes('rate-limiting') ||
+      (thrown as Error).message.includes('429'),
+    `unexpected error message: ${(thrown as Error).message}`,
+  );
 });
 
 // The strongest form of the fail-closed assertion: the permissive probe must

@@ -7,7 +7,9 @@ import { fetchCatalogue, logCatalogueFailure } from './catalogue.js';
 import { readConfig } from './config.js';
 import { errorMessage, log, redact } from './log.js';
 import { toWireMessages, toWireToolChoice, toWireTools } from './messages.js';
+import { fetchWithRetry, requestSignal } from './retry.js';
 import { pumpStream } from './stream.js';
+import { estimateTokens, extractText } from './tokens.js';
 import type { LightbridgeModel } from './types.js';
 
 export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider<LightbridgeModel> {
@@ -41,7 +43,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
    */
   async provideLanguageModelChatInformation(
     options: { readonly silent: boolean },
-    _token: vscode.CancellationToken,
+    token: vscode.CancellationToken,
   ): Promise<LightbridgeModel[]> {
     const config = readConfig();
 
@@ -63,7 +65,10 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     }
 
     try {
-      return await fetchCatalogue(config);
+      // The token is forwarded so a dismissed picker aborts the catalogue
+      // fetch (and its retry back-off) immediately rather than sleeping out a
+      // `Retry-After` wait.
+      return await fetchCatalogue(config, token);
     } catch (err) {
       // Withhold rather than guess. There is no cached-model fallback here on
       // purpose: serving a stale catalogue after the gateway has stopped
@@ -112,9 +117,10 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       throw err;
     }
 
-    const controller = new AbortController();
-    const cancel = token.onCancellationRequested(() => controller.abort());
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    // A single chat request is owned by this caller, so both the caller's
+    // cancellation and `requestTimeoutMs` bound it — shared helper so the
+    // cleanup (dispose the token subscription + timer) is written once.
+    const { signal, dispose: disposeSignal } = requestSignal(config.requestTimeoutMs, token);
 
     const url = `${config.gatewayUrl}/v1/chat/completions`;
     const body = {
@@ -140,20 +146,45 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
     };
 
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
+      // fetchWithRetry retries ONLY on 429 here (`retryOn: 'throttle-only'`),
+      // and only for the initial fetch — before any bytes have been reported
+      // to `progress`. A 5xx or transport failure is not retried on this path:
+      // the gateway may have already accepted and billed the request, and a
+      // re-POSTed completion would be billed again and leave a second audit
+      // record for one user action. A mid-stream transient failure surfaces as
+      // an error instead of re-delivering text the developer has received.
+      const res = await fetchWithRetry(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify(body),
+          signal,
         },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+        {
+          retryOn: 'throttle-only',
+          onRetry: ({ attempt, delayMs }) =>
+            log().warn(`Chat request attempt ${attempt} was rate-limited; retrying in ${delayMs}ms`),
+        },
+      );
 
       if (res.status === 401 || res.status === 403) {
         throw vscode.LanguageModelError.NoPermissions(
           `The gateway refused this request (${res.status}). Run 'governance-auth login'.`,
+        );
+      }
+      if (res.status === 429) {
+        // A `LanguageModelError`, not a bare `Error`: chat gives it a
+        // first-class, gateway-attributable presentation, whereas a bare Error
+        // reads as a generic "something went wrong". The outer catch re-throws
+        // it untouched. Rate limiting is the case where attribution matters
+        // most — the correct action is simply to wait.
+        throw vscode.LanguageModelError.Blocked(
+          `The gateway is rate-limiting requests (429). Please wait a moment and try again.`,
         );
       }
       if (!res.ok) {
@@ -166,7 +197,7 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
 
       await pumpStream(res.body, progress, token);
     } catch (err) {
-      if (controller.signal.aborted && token.isCancellationRequested) {
+      if (signal.aborted && token.isCancellationRequested) {
         return; // A user cancellation is not a failure.
       }
       if (err instanceof vscode.LanguageModelError) {
@@ -174,31 +205,22 @@ export class LightbridgeChatProvider implements vscode.LanguageModelChatProvider
       }
       throw new Error(`Chat request failed: ${errorMessage(err)}`);
     } finally {
-      clearTimeout(timeout);
-      cancel.dispose();
+      disposeSignal();
     }
   }
 
   /**
    * Estimate the token count for a piece of text.
    *
-   * This is an estimate and is documented as one. The real tokenizer lives with
-   * the model, and this extension has no access to it; the alternative — a
-   * network round trip to the gateway per call — sits on a path VS Code invokes
-   * while building every prompt.
-   *
-   * The ratio deliberately **over**-counts. The two errors are not symmetric:
-   * over-counting costs a little unused context, while under-counting means VS
-   * Code packs a prompt the model then rejects, which surfaces to the developer
-   * as a failed request with no obvious cause.
+   * The ratio and its deliberate over-count live in `estimateTokens`
+   * (`tokens.ts`) so they are unit-testable without the extension host.
    */
   async provideTokenCount(
     _model: LightbridgeModel,
     text: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken,
   ): Promise<number> {
-    const value = typeof text === 'string' ? text : extractText(text);
-    return Math.ceil(value.length / 3.5);
+    return estimateTokens(typeof text === 'string' ? text : extractText(text));
   }
 }
 
@@ -233,29 +255,4 @@ function pickSupported(
   }
 
   return kept;
-}
-
-/**
- * Extracts plain text from a LanguageModelTextPart, or structurally matching objects.
- *
- * Exported so unit tests can exercise it without the extension host, and so we can
- * assert its fallback duck-typing works.
- */
-export function extractText(message: vscode.LanguageModelChatRequestMessage): string {
-  const chunks: string[] = [];
-  for (const part of message.content) {
-    if (part instanceof vscode.LanguageModelTextPart) {
-      chunks.push(part.value);
-    } else if (
-      typeof part === 'object' &&
-      part !== null &&
-      'value' in part &&
-      typeof (part as { value: unknown }).value === 'string'
-    ) {
-      // Structural match: a part that has a string `value` but failed
-      // `instanceof` — e.g. a plain object from a different realm.
-      chunks.push((part as { value: string }).value);
-    }
-  }
-  return chunks.join('');
 }

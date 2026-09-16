@@ -77,6 +77,18 @@ per source and the conversion has to live somewhere deliberate.
 
 ### 2. The matrix
 
+**2026-09-12 Codex measurement extension declaration (ADR-0013).** Native
+Codex request logs remain the token source; the daemon may annotate completed
+responses with a separately named API-equivalent estimate (integer micro-USD,
+never actual spend). A local, versioned session-metadata adapter adds execution
+facts: push via the existing durable daemon, turn grain, identity bound to the
+forwarding credential, pattern A, no cost emitted by that adapter. It exports
+terminal turn duration and launch-repository attribution only where the turn
+working directory matches the launch directory. Source session/turn IDs form
+dedup keys. No transcript content is exported. Actual billing remains a separate,
+optional source and is not inferred from IDE usage. See
+[measurement contract](../integrations/codex-measurement-plan.md).
+
 | Source | Direction | Grain | Identity | Auth | Cost units | Status |
 |---|---|---|---|---|---|---|
 | Claude Code | push OTLP | request | user, built-in | A | USD *and* µUSD both emitted | [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) blocks |

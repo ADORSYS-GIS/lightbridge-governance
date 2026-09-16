@@ -1,0 +1,18 @@
+{{- if and .Values.grafanaDashboard.enabled .Values.grafanaDashboard.vscodeCopilotFolder.enabled }}
+# The shared Governance parent is created by grafanafolder.yaml.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaFolder
+metadata:
+  name: {{ .Values.name }}-{{ .Values.grafanaDashboard.vscodeCopilotFolder.nameSuffix }}
+  namespace: {{ .Values.grafanaDashboard.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  title: {{ .Values.grafanaDashboard.vscodeCopilotFolder.title | quote }}
+  parentFolderRef: {{ .Values.grafanaDashboard.folder.parent.name }}
+  instanceSelector:
+{{ toYaml .Values.grafanaDashboard.instanceSelector | indent 4 }}
+  {{- if .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  allowCrossNamespaceImport: true
+  {{- end }}
+{{- end }}

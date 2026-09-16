@@ -39,6 +39,7 @@ chart-checks:
 	charts/lightbridge-governance/tests/assert-oidc-auth.sh charts/lightbridge-governance
 	charts/lightbridge-governance/tests/assert-client-address-xff.sh charts/lightbridge-governance
 	charts/lightbridge-governance/tests/assert-otel-config-validates.sh charts/lightbridge-governance
+	charts/lightbridge-governance/tests/assert-retry-key-stripped-from-metrics.sh charts/lightbridge-governance
 
 # Supply-chain audit (same checks as the SAST job)
 deny:

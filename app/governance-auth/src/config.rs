@@ -408,6 +408,30 @@ impl OauthConfigArgs {
             .or_else(|| machine.as_ref().and_then(|file| file.open_browser))
             .unwrap_or(false);
 
+        // File layer only, deliberately: there is no flag or env var for any
+        // of these four, unlike every field resolved above. See `ConfigFile`
+        // and `OauthConfig::last_no_claude`'s own docs for why.
+        let last_no_claude = per_user
+            .as_ref()
+            .and_then(|file| file.no_claude)
+            .or_else(|| machine.as_ref().and_then(|file| file.no_claude))
+            .unwrap_or(false);
+        let last_no_codex = per_user
+            .as_ref()
+            .and_then(|file| file.no_codex)
+            .or_else(|| machine.as_ref().and_then(|file| file.no_codex))
+            .unwrap_or(false);
+        let last_no_vscode = per_user
+            .as_ref()
+            .and_then(|file| file.no_vscode)
+            .or_else(|| machine.as_ref().and_then(|file| file.no_vscode))
+            .unwrap_or(false);
+        let last_codex_telemetry_only = per_user
+            .as_ref()
+            .and_then(|file| file.codex_telemetry_only)
+            .or_else(|| machine.as_ref().and_then(|file| file.codex_telemetry_only))
+            .unwrap_or(false);
+
         let token_exchange = resolve_token_exchange(
             self.token_exchange,
             self.exchange_issuer.clone(),
@@ -432,6 +456,10 @@ impl OauthConfigArgs {
             otel_headers_debounce_ms,
             open_browser,
             token_exchange,
+            last_no_claude,
+            last_no_codex,
+            last_no_vscode,
+            last_codex_telemetry_only,
         })
     }
 }
@@ -553,6 +581,15 @@ pub struct OauthConfig {
     /// the ONLY representation of "off", so there is no separate bool that
     /// could drift out of sync with these fields. See `oauth::exchange`.
     pub token_exchange: Option<ExchangeConfig>,
+    /// The `ClientOptOut` `configure`/`login` were last run with, file-layer
+    /// only (no CLI flag or env var resolves these -- seeing them here would
+    /// suggest they behave like every other field above, when they exist
+    /// purely as memory for `update::reapply` to read back). See
+    /// `ConfigFile`'s own doc on the same four fields.
+    pub last_no_claude: bool,
+    pub last_no_codex: bool,
+    pub last_no_vscode: bool,
+    pub last_codex_telemetry_only: bool,
 }
 
 /// Resolved RFC 8693 token-exchange configuration, built by
@@ -1182,6 +1219,46 @@ mod tests {
                 .resolve_with_paths(&per_user, &machine)
                 .expect("resolve");
             assert!(resolved.open_browser);
+        }
+
+        /// `last_no_vscode` (and its three siblings) are memory for
+        /// `update::reapply`, not a live setting -- no flag or env var
+        /// resolves them, only the file layers, which this pins the same
+        /// way `open_browser`'s own compiled-default test does.
+        #[test]
+        fn last_opt_out_fields_compiled_default_to_false() {
+            let dir = tempdir();
+            let per_user = absent_path(&dir);
+            let machine = absent_path(&dir);
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(!resolved.last_no_claude);
+            assert!(!resolved.last_no_codex);
+            assert!(!resolved.last_no_vscode);
+            assert!(!resolved.last_codex_telemetry_only);
+        }
+
+        /// A per-user file recording `no_vscode = true` (what
+        /// `config_persist::remember` writes after a `--no-vscode` run) must
+        /// resolve back to `true` -- the read half of the round trip
+        /// `config_persist::tests::the_opt_out_choice_round_trips_per_field`
+        /// covers the write half of.
+        #[test]
+        fn per_user_file_resolves_last_no_vscode() {
+            let dir = tempdir();
+            let per_user = write_config(&dir, "per-user.toml", "no_vscode = true\n");
+            let machine = absent_path(&dir);
+
+            let resolved = base_args()
+                .resolve_with_paths(&per_user, &machine)
+                .expect("resolve");
+            assert!(resolved.last_no_vscode);
+            assert!(
+                !resolved.last_no_claude,
+                "an unrelated field must not also flip"
+            );
         }
 
         /// A per-user file must win over a machine-wide file for

@@ -349,6 +349,12 @@ likely to be updating is the one with no config yet.
 
 ## Upgrading across the command rename
 
+⚠️ On a build with the fix below, `self update` re-applies `configure` for you on any machine
+that already has one configured — see
+[`commands.md`](./commands.md#re-applies-configure-but-only-on-a-machine-that-already-has-one).
+This whole section describes what still happens on an older build, or the first time you cross
+this specific rename with it.
+
 The flat commands (`copilot-push`, `otel-headers`, `self-update`) were reorganised into scoped
 subcommands (`copilot push`, `otel headers`, `self update`). This is a hard cutover — the old
 names are gone, there is no alias — so a binary that upgrades in place can leave stale

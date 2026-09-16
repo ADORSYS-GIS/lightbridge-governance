@@ -15,6 +15,8 @@
 //! Falsification: add `otlpEndpoint` back to `super::super::settings()` and
 //! this fails on the `is_none()` assertion -- checked, not assumed.
 
+mod lightbridge;
+
 use std::{collections::BTreeMap, fs};
 
 use super::settings;

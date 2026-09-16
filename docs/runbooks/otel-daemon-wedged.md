@@ -25,6 +25,13 @@ is stuck.
 
 ## Is this actually the wedge, or something else?
 
+Start with `governance-auth status` (or `status --json`): the `otel spool` row surfaces
+exactly the numbers below without decoding the checkpoint file by hand — `<n> record(s)
+held, worst refused <n> time(s)`, in yellow. It cannot tell you, from one call, whether that
+clears on its own or not (see its own doc in
+[`commands.md`](../governance-auth/commands.md#the-otel-spool-row)) — for that, this section's
+own "check twice, minutes apart" is still the answer.
+
 A single bad record is not this runbook — the daemon already recovers from that on its own
 (see "Why this happens" below), and you will see `discarded_total` in the checkpoint file
 move forward within seconds, with no repeating WARN. Confirm the wedge specifically:

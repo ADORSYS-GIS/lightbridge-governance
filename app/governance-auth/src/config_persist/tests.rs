@@ -46,6 +46,10 @@ fn base() -> OauthConfig {
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
         token_exchange: None,
+        last_no_claude: false,
+        last_no_codex: false,
+        last_no_vscode: false,
+        last_codex_telemetry_only: false,
     }
 }
 
@@ -56,7 +60,7 @@ fn base() -> OauthConfig {
 fn what_is_written_loads_back_identically() {
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("write");
+    remember(&base(), ClientOptOut::default(), &path).expect("write");
 
     let loaded = crate::config_file::load(&path)
         .expect("the file this module wrote must be loadable")
@@ -69,6 +73,59 @@ fn what_is_written_loads_back_identically() {
     assert_eq!(loaded.otel_headers_debounce_ms, Some(240_000));
 }
 
+/// `update::reapply`'s whole reason to exist: whatever opt-out `configure`
+/// was just run with must round-trip through the file, per field -- not
+/// collapse to one "any opt-out" bit, and not silently forgotten the way
+/// `ClientOptOut::default()` always reads (lightbridge-governance#329).
+#[test]
+fn the_opt_out_choice_round_trips_per_field() {
+    let dir = tempdir();
+    let path = dir.path().join("config.toml");
+    let optout = ClientOptOut {
+        claude: false,
+        codex: true,
+        vscode: true,
+        codex_telemetry_only: false,
+    };
+    remember(&base(), optout, &path).expect("write");
+
+    let loaded = crate::config_file::load(&path)
+        .expect("the file this module wrote must be loadable")
+        .expect("present");
+    assert_eq!(loaded.no_claude, Some(false));
+    assert_eq!(loaded.no_codex, Some(true));
+    assert_eq!(loaded.no_vscode, Some(true));
+    assert_eq!(loaded.codex_telemetry_only, Some(false));
+}
+
+/// `false` is a real answer here, not "nothing to persist" -- a developer
+/// who drops `--no-vscode` on a later `configure` must see that reflected,
+/// not a stale `true` left over from an earlier run.
+#[test]
+fn dropping_an_opt_out_flag_clears_the_persisted_true() {
+    let dir = tempdir();
+    let path = dir.path().join("config.toml");
+    remember(
+        &base(),
+        ClientOptOut {
+            vscode: true,
+            ..ClientOptOut::default()
+        },
+        &path,
+    )
+    .expect("first, with --no-vscode");
+    remember(&base(), ClientOptOut::default(), &path).expect("second, without it");
+
+    let loaded = crate::config_file::load(&path)
+        .expect("the file this module wrote must be loadable")
+        .expect("present");
+    assert_eq!(
+        loaded.no_vscode,
+        Some(false),
+        "must overwrite the stale true, not leave it behind"
+    );
+}
+
 /// The entire reason for `toml_edit` over a serde rewrite.
 #[test]
 fn preserves_comments_and_keys_it_does_not_own() {
@@ -79,7 +136,7 @@ fn preserves_comments_and_keys_it_does_not_own() {
         "# my note\nissuer = \"https://old\"\notel_token_file = \"/etc/t\"\n",
     )
     .expect("seed");
-    remember(&base(), &path).expect("write");
+    remember(&base(), ClientOptOut::default(), &path).expect("write");
 
     let text = fs::read_to_string(&path).expect("read");
     assert!(text.contains("# my note"), "comment destroyed: {text}");
@@ -96,7 +153,7 @@ fn preserves_comments_and_keys_it_does_not_own() {
 fn never_writes_the_otel_token() {
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("write");
+    remember(&base(), ClientOptOut::default(), &path).expect("write");
     let text = fs::read_to_string(&path).expect("read");
     assert!(
         !text.contains("SECRET-DO-NOT-PERSIST"),
@@ -110,9 +167,9 @@ fn never_writes_the_otel_token() {
 fn is_idempotent() {
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("first");
+    remember(&base(), ClientOptOut::default(), &path).expect("first");
     let once = fs::read_to_string(&path).expect("read");
-    remember(&base(), &path).expect("second");
+    remember(&base(), ClientOptOut::default(), &path).expect("second");
     assert_eq!(once, fs::read_to_string(&path).expect("read"));
 }
 
@@ -121,7 +178,7 @@ fn is_idempotent() {
 fn clears_a_key_that_is_no_longer_set() {
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("with gateway");
+    remember(&base(), ClientOptOut::default(), &path).expect("with gateway");
     assert!(
         fs::read_to_string(&path)
             .expect("read")
@@ -130,7 +187,7 @@ fn clears_a_key_that_is_no_longer_set() {
 
     let mut without = base();
     without.gateway_url = None;
-    remember(&without, &path).expect("without gateway");
+    remember(&without, ClientOptOut::default(), &path).expect("without gateway");
     let text = fs::read_to_string(&path).expect("read");
     assert!(!text.contains("gateway_url"), "stale key survived: {text}");
 }
@@ -146,7 +203,7 @@ fn does_not_persist_a_profile_nothing_ever_named() {
     let path = dir.path().join("config.toml");
     let mut unnamed = base();
     unnamed.profile_explicit = None;
-    remember(&unnamed, &path).expect("write");
+    remember(&unnamed, ClientOptOut::default(), &path).expect("write");
 
     // Not a raw-text `contains("profile")` check: `scopes = "openid
     // profile"` (this fixture's own scopes string) contains that substring
@@ -168,7 +225,7 @@ fn does_not_persist_a_profile_nothing_ever_named() {
 fn persists_a_profile_something_named() {
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("write");
+    remember(&base(), ClientOptOut::default(), &path).expect("write");
 
     let loaded = crate::config_file::load(&path)
         .expect("the file this module wrote must be loadable")
@@ -182,7 +239,7 @@ fn is_written_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempdir();
     let path = dir.path().join("config.toml");
-    remember(&base(), &path).expect("write");
+    remember(&base(), ClientOptOut::default(), &path).expect("write");
     let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "config file must not be group/other readable");
 }

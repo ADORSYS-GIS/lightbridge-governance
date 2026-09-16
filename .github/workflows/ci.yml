@@ -76,6 +76,50 @@ jobs:
           base-sha: ${{ github.event.pull_request.base.sha || github.event.before }}
           head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
 
+  # Every dashboard generator under scripts/ is committed-JSON-generates-a-
+  # file, standard-library-only Python (see any of their own module
+  # docstrings) -- nothing here needed cargo, so it runs independently of
+  # the Rust jobs above. Added after review (#336) found the
+  # "committed JSON matches the generator" guarantee every one of these
+  # scripts' own docstrings claims was enforced by convention only: a
+  # human running the commands from docs/integrations/*.md by hand, never
+  # actually checked in CI. A stale commit (hand-edited JSON, or a
+  # generator changed without regenerating) would merge clean until now.
+  dashboard-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          # Pinned, not `3.x` -- same reasoning as PROMTOOL_VERSION/
+          # YQ_VERSION in the helm-charts job below: an unpinned interpreter
+          # that changes behavior turns an unrelated PR red for reasons its
+          # author cannot act on.
+          python-version: "3.12"
+      - name: Run the dashboard test suite
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Confirm every generator's committed JSON is current
+        run: |
+          set -euo pipefail
+          # Enumerated by name, not a `generate_*_dashboard.py` glob:
+          # generate_dashboards.py (ai_cli's own name for historical
+          # reasons -- it predates the per-client split) doesn't match that
+          # shape and a glob would silently skip it, exactly the "reports
+          # success without having validated everything" failure mode the
+          # promtool step below this one already guards against.
+          for generator in \
+            scripts/generate_dashboards.py \
+            scripts/generate_ai_cli_dashboard.py \
+            scripts/generate_claude_code_dashboard.py \
+            scripts/generate_codex_dashboard.py \
+            scripts/generate_opencode_dashboard.py \
+            scripts/generate_vscode_copilot_dashboard.py \
+          ; do
+            echo "::group::${generator}"
+            python3 "${generator}" --check
+            echo "::endgroup::"
+          done
+
   test:
     needs: code-checks
     runs-on: ubuntu-latest
@@ -228,6 +272,17 @@ jobs:
       # crashed both public collectors in production before this existed.
       - name: Assert rendered otel collector configs decode under the pinned image
         run: charts/lightbridge-governance/tests/assert-otel-config-validates.sh charts/lightbridge-governance
+
+      # Found 2026-09-15 investigating VS Code Copilot's dashboard: the
+      # daemon's per-record idempotency key (governance.retry_key, JSON-only
+      # clients) was leaking through `resource_to_telemetry_conversion`-style
+      # promotion into a metrics exporter's `target_info` series unbounded --
+      # 5,094 distinct values across 5,105 entries for one client in one 7d
+      # window. Runtime-checked against the real pinned image, same reasoning
+      # as the X-Forwarded-For assertion above: an OTTL typo or a processor
+      # wired into the wrong pipeline would still pass a structural-only test.
+      - name: Assert governance.retry_key is stripped from metrics, kept on logs
+        run: charts/lightbridge-governance/tests/assert-retry-key-stripped-from-metrics.sh charts/lightbridge-governance
 
       # `transform/classify_refusal`'s 7 branches match the upstream
       # `oidcauthextension`'s exact warn-log text, verified only once,

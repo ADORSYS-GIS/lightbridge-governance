@@ -148,3 +148,28 @@ fn serve_otel_is_the_real_spelling_not_a_nested_subcommand() {
          cli::invoke::SERVE_OTEL) was built against `--otel` instead of"
     );
 }
+
+/// `status --json` is the non-TTY escape hatch from the dashboard's own TTY
+/// gate -- pinned here as a parse-level test (not just `accepts(&["status"])`
+/// above, which cannot see a flag) so a future refactor of `Status` back to a
+/// unit variant is caught at the CLI layer, not only by `dashboard`'s own
+/// tests forgetting to call it.
+#[test]
+fn status_accepts_json() {
+    match Cli::try_parse_from(["governance-auth", "status", "--json"]) {
+        Ok(Cli {
+            command: Command::Status { json: true },
+            ..
+        }) => {}
+        other => panic!(
+            "`status --json` must parse into Command::Status {{ json: true }}, got {other:?}"
+        ),
+    }
+    match Cli::try_parse_from(["governance-auth", "status"]) {
+        Ok(Cli {
+            command: Command::Status { json: false },
+            ..
+        }) => {}
+        other => panic!("bare `status` must default to json: false, got {other:?}"),
+    }
+}

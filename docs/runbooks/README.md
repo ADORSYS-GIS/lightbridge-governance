@@ -12,6 +12,8 @@ user complaint -- not with the subsystem name, because at 3am you know the sympt
 | [replay-from-the-raw-archive.md](./replay-from-the-raw-archive.md) | Normalized data is wrong or missing and the source objects are intact |
 | [otel-daemon-misrouted-signals.md](./otel-daemon-misrouted-signals.md) | Codex metrics receive log decoder errors; includes Claude Code and Copilot endpoint checks |
 | [otel-daemon-wedged.md](./otel-daemon-wedged.md) | The local `serve --otel` daemon stops forwarding telemetry, logging repeated "collector refused ... held, not discarded" |
+| [verify-codex-metrics-temporality.md](./verify-codex-metrics-temporality.md) | Confirmed: Codex has the same delta-vs-cumulative gap Claude Code had (#335), but the env-var fix that worked there doesn't work for Codex -- needs a `deltatocumulative` processor downstream instead |
+| [verify-vscode-copilot-edit-metrics.md](./verify-vscode-copilot-edit-metrics.md) | The VS Code Copilot dashboard's lines-of-code/edit-outcome panels show no data, and it isn't the same bug as Claude Code/Codex -- sibling counters from the same client work fine |
 
 ## House rules
 

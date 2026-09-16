@@ -31,14 +31,23 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use toml_edit::{DocumentMut, Item, value};
 
-use crate::config::{ExchangeTokenEndpoint, OauthConfig};
+use crate::{
+    config::{ExchangeTokenEndpoint, OauthConfig},
+    optout::ClientOptOut,
+};
 
 /// Merges `config`'s durable settings into the TOML document at `path`,
 /// creating it if absent. Returns the path on success.
 ///
 /// Idempotent: running `login` twice with the same options rewrites the same
 /// values and leaves the file byte-identical.
-pub fn remember(config: &OauthConfig, path: &Path) -> Result<()> {
+///
+/// `optout` is THIS invocation's choice, always written unconditionally --
+/// unlike every other field here, `false` is not "nothing to persist", it is
+/// itself the answer ("stop leaving this client alone") and must overwrite a
+/// previous `true` the same way a value would. See `OauthConfig::
+/// last_no_claude`'s own doc for who reads this back and why.
+pub fn remember(config: &OauthConfig, optout: ClientOptOut, path: &Path) -> Result<()> {
     let existing = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -65,6 +74,14 @@ pub fn remember(config: &OauthConfig, path: &Path) -> Result<()> {
         value(i64::try_from(config.otel_headers_debounce_ms)?),
     );
     set(&mut doc, "open_browser", value(config.open_browser));
+    set(&mut doc, "no_claude", value(optout.claude));
+    set(&mut doc, "no_codex", value(optout.codex));
+    set(&mut doc, "no_vscode", value(optout.vscode));
+    set(
+        &mut doc,
+        "codex_telemetry_only",
+        value(optout.codex_telemetry_only),
+    );
 
     set_or_clear(&mut doc, "audience", config.audience.as_deref());
     set_or_clear(&mut doc, "otel_endpoint", config.otel_endpoint.as_deref());

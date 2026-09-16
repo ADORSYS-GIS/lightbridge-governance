@@ -28,7 +28,7 @@ fn a_key_we_stopped_writing_is_removed() {
     keeping.insert("apiKeyHelper".to_owned(), digest("gauth token"));
     now.insert(target.display().to_string(), keeping);
 
-    let removed = retract_stale(&manifest, &now).expect("retract");
+    let removed = retract_stale(&manifest, &mut now);
     let after: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&target).expect("read")).expect("json");
 
@@ -52,7 +52,8 @@ fn a_developer_edited_value_is_never_removed() {
 
     // We recorded writing something else entirely.
     let manifest = previous(&target, &[("apiKeyHelper", "gauth token")]);
-    let removed = retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    let removed = retract_stale(&manifest, &mut now);
 
     let after: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&target).expect("read")).expect("json");
@@ -79,7 +80,8 @@ fn flat_dotted_keys_are_found_before_nesting() {
 
     let key = "github.copilot.chat.otel.otlpEndpoint";
     let manifest = previous(&target, &[(key, "https://otel.example")]);
-    let removed = retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    let removed = retract_stale(&manifest, &mut now);
 
     let after: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&target).expect("read")).expect("json");
@@ -95,7 +97,8 @@ fn nested_keys_still_resolve() {
     fs::write(&target, r#"{"env":{"STALE":"v","KEPT":"k"}}"#).expect("seed");
 
     let manifest = previous(&target, &[("env.STALE", "v")]);
-    retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    retract_stale(&manifest, &mut now);
 
     let after: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&target).expect("read")).expect("json");
@@ -115,7 +118,8 @@ fn string_arrays_are_tracked_and_retracted_by_value() {
     let canonical = r#"["--issuer","https://auth.example","token"]"#;
     let manifest = previous(&target, &[("provider.auth.args", canonical)]);
 
-    let removed = retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    let removed = retract_stale(&manifest, &mut now);
     let after = fs::read_to_string(&target).expect("read");
     assert!(!after.contains("args"), "managed array survived: {after}");
     assert!(after.contains("keep = 1"), "sibling changed: {after}");
@@ -141,7 +145,8 @@ fn removing_a_toml_key_also_takes_the_comment_above_it() {
     .expect("seed");
 
     let manifest = previous(&target, &[("model_provider", "governance")]);
-    retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    retract_stale(&manifest, &mut now);
 
     let after = fs::read_to_string(&target).expect("read");
     assert!(!after.contains("model_provider"), "{after}");
@@ -165,7 +170,8 @@ fn comments_on_other_keys_survive_retraction() {
     .expect("seed");
 
     let manifest = previous(&target, &[("model_provider", "governance")]);
-    retract_stale(&manifest, &BTreeMap::new()).expect("retract");
+    let mut now = BTreeMap::new();
+    retract_stale(&manifest, &mut now);
 
     let after = fs::read_to_string(&target).expect("read");
     assert!(after.contains("# the developer's note"), "{after}");
@@ -173,3 +179,4 @@ fn comments_on_other_keys_survive_retraction() {
 }
 
 mod manifest;
+mod retraction;

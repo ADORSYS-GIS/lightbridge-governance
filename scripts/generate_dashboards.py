@@ -44,6 +44,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dashboard_common import dashboard_links
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PATH = REPO_ROOT / "charts" / "lightbridge-governance" / "dashboards" / "copilot-connector.json"
 
@@ -1098,7 +1100,7 @@ def build_dashboard() -> dict[str, Any]:
             ]
         },
         "annotations": {"list": []},
-        "links": [],
+        "links": dashboard_links("governance-copilot-connector"),
         "panels": panels,
     }
     return dashboard

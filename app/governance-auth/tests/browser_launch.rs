@@ -38,17 +38,23 @@ impl FakeXdgOpen {
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let marker = dir.join("invoked");
-        let script_body = format!("#!/bin/sh\ntouch \"{}\"\nexit 0\n", marker.display());
+        // Match the production platform opener. A Linux-only fake on macOS
+        // invokes the real `open`, misses the marker and opens test URLs.
+        let script_path = dir.join(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        });
         // `$1` is the URL `browser::open` passes -- unused here, but taking
         // it (rather than requiring zero args) keeps this a faithful stand-in
-        // for the real `xdg-open` / `open` invocation shape.
-        for bin_name in ["xdg-open", "open"] {
-            let script_path = dir.join(bin_name);
-            fs::write(&script_path, &script_body)
-                .with_context(|| format!("writing {}", script_path.display()))?;
-            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
-                .with_context(|| format!("chmod +x {}", script_path.display()))?;
-        }
+        // for the real `xdg-open` invocation shape.
+        fs::write(
+            &script_path,
+            format!("#!/bin/sh\ntouch \"{}\"\nexit 0\n", marker.display()),
+        )
+        .with_context(|| format!("writing {}", script_path.display()))?;
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod +x {}", script_path.display()))?;
 
         Ok(Self { dir, marker })
     }

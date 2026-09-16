@@ -1,7 +1,5 @@
 //! Persistence and secrecy properties of the managed-key manifest.
 
-use std::collections::BTreeMap;
-
 use super::super::{testutil::*, *};
 
 /// Codex's block contains `Authorization = "Bearer <token>"`. Recording values
@@ -42,10 +40,7 @@ fn a_vanished_target_is_left_alone() {
     let dir = tempdir();
     let target = dir.path().join("gone.json");
     let manifest = previous(&target, &[("k", "v")]);
-    assert!(
-        retract_stale(&manifest, &BTreeMap::new())
-            .expect("retract")
-            .is_empty()
-    );
+    let mut now = BTreeMap::new();
+    assert!(retract_stale(&manifest, &mut now).is_empty());
     assert!(!target.exists(), "must not recreate the file");
 }

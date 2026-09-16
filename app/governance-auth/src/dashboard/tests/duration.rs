@@ -28,6 +28,19 @@ fn an_expired_session_does_not_print_negative_seconds() {
     assert!(line.contains("ago"), "{line}");
 }
 
+/// The same trap as above, on the plain single-line (`status`'s non-TTY) path.
+/// #213 fixed only the dashboard render; the terse branch kept printing raw
+/// signed seconds until #234. Falsified by reverting `plain()` to raw seconds:
+/// this test then fails with the `-8338` in the assertion.
+#[test]
+fn an_expired_session_plain_line_does_not_print_negative_seconds() {
+    let out = plain(&expiring(true, false, -8338));
+    assert!(!out.contains("-8338"), "raw negative seconds: {out}");
+    assert!(out.contains("expired"), "{out}");
+    assert!(out.contains("ago"), "{out}");
+    assert_eq!(out, "session cached, needs refresh, expired 3h ago");
+}
+
 #[test]
 fn durations_scale_with_magnitude() {
     assert_eq!(ago(45), "45s left");

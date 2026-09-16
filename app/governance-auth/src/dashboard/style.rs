@@ -14,9 +14,9 @@ use std::path::Path;
 /// `needs refresh, -8338s` -- arithmetic, not information. Seen on the test VM;
 /// every unit fixture used a positive value, so nothing caught it.
 ///
-/// The plain single-line output keeps the raw seconds: it is a documented
-/// surface (`commands.md`) that a test asserts on, and changing it would break
-/// anyone parsing it.
+/// Both the dashboard table and the plain single-line output (`status`'s
+/// non-TTY form) render through this same helper, so an expired session reads
+/// `expired <X> ago` and a live one reads `<X> left` in either form.
 pub(super) fn ago(seconds: i64) -> String {
     let past = seconds < 0;
     let text = magnitude(seconds.unsigned_abs());
@@ -72,6 +72,18 @@ impl Colour {
             Self::Green => console::style(text).green().to_string(),
             Self::Yellow => console::style(text).yellow().to_string(),
             Self::Red => console::style(text).red().to_string(),
+        }
+    }
+
+    /// The name `render_json` puts in each row -- lowercase, so a consumer's
+    /// `if colour == "red"` reads the way every other JSON API's status field
+    /// does, rather than matching Rust's `Debug` capitalisation.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Red => "red",
         }
     }
 }

@@ -31,6 +31,10 @@ fn config() -> OauthConfig {
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
         token_exchange: None,
+        last_no_claude: false,
+        last_no_codex: false,
+        last_no_vscode: false,
+        last_codex_telemetry_only: false,
     }
 }
 
