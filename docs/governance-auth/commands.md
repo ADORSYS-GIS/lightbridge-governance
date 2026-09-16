@@ -154,8 +154,8 @@ governance-auth status
 
 Prints to **stderr**, one line:
 
-- `session cached, fresh, expires in <n>s`
-- `session cached, needs refresh, expires in <n>s`
+- `session cached, fresh, <X> left` — e.g. `session cached, fresh, 15m left`
+- `session cached, needs refresh, expired <X> ago` — e.g. `session cached, needs refresh, expired 3h ago`
 - `no cached session`
 
 Exit status is 0 in all three cases — this reports state, it does not assert it. A real
@@ -163,7 +163,9 @@ request from Claude Code or Codex is the actual proof that onboarding worked; `s
 rules out half the failure modes before you go looking at the tools.
 
 At a terminal it also prints a table. Those three lines are the contract; the table is an
-addition for a human and never a replacement, because `status` may be piped.
+addition for a human and never a replacement, because `status` may be piped. The wording
+is the same in both forms: an expired session reads `expired <X> ago`, never the raw
+negative seconds.
 
 ### `--json`, for anything that isn't a human at a terminal
 

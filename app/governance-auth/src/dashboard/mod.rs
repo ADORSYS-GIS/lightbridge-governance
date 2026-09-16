@@ -41,19 +41,22 @@ pub struct Session {
     pub expires_in: i64,
 }
 
-/// The single line `status` has always printed. Unchanged on purpose.
+/// The single line `status` has always printed. Wording now matches the
+/// dashboard's [`style::ago`] phrasing: a cached token reads `fresh, <X> left`
+/// and an expired one reads `needs refresh, expired <X> ago` -- the raw signed
+/// seconds were arithmetic a script could not read.
 pub fn plain(session: &Session) -> String {
     if !session.cached {
         return "no cached session".to_owned();
     }
     format!(
-        "session cached, {}, expires in {}s",
+        "session cached, {}, {}",
         if session.fresh {
             "fresh"
         } else {
             "needs refresh"
         },
-        session.expires_in
+        style::ago(session.expires_in)
     )
 }
 

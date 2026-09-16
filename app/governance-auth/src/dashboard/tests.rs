@@ -30,11 +30,13 @@ mod telemetry;
 fn plain_output_is_unchanged() {
     assert_eq!(
         plain(&session(true, true)),
-        "session cached, fresh, expires in 900s"
+        "session cached, fresh, 15m left"
     );
+    // Expired, not merely "needs refresh with 900s left": the fixture must be
+    // negative or this path never exercises the expired wording.
     assert_eq!(
-        plain(&session(true, false)),
-        "session cached, needs refresh, expires in 900s"
+        plain(&expiring(true, false, -8338)),
+        "session cached, needs refresh, expired 3h ago"
     );
     assert_eq!(plain(&session(false, false)), "no cached session");
 }
