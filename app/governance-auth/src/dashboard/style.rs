@@ -14,9 +14,9 @@ use std::path::Path;
 /// `needs refresh, -8338s` -- arithmetic, not information. Seen on the test VM;
 /// every unit fixture used a positive value, so nothing caught it.
 ///
-/// The plain single-line output keeps the raw seconds: it is a documented
-/// surface (`commands.md`) that a test asserts on, and changing it would break
-/// anyone parsing it.
+/// Both the dashboard table and the plain single-line output (`status`'s
+/// non-TTY form) render through this same helper, so an expired session reads
+/// `expired <X> ago` and a live one reads `<X> left` in either form.
 pub(super) fn ago(seconds: i64) -> String {
     let past = seconds < 0;
     let text = magnitude(seconds.unsigned_abs());
