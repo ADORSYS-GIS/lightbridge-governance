@@ -23,12 +23,10 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
 
 /// Deliberately **variable length**. With fixed-length records the stale
 /// offset lands exactly on a line boundary, so the resumed drain skips whole
@@ -71,7 +69,8 @@ async fn a_rotation_that_outgrew_the_old_offset_is_still_a_rotation() -> Result<
         "the fixture needs a clean first drain: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    let old_offset = checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
+    let old_offset =
+        checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
     assert!(
         old_offset > 0,
         "the fixture needs a real offset to skip past"

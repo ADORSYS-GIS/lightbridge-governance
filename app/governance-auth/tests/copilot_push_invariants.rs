@@ -20,8 +20,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
@@ -80,12 +79,15 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
     let mut reclaimed = false;
     while wakes < 60 {
         let before = size(&spool)?;
-        if checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default() >= before {
+        if checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default()
+            >= before
+        {
             break;
         }
         let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
         wakes += 1;
-        let now = checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
+        let now =
+            checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
         let shrank = size(&spool)? < before;
         assert!(
             now > previous || shrank,

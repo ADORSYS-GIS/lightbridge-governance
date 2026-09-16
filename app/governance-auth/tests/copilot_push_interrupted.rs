@@ -23,8 +23,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     interrupt::{self, Wake},
     mock_collector::{Behavior, MockCollector},
@@ -45,8 +44,6 @@ fn alternating(count: usize) -> Vec<Value> {
         })
         .collect()
 }
-
-
 
 fn offset(state: &Option<Value>) -> u64 {
     state

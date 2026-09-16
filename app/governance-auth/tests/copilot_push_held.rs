@@ -17,13 +17,10 @@ mod support;
 
 use anyhow::{Context, Result};
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
-
 
 /// A good record then a permanently refused one, so the refused record is last
 /// and the probe that would resolve it has nothing to offer.

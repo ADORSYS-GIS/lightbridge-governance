@@ -6,8 +6,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::harness::Harness;
-use super::copilot;
+use super::{copilot, harness::Harness};
 
 /// Reads and parses the checkpoint file. Returns `None` when the file does
 /// not exist yet (a run that never authenticated leaves no checkpoint).

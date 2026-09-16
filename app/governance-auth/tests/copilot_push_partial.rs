@@ -15,13 +15,10 @@ mod support;
 
 use anyhow::{Context, Result};
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
-
 
 fn count(paths: &[String], path: &str) -> usize {
     paths.iter().filter(|seen| *seen == path).count()

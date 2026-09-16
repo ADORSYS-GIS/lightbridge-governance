@@ -19,12 +19,10 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
 
 /// THE silent-loss case. Three records the parser cannot place: nothing is
 /// posted, so a request count proves nothing -- but the bytes are gone from

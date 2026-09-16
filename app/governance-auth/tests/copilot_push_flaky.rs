@@ -22,12 +22,10 @@ mod support;
 
 use anyhow::{Context, Result};
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
 
 /// THE regression test for the wrongly-discarded record. The collector refuses
 /// one record on wake 1 for a reason that has gone away by wake 2. Nothing may
@@ -55,7 +53,8 @@ async fn a_record_refused_once_and_accepted_next_wake_is_never_discarded() -> Re
     let first = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
     let stderr = String::from_utf8_lossy(&first.stderr).into_owned();
     assert_eq!(
-        checkpoint::field(&checkpoint::checkpoint(&harness)?, "discarded_total").unwrap_or_default(),
+        checkpoint::field(&checkpoint::checkpoint(&harness)?, "discarded_total")
+            .unwrap_or_default(),
         0,
         "one wake's 400 came from a proxy, not from this record. stderr: {stderr}"
     );
@@ -115,7 +114,8 @@ async fn a_collector_that_starts_refusing_everything_still_discards_nothing() ->
 
     let healthy = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
     assert!(healthy.status.success(), "the fixture needs a real push");
-    let offset = checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
+    let offset =
+        checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
     assert!(offset > 0, "and it must have moved the offset");
 
     // Someone breaks the collector. Four more records arrive.

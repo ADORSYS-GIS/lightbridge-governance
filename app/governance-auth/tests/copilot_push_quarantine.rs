@@ -11,12 +11,10 @@ mod support;
 
 use anyhow::{Context, Result};
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
 
 /// The other side: a record the collector refuses *every* time is still given
 /// up on, so holding is a delay and never a new poison pill.

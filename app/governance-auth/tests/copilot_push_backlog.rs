@@ -19,8 +19,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
@@ -56,7 +55,6 @@ fn spool_of(count: usize) -> (String, usize) {
     let per_sweep = MAX_READ / padded("rec-0").len();
     (body, count.div_ceil(per_sweep))
 }
-
 
 /// The headline. One wake, a spool several times the read cap, and at the end
 /// of it every record is at the collector exactly once and the file is empty.

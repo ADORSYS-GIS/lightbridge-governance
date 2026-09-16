@@ -19,8 +19,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    checkpoint,
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
@@ -29,7 +28,6 @@ use support::{
 /// `tests/` cannot reach `src/`; a drift shows up as the first test below
 /// finding an unreclaimed spool, which is the point.
 const RECLAIM_ABOVE: u64 = 1024 * 1024;
-
 
 /// A spool comfortably over the threshold, whose last record carries `marker`
 /// so a delivery assertion can name it.
