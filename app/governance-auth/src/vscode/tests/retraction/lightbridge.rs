@@ -135,3 +135,52 @@ fn no_vscode_leaves_lightbridge_keys_alone() {
         );
     }
 }
+
+/// The "previously-owned, now-unreadable" transition. Run 1 records the
+/// `lightbridge.*` keys in the manifest; the developer then annotates
+/// settings.json into JSONC (which this binary refuses to rewrite) and drops
+/// the gateway. Run 2 can't physically retract the keys, so it must NOT drop
+/// the target from the ledger -- otherwise the stale keys are unreachable
+/// forever. The ownership record is carried forward for a later run to retry.
+#[test]
+fn an_unreadable_settings_json_keeps_the_lightbridge_ownership() {
+    let home = tempdir();
+    let user = user_dir(home.path(), "Code");
+    fs::create_dir_all(&user).expect("create VS Code User dir");
+
+    // Run 1: gateway set, plain JSON -> keys written and recorded.
+    fs::write(user.join("settings.json"), r#"{}"#).expect("seed plain JSON");
+    configure_all(
+        home.path(),
+        &settings_gateway_only(),
+        ClientOptOut::default(),
+    )
+    .expect("configure with gateway");
+    assert!(
+        read_settings(home.path())
+            .get("lightbridge.gatewayUrl")
+            .is_some()
+    );
+    let target = user.join("settings.json").display().to_string();
+    assert!(
+        manifest(home.path()).targets.contains_key(&target),
+        "run 1 must have recorded the vscode target"
+    );
+
+    // Between runs the developer annotates the file (JSONC) and drops the
+    // gateway: run 2 no longer owns the keys, but cannot read the file to
+    // remove them.
+    let annotated = "{\n  // my note\n  \"editor.fontSize\": 14\n}\n";
+    fs::write(user.join("settings.json"), annotated).expect("annotate to JSONC");
+    configure_all(home.path(), &settings(), ClientOptOut::default()).expect("configure without");
+
+    assert_eq!(
+        fs::read_to_string(user.join("settings.json")).expect("read back"),
+        annotated,
+        "the annotated file must still be left untouched"
+    );
+    assert!(
+        manifest(home.path()).targets.contains_key(&target),
+        "the ledger must keep the vscode target (carried forward) for a later retry"
+    );
+}

@@ -308,17 +308,7 @@ pub fn configure_all(
             flag: "--no-vscode",
         });
     } else {
-        match crate::vscode::configure(home, settings) {
-            Ok(written) => outcomes.extend(written),
-            // Refusing an annotated JSONC settings.json is a partial outcome,
-            // not a failed configure: Claude and Codex above were written, and
-            // the shell env and the manifest below must still run. Treating it
-            // as fatal would let one annotated file silently cost the
-            // developer their exports and leave the ownership ledger
-            // describing the previous run -- the inverse of the "must never
-            // undo a successful configure" rule retraction abides by.
-            Err(error) => eprintln!("warning: could not configure VS Code: {error:#}"),
-        }
+        outcomes.extend(crate::vscode::configure_or_warn(home, settings));
     }
     outcomes.extend(configure_shell_env(home, settings)?);
 
@@ -326,14 +316,9 @@ pub fn configure_all(
     // what we own for next time. Non-fatal by design: a failure here leaves a
     // stale key, which is what happens today anyway -- it must never undo a
     // successful configure. See `managed`.
-    let now = crate::managed::plan(home, settings, optout, &previous);
-    match crate::managed::retract_stale(&previous, &now) {
-        Ok(removed) => {
-            for entry in removed {
-                eprintln!("Removed (no longer managed): {entry}");
-            }
-        }
-        Err(error) => eprintln!("warning: could not retract stale config keys: {error:#}"),
+    let mut now = crate::managed::plan(home, settings, optout, &previous);
+    for entry in crate::managed::retract_stale(&previous, &mut now) {
+        eprintln!("Removed (no longer managed): {entry}");
     }
     let manifest = crate::managed::Manifest {
         version: 1,

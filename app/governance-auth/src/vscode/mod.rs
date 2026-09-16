@@ -99,6 +99,26 @@ pub fn configure(home: &Path, settings: &OtelSettings) -> Result<Vec<Outcome>> {
     Ok(outcomes)
 }
 
+/// [`configure`], but a JSONC refusal becomes a warning, not an error.
+///
+/// Refusing an annotated `settings.json` is a partial outcome, not a failed
+/// configure: the caller has already written Claude and Codex, and its shell
+/// env and manifest must still run. Treating it as fatal would let one
+/// annotated file silently cost the developer their exports and leave the
+/// ownership ledger describing the previous run -- the inverse of the "must
+/// never undo a successful configure" rule retraction abides by. `{error:#}`
+/// keeps anyhow's context chain, so `entries_hint`'s paste-this-by-hand list
+/// still prints.
+pub fn configure_or_warn(home: &Path, settings: &OtelSettings) -> Vec<Outcome> {
+    match configure(home, settings) {
+        Ok(written) => written,
+        Err(error) => {
+            eprintln!("warning: could not configure VS Code: {error:#}");
+            Vec::new()
+        }
+    }
+}
+
 /// `~/.config/<flavour>/User` on Linux, `~/Library/Application
 /// Support/<flavour>/User` on macOS -- VS Code does not follow
 /// `XDG_CONFIG_HOME` on macOS.

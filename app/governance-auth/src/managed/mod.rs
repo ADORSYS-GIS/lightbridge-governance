@@ -103,13 +103,19 @@ pub fn save(path: &Path, manifest: &Manifest) -> Result<()> {
 
 /// Removes keys we wrote last time and are not writing now.
 ///
-/// `now` is what this run set, per target. Returns the keys actually removed,
-/// so the caller can report them -- a silent deletion from someone else's
-/// config file is not something to do quietly.
+/// `now` is what this run set, per target -- and it is taken `&mut` because a
+/// target we own the keys of but **cannot physically remove them from** (its
+/// file is present yet unreadable, or a write-back failed) is re-claimed into
+/// `now`, so the saved manifest keeps the ownership record and a later run
+/// retries. Dropping it here would make the stale keys unreachable forever.
+///
+/// Returns the keys actually removed, so the caller can report them -- a
+/// silent deletion from someone else's config file is not something to do
+/// quietly.
 pub fn retract_stale(
     previous: &Manifest,
-    now: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<Vec<String>> {
+    now: &mut BTreeMap<String, BTreeMap<String, String>>,
+) -> Vec<String> {
     let mut removed = Vec::new();
 
     for (target, old_keys) in &previous.targets {
@@ -131,7 +137,21 @@ pub fn retract_stale(
             continue;
         }
 
-        let mut document = format.read(&path)?;
+        let mut document = match format.read(&path) {
+            Ok(document) => document,
+            // Can't inspect the file, so can't verify or remove our keys.
+            // Re-claim the target into `now` so the manifest keeps owning
+            // them; otherwise the stale keys become unreachable forever.
+            Err(error) => {
+                eprintln!(
+                    "warning: could not read {} to retract managed keys ({error:#}); keeping the \
+                     ownership record",
+                    path.display()
+                );
+                now.insert(target.clone(), old_keys.clone());
+                continue;
+            }
+        };
         let mut touched = false;
         for (key, recorded) in stale {
             // The mitigation for manifest drift: only remove what still looks
@@ -145,10 +165,18 @@ pub fn retract_stale(
                 _ => {}
             }
         }
-        if touched {
-            format.write(&path, &document)?;
+        if touched && let Err(error) = format.write(&path, &document) {
+            // The removal didn't persist; keep the ownership record so the
+            // next run retries rather than forgetting it ever owned them.
+            eprintln!(
+                "warning: could not write {} to retract managed keys ({error:#}); keeping the \
+                 ownership record",
+                path.display()
+            );
+            now.insert(target.clone(), old_keys.clone());
+            continue;
         }
     }
 
-    Ok(removed)
+    removed
 }
