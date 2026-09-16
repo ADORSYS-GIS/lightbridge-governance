@@ -14,23 +14,14 @@
 mod support;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
 use support::{
+    checkpoint,
     copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
 
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
-}
+
 
 fn count(paths: &[String], path: &str) -> usize {
     paths.iter().filter(|seen| *seen == path).count()
@@ -109,7 +100,7 @@ async fn a_permanently_rejected_record_does_not_block_the_stream_forever() -> Re
     let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
 
     let first = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
-    let after_first = checkpoint(&harness)?;
+    let after_first = checkpoint::checkpoint(&harness)?;
     assert_eq!(
         after_first
             .as_ref()
@@ -132,7 +123,7 @@ async fn a_permanently_rejected_record_does_not_block_the_stream_forever() -> Re
     let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
         state.as_ref().and_then(|s| s.get("offset")?.as_u64()),
         Some(size),
@@ -184,7 +175,7 @@ async fn a_collector_that_rejects_everything_discards_nothing() -> Result<()> {
     let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
 
     assert!(!output.status.success());
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
         state
             .as_ref()

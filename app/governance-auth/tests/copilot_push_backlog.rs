@@ -19,6 +19,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
+    checkpoint,
     copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
@@ -56,11 +57,6 @@ fn spool_of(count: usize) -> (String, usize) {
     (body, count.div_ceil(per_sweep))
 }
 
-fn checkpoint(harness: &Harness) -> Result<Value> {
-    let path = fixture::checkpoint_path(harness);
-    serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-        .context("parsing the checkpoint")
-}
 
 /// The headline. One wake, a spool several times the read cap, and at the end
 /// of it every record is at the collector exactly once and the file is empty.
@@ -116,8 +112,9 @@ async fn one_wake_drains_a_spool_several_times_the_read_cap() -> Result<()> {
         0,
         "{initial} bytes were delivered in full and the file still holds them: {stderr}"
     );
+    let checkpoint = checkpoint::checkpoint_required(&harness)?;
     assert_eq!(
-        checkpoint(&harness)?.get("offset").and_then(Value::as_u64),
+        checkpoint.get("offset").and_then(Value::as_u64),
         Some(0),
         "an offset into reclaimed bytes re-reads a file that has already been sent"
     );
@@ -160,7 +157,7 @@ async fn a_sweep_that_stops_short_ends_the_wake_rather_than_re_offering() -> Res
 
     let run = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
     let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint_required(&harness)?;
 
     assert_eq!(
         state.get("discarded_total").and_then(Value::as_u64),

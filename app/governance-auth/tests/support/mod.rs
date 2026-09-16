@@ -14,6 +14,8 @@
 #[allow(dead_code)]
 pub mod collector_policy;
 #[allow(dead_code)]
+pub mod checkpoint;
+#[allow(dead_code)]
 pub mod copilot;
 #[allow(dead_code)]
 pub mod harness;

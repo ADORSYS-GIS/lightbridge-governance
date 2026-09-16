@@ -16,23 +16,14 @@
 mod support;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
 use support::{
+    checkpoint,
     copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
 
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
-}
+
 
 /// A good record then a permanently refused one, so the refused record is last
 /// and the probe that would resolve it has nothing to offer.
@@ -74,7 +65,7 @@ async fn a_spool_whose_last_record_is_refused_is_held_and_says_so() -> Result<()
         !third.status.success(),
         "a wake that resolved nothing must exit non-zero: {stderr}"
     );
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
         state
             .as_ref()
@@ -162,7 +153,7 @@ async fn a_later_record_clears_the_hold_and_the_marker() -> Result<()> {
     let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
     let after = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
 
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert!(
         after.status.success(),
         "the wake resolved everything it read: {}",
