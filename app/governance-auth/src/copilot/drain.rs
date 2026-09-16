@@ -98,7 +98,7 @@ pub async fn once(
     spool_path: &Path,
     dry_run: bool,
 ) -> Result<()> {
-    let state_dir = crate::cache::state_dir()?;
+    let state_dir = crate::paths::state_dir()?;
     // Held for the whole loop below, not just one sweep. See `lock`'s module
     // doc, and `BUDGET` for what that costs a concurrent hand-run.
     let _guard = lock::acquire(&state_dir)?;

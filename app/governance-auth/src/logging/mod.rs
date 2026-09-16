@@ -19,7 +19,7 @@
 //!
 //! Linux is the XDG basedir spec taken literally -- it names "actions
 //! history (logs, …)" as an example of `$XDG_STATE_HOME`'s contents -- so
-//! this is [`crate::cache::state_dir`] plus one segment, and it inherits
+//! this is [`crate::paths::state_dir`] plus one segment, and it inherits
 //! that directory's `0700`.
 //!
 //! macOS is `~/Library/Logs`: Apple's per-user log location, what
@@ -141,7 +141,7 @@ pub(crate) fn path_in(home: &Path) -> PathBuf {
 
 fn path() -> Result<PathBuf> {
     if !cfg!(target_os = "macos") {
-        return Ok(crate::cache::state_dir()?.join("logs").join(FILE_NAME));
+        return Ok(crate::paths::state_dir()?.join("logs").join(FILE_NAME));
     }
     let home = std::env::var("HOME").context("locating the log directory (HOME unset)")?;
     Ok(path_in(Path::new(&home)))

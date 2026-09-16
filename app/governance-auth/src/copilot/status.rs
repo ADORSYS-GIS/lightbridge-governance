@@ -51,7 +51,7 @@ impl SpoolStatus {
         let path = super::resolve_spool_path(config).ok()?;
         let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
 
-        let checkpoint_path = checkpoint::path(&crate::cache::state_dir().ok()?);
+        let checkpoint_path = checkpoint::path(&crate::paths::state_dir().ok()?);
         let (state, checkpoint_unreadable) = match checkpoint::load(&checkpoint_path) {
             Ok(state) => (state, false),
             Err(_) => (checkpoint::Checkpoint::default(), true),

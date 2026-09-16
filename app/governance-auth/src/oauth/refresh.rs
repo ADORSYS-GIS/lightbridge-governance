@@ -40,10 +40,7 @@
 use anyhow::{Result, bail};
 
 use super::refresh_or_fail;
-use crate::{
-    cache::{self, FileLock},
-    config::OauthConfig,
-};
+use crate::{cache, config::OauthConfig, file_lock::FileLock};
 
 pub async fn run(http: &reqwest::Client, config: &OauthConfig) -> Result<()> {
     // Same lock as every other session-touching command: two `refresh` runs,

@@ -1,10 +1,11 @@
 {
-  "app/governance-auth/src/cache.rs": 719,
+  "app/governance-auth/src/cache.rs": 325,
   "app/governance-auth/src/config.rs": 1607,
   "app/governance-auth/src/config_file.rs": 490,
   "app/governance-auth/src/config_persist/mod.rs": 216,
   "app/governance-auth/src/config_persist/tests.rs": 245,
   "app/governance-auth/src/dashboard/tests/spool.rs": 259,
+  "app/governance-auth/src/file_lock/mod.rs": 263,
   "app/governance-auth/src/oauth/discovery.rs": 296,
   "app/governance-auth/src/oauth/mod.rs": 597,
   "app/governance-auth/src/otel.rs": 876,

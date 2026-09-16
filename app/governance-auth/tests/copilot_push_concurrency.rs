@@ -6,7 +6,7 @@
 //! read-modify-write over one file; without a lock across the whole of it,
 //! every concurrent run reads the same offset and ships the same bytes.
 //!
-//! The session lock in `cache::FileLock` does not cover this -- it guards the
+//! The session lock in `file_lock::FileLock` does not cover this -- it guards the
 //! session file and is dropped the moment `current_session` returns, long
 //! before the spool is opened.
 

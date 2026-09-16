@@ -33,10 +33,11 @@ pub use refresh::run as refresh;
 use telemetry_wiring::TelemetryWiring;
 
 use crate::{
-    cache::{self, CachedSession, FileLock},
+    cache::{self, CachedSession},
     cli,
     config::OauthConfig,
     config_file, config_persist,
+    file_lock::FileLock,
     freshness::Freshness,
     optout::ClientOptOut,
     otel,
