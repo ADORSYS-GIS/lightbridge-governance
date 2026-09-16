@@ -222,15 +222,28 @@ pub fn encode_user_team(tenant_id: &str, org: &str, row: &UserTeam) -> LogRecord
 }
 
 /// Encode one `billing-seats` row (a seat snapshot).
+///
+/// The usage-side `usage_seat_snapshots` table has no `seat` subject kind: its
+/// vocabulary is `org` / `user` / `repo` / `user_team`, and it documents
+/// `subject_id` as "the org/team/entity this seat belongs to" with a distinct
+/// NOT NULL `provider_user_id` PK column for the seat holder. So a seat
+/// snapshot is encoded as an **org** subject (`subject_kind=org`,
+/// `subject_id=org`), with the seat holder carried in a dedicated
+/// `provider_user_id` attribute the normalizer maps onto that PK. See the
+/// RFC-0001 contract and its known-issues entry for the coordinated change.
 pub fn encode_seat(tenant_id: &str, org: &str, row: &SeatSnapshot) -> LogRecordData {
     let mut attrs = common(
         tenant_id,
         org,
         "billing-seats",
         &row.snapshot_day,
-        "seat",
-        &row.provider_user_id,
+        "org",
+        org,
     );
+    attrs.push((
+        "provider_user_id".to_owned(),
+        AttributeValue::Str(row.provider_user_id.clone()),
+    ));
     attrs.push((
         "user_login".to_owned(),
         AttributeValue::Str(row.user_login.clone()),
@@ -553,8 +566,9 @@ mod tests {
             seat_state: "active".to_owned(),
         };
         let rec = encode_seat("t1", "g1", &row);
-        assert_eq!(str_attr(&rec.attributes, "subject_kind"), "seat");
-        assert_eq!(str_attr(&rec.attributes, "subject_id"), "1001");
+        assert_eq!(str_attr(&rec.attributes, "subject_kind"), "org");
+        assert_eq!(str_attr(&rec.attributes, "subject_id"), "g1");
+        assert_eq!(str_attr(&rec.attributes, "provider_user_id"), "1001");
         assert_eq!(str_attr(&rec.attributes, "user_login"), "octocat");
         assert_eq!(
             str_attr(&rec.attributes, "seat_assigned_at"),

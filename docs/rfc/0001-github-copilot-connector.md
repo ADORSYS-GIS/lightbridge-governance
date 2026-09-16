@@ -102,7 +102,7 @@ pinned and must not change without a coordinated change on both sides.
 | `org` | string | GitHub org scope |
 | `report` | string | `organization-1-day` / `users-1-day` / `repos-1-day` / `user-teams-1-day` / `billing-seats` |
 | `day` | string | `YYYY-MM-DD` (`report_day`, or `snapshot_day` for seats) |
-| `subject_kind` | string | `org` / `user` / `repo` / `user_team` / `seat` |
+| `subject_kind` | string | `org` / `user` / `repo` / `user_team` |
 | `subject_id` | string | the natural key of the subject |
 
 #### Per-report attributes
@@ -143,10 +143,11 @@ pinned and must not change without a coordinated change on both sides.
 | `team_id` | string | |
 | `team_slug` | string | |
 
-**`billing-seats`** — `subject_kind=seat`, `subject_id=provider_user_id`
+**`billing-seats`** — `subject_kind=org`, `subject_id=org` (the entity the seat belongs to); the seat holder is carried in `provider_user_id`
 
 | attribute | type | unit |
 |---|---|---|
+| `provider_user_id` | string | the seat holder |
 | `user_login` | string | |
 | `seat_assigned_at` | string (RFC 3339) | optional; absent = unknown |
 | `last_activity_at` | string (RFC 3339) | optional; absent = never used |
@@ -208,7 +209,7 @@ body: "seat 1001 (octocat) active 2026-08-07"
 attributes:
   source="github-copilot"  tenant_id="t1"  org="g1"
   report="billing-seats"  day="2026-08-07"
-  subject_kind="seat"  subject_id="1001"
+  subject_kind="org"  subject_id="g1"  provider_user_id="1001"
   user_login="octocat"  seat_assigned_at="2026-01-01T00:00:00Z"
   last_activity_at="2026-08-01T09:30:00Z"
   last_activity_editor="vscode/1.90.0/copilot/1.200.0"  seat_state="active"
@@ -287,6 +288,17 @@ reader of this contract doc sees them without going back to the PR thread.
    `sync/operators.rs` (222 > 200), and `crates/governance-copilot/src/sync.rs` (280 > 246).
    This needs a deliberate decision (further splitting vs. a reviewed ceiling adjustment),
    not an automatic baseline bump.
+
+5. **`billing-seats` `subject_kind`/`subject_id` were pinned to a vocabulary the usage store
+   rejects (P1).** The encoding previously stamped `subject_kind="seat"` and
+   `subject_id=provider_user_id`, but `usage_seat_snapshots` enforces
+   `CHECK (subject_kind IN ('org','user','repo','user_team'))` and documents `subject_id` as
+   "the org/team/entity this seat belongs to" with a distinct NOT NULL `provider_user_id` PK
+   column. The encoding is now `subject_kind=org`, `subject_id=org`, with the seat holder in a
+   dedicated `provider_user_id` attribute. This is a coordinated change with the usage-side
+   normalizer in `lightbridge-authz` (it must map `provider_user_id` onto the seat-snapshot
+   PK); it cannot be cut over until that side accepts the corrected encoding. **Do not cut over
+   the day-grain emit until this is resolved.**
 
 ## Decisions produced
 
