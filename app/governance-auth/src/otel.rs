@@ -308,7 +308,7 @@ pub fn configure_all(
             flag: "--no-vscode",
         });
     } else {
-        outcomes.extend(crate::vscode::configure(home, settings)?);
+        outcomes.extend(crate::vscode::configure_or_warn(home, settings));
     }
     outcomes.extend(configure_shell_env(home, settings)?);
 
@@ -316,14 +316,9 @@ pub fn configure_all(
     // what we own for next time. Non-fatal by design: a failure here leaves a
     // stale key, which is what happens today anyway -- it must never undo a
     // successful configure. See `managed`.
-    let now = crate::managed::plan(home, settings, optout, &previous);
-    match crate::managed::retract_stale(&previous, &now) {
-        Ok(removed) => {
-            for entry in removed {
-                eprintln!("Removed (no longer managed): {entry}");
-            }
-        }
-        Err(error) => eprintln!("warning: could not retract stale config keys: {error:#}"),
+    let mut now = crate::managed::plan(home, settings, optout, &previous);
+    for entry in crate::managed::retract_stale(&previous, &mut now) {
+        eprintln!("Removed (no longer managed): {entry}");
     }
     let manifest = crate::managed::Manifest {
         version: 1,
