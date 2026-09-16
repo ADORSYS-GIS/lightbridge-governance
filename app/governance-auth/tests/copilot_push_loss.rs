@@ -16,8 +16,7 @@
 
 mod support;
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::Result;
 use support::{
     checkpoint, copilot as fixture,
     harness::Harness,
