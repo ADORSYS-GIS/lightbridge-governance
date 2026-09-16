@@ -67,6 +67,7 @@ mod client;
 mod error;
 mod model;
 mod parse;
+mod replay;
 mod report;
 mod seats;
 mod secret;

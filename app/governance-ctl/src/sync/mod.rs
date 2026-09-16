@@ -14,6 +14,8 @@ mod backfill;
 mod config;
 mod operators;
 #[cfg(test)]
+mod operators_tests;
+#[cfg(test)]
 mod test_util;
 
 pub use backfill::run_backfill;

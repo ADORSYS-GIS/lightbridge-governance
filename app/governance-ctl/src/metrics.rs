@@ -301,7 +301,16 @@ async fn push(endpoint: &str, record: impl FnOnce(&Meter)) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+#[cfg(test)]
+mod tests_emit;
+
+/// Test helpers shared by the metrics test modules: drive `record` against an
+/// `SdkMeterProvider` backed by an in-memory exporter (no network) and read
+/// back the exported `ResourceMetrics`, plus a small `ReportOutcome` builder.
+#[cfg(test)]
+pub(crate) mod test_util {
+    use opentelemetry::metrics::Meter;
     use opentelemetry_sdk::metrics::{
         InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
         data::{AggregatedMetrics, MetricData, ResourceMetrics},
@@ -312,10 +321,10 @@ mod tests {
     /// Drives `record` against an `SdkMeterProvider` backed by an in-memory
     /// exporter (no network) and hands back every exported `ResourceMetrics`
     /// for inspection. This exercises the exact `meter.u64_gauge(...)` /
-    /// `meter.u64_counter(...)` calls `record_run_metrics` makes, so a test
+    /// `meter.u64_counter(...)` calls the record functions make, so a test
     /// built on this sees the real instrument type the SDK assigned -- not
     /// just a value that happens to look right.
-    fn export(record: impl FnOnce(&Meter)) -> Vec<ResourceMetrics> {
+    pub fn export(record: impl FnOnce(&Meter)) -> Vec<ResourceMetrics> {
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter.clone()).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
@@ -328,7 +337,7 @@ mod tests {
             .expect("in-memory exporter storage cannot fail to be read back")
     }
 
-    fn u64_gauge_points(
+    pub fn u64_gauge_points(
         resource_metrics: &[ResourceMetrics],
         name: &str,
     ) -> Vec<(Vec<(String, String)>, u64)> {
@@ -361,7 +370,7 @@ mod tests {
             )
     }
 
-    fn outcome(
+    pub fn outcome(
         report: &str,
         status: &str,
         record_count: usize,
@@ -373,284 +382,5 @@ mod tests {
             record_count,
             host: None,
         }
-    }
-
-    /// The core assertion the review demanded: `governance.copilot.
-    /// last_run_timestamp_seconds` (the `governance.copilot.run` counter's
-    /// replacement) must be a Gauge carrying the actual unix timestamp, not
-    /// a Sum. Confirmed against the pre-fix code (see report): building this
-    /// instrument with `meter.u64_counter(...)` instead makes
-    /// `u64_gauge_points` panic with "expected ... to be a u64 Gauge, got
-    /// U64(Sum(...))", because a Counter is exported as `AggregatedMetrics::
-    /// U64(MetricData::Sum(..))`, not `Gauge`.
-    #[test]
-    fn last_run_timestamp_is_a_gauge_carrying_the_unix_timestamp() {
-        let resource_metrics = export(|meter| {
-            record_run_metrics(meter, "sync", &[], 0, 1_700_000_000);
-        });
-
-        let points = u64_gauge_points(
-            &resource_metrics,
-            "governance.copilot.last_run_timestamp_seconds",
-        );
-        assert_eq!(
-            points,
-            vec![(
-                vec![("command".to_owned(), "sync".to_owned())],
-                1_700_000_000
-            )]
-        );
-    }
-
-    /// `days`, `reports` and `rows` must all be Gauges too -- the same defect
-    /// applied to all four series the old code pushed as counters.
-    #[test]
-    fn days_reports_and_rows_are_all_gauges() {
-        let outcomes = [outcome("organization-1-day", "ok", 3)];
-        let resource_metrics = export(|meter| {
-            record_run_metrics(meter, "sync", &outcomes, 1, 1_700_000_000);
-        });
-
-        assert_eq!(
-            u64_gauge_points(&resource_metrics, "governance.copilot.days"),
-            vec![(vec![], 1)]
-        );
-        assert_eq!(
-            u64_gauge_points(&resource_metrics, "governance.copilot.reports"),
-            vec![(
-                vec![
-                    ("report".to_owned(), "organization-1-day".to_owned()),
-                    ("status".to_owned(), "ok".to_owned())
-                ],
-                1
-            )]
-        );
-        assert_eq!(
-            u64_gauge_points(&resource_metrics, "governance.copilot.rows"),
-            vec![(
-                vec![("report".to_owned(), "organization-1-day".to_owned())],
-                3
-            )]
-        );
-    }
-
-    /// A backfill run ingests several days per report type. Because a
-    /// gauge's `record()` overwrites (last-value-wins) rather than sums for
-    /// an identical attribute set within one collection cycle, recording
-    /// each day's outcome directly (the naive counter->gauge swap) would
-    /// silently drop every day but the last. This proves the pre-aggregation
-    /// in `record_run_metrics` actually happened: two days of the same
-    /// report/status must sum to a `reports` value of 2 and a `rows` value
-    /// of 3 + 5 = 8, not whichever day was recorded last.
-    ///
-    /// Confirmed against a deliberately un-aggregated version (recording
-    /// straight from the `outcomes` loop instead of `reports_by_key`/
-    /// `rows_by_report`): it failed with `reports` = 1 and `rows` = 5 (the
-    /// second day's values only), exactly the silent-data-loss mechanism
-    /// this test exists to catch.
-    #[test]
-    fn multiple_days_for_the_same_report_are_summed_not_overwritten() {
-        let outcomes = [
-            outcome("organization-1-day", "ok", 3),
-            outcome("organization-1-day", "ok", 5),
-        ];
-        let resource_metrics = export(|meter| {
-            record_run_metrics(meter, "sync", &outcomes, 2, 1_700_000_000);
-        });
-
-        assert_eq!(
-            u64_gauge_points(&resource_metrics, "governance.copilot.reports"),
-            vec![(
-                vec![
-                    ("report".to_owned(), "organization-1-day".to_owned()),
-                    ("status".to_owned(), "ok".to_owned())
-                ],
-                2
-            )]
-        );
-        assert_eq!(
-            u64_gauge_points(&resource_metrics, "governance.copilot.rows"),
-            vec![(
-                vec![("report".to_owned(), "organization-1-day".to_owned())],
-                8
-            )]
-        );
-    }
-
-    /// Prometheus convention reserves the `_total` suffix for counters. Every
-    /// series `record_run_metrics` emits is now a gauge, so none of them may
-    /// carry it -- a dashboard author reading the name alone must not be
-    /// misled into reaching for `rate()`/`increase()`.
-    #[test]
-    fn no_run_metric_name_carries_a_counter_style_total_suffix() {
-        let outcomes = [outcome("organization-1-day", "ok", 1)];
-        let resource_metrics = export(|meter| {
-            record_run_metrics(meter, "sync", &outcomes, 1, 1_700_000_000);
-        });
-
-        let names: Vec<&str> = resource_metrics
-            .iter()
-            .flat_map(ResourceMetrics::scope_metrics)
-            .flat_map(|sm| sm.metrics())
-            .map(|m| m.name())
-            .collect();
-        assert_eq!(names.len(), 4, "expected exactly the four run-level series");
-        for name in names {
-            assert!(
-                !name.ends_with("_total"),
-                "{name} reads as a counter to Prometheus convention but is recorded as a gauge"
-            );
-        }
-    }
-
-    /// BLOCKER 3, the core assertion: a never-synced deployment must not
-    /// compute the same age as one that just succeeded. Before this fix,
-    /// `run_status` returned the sentinel `(-1, -1)` and `push_status_
-    /// metrics` did `age_days.max(0) as u64 * 86_400`, which folds `-1`
-    /// into `0` -- identical to `SyncStatus::Synced { age_days: 0, .. }`.
-    #[test]
-    fn never_synced_does_not_compute_the_same_recording_as_synced_zero_days_ago() {
-        let never = StatusRecording::from(SyncStatus::NeverSynced);
-        let just_succeeded = StatusRecording::from(SyncStatus::Synced {
-            age_days: 0,
-            unmapped_users: 0,
-        });
-        assert_ne!(never, just_succeeded);
-    }
-
-    /// The age gauge must be omitted (no data point), not a fake zero --
-    /// that is the entire fix, stated as directly as possible.
-    #[test]
-    fn never_synced_omits_the_age_gauge_entirely() {
-        let recording = StatusRecording::from(SyncStatus::NeverSynced);
-        assert_eq!(recording.age_seconds, None);
-        assert_eq!(recording.ever_synced, 0);
-    }
-
-    #[test]
-    fn synced_records_ever_synced_and_the_age_in_seconds() {
-        let recording = StatusRecording::from(SyncStatus::Synced {
-            age_days: 2,
-            unmapped_users: 5,
-        });
-        assert_eq!(recording.ever_synced, 1);
-        assert_eq!(recording.age_seconds, Some(2 * 86_400));
-        assert_eq!(recording.unmapped_users, 5);
-    }
-
-    /// A negative age (clock skew, or a report_day briefly in the future)
-    /// must clamp to zero, not underflow the `u64` cast.
-    #[test]
-    fn synced_clamps_a_negative_age_to_zero() {
-        let recording = StatusRecording::from(SyncStatus::Synced {
-            age_days: -1,
-            unmapped_users: 0,
-        });
-        assert_eq!(recording.age_seconds, Some(0));
-    }
-
-    /// AC 7: a partial accept (some records rejected) must surface as an
-    /// error metric (`emit_partial_accept = 1`), not be swallowed. A fully
-    /// accepted batch must read `0`.
-    #[test]
-    fn partial_accept_is_surfaced_as_an_error_metric() {
-        let resource_metrics = export(|meter| {
-            record_emit_metrics(meter, &[("organization-1-day".to_owned(), 3)], 1);
-        });
-        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_partial_accept");
-        assert_eq!(
-            points,
-            vec![(vec![], 1)],
-            "a rejected record must set the error gauge"
-        );
-
-        let resource_metrics = export(|meter| {
-            record_emit_metrics(meter, &[("organization-1-day".to_owned(), 3)], 0);
-        });
-        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_partial_accept");
-        assert_eq!(
-            points,
-            vec![(vec![], 0)],
-            "a fully accepted batch must read 0"
-        );
-    }
-
-    /// The `report` attribute of a gauge point, for order-independent
-    /// comparison.
-    fn report_label(p: &(Vec<(String, String)>, u64)) -> &str {
-        p.0.iter()
-            .find(|(k, _)| k == "report")
-            .map_or("", |(_, v)| v.as_str())
-    }
-
-    /// Sort gauge points by their `report` attribute so an assertion is
-    /// order-independent -- the SDK stores data points in a HashMap, so
-    /// iteration order is not guaranteed.
-    fn sort_by_report(points: &mut [(Vec<(String, String)>, u64)]) {
-        points.sort_by(|a, b| report_label(a).cmp(report_label(b)));
-    }
-
-    /// AC 7: `emit_accepted_rows` reflects the records the collector
-    /// accepted, by report.
-    #[test]
-    fn emit_accepted_rows_reflects_accepted_records_by_report() {
-        let resource_metrics = export(|meter| {
-            record_emit_metrics(
-                meter,
-                &[
-                    ("organization-1-day".to_owned(), 3),
-                    ("users-1-day".to_owned(), 5),
-                ],
-                0,
-            );
-        });
-        let mut points =
-            u64_gauge_points(&resource_metrics, "governance.copilot.emit_accepted_rows");
-        let mut expected = vec![
-            (
-                vec![("report".to_owned(), "organization-1-day".to_owned())],
-                3,
-            ),
-            (vec![("report".to_owned(), "users-1-day".to_owned())], 5),
-        ];
-        sort_by_report(&mut points);
-        sort_by_report(&mut expected);
-        assert_eq!(points, expected);
-    }
-
-    /// The gauge-collapse regression (adversarial review): a backfill run
-    /// emits several days per report type, so `accepted_by_report` carries
-    /// several entries sharing a `report` label. A gauge's `record()`
-    /// overwrites (last-value-wins) for an identical attribute set, so
-    /// recording each entry directly would report only the final day's count
-    /// instead of the run total. This proves the per-report pre-aggregation
-    /// in `record_emit_metrics` happened: two days of the same report must
-    /// sum to 3 + 5 = 8, not whichever day was recorded last.
-    ///
-    /// Confirmed against a deliberately un-aggregated version (recording
-    /// straight from the `accepted_by_report` loop): it failed with a single
-    /// point of value 5 (the second day only), exactly the silent-undercount
-    /// this test exists to catch.
-    #[test]
-    fn emit_accepted_rows_sums_duplicate_report_labels() {
-        let resource_metrics = export(|meter| {
-            record_emit_metrics(
-                meter,
-                &[
-                    ("organization-1-day".to_owned(), 3),
-                    ("organization-1-day".to_owned(), 5),
-                ],
-                0,
-            );
-        });
-        let points = u64_gauge_points(&resource_metrics, "governance.copilot.emit_accepted_rows");
-        assert_eq!(
-            points,
-            vec![(
-                vec![("report".to_owned(), "organization-1-day".to_owned())],
-                8
-            )],
-            "two days of the same report must sum to the run total, not collapse to the last day"
-        );
     }
 }
