@@ -23,7 +23,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     interrupt::{self, Wake},
     mock_collector::{Behavior, MockCollector},
@@ -43,17 +43,6 @@ fn alternating(count: usize) -> Vec<Value> {
             fixture::marked_log_line(&marker)
         })
         .collect()
-}
-
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
 }
 
 fn offset(state: &Option<Value>) -> u64 {
@@ -112,9 +101,10 @@ async fn a_wake_killed_mid_drain_never_re_delivers_what_it_already_got_through()
     .await?;
     wake.kill()?;
 
-    let after_kill = checkpoint(&harness)?;
+    let after_kill = checkpoint::checkpoint(&harness)?;
+    let offset_after_kill = offset(&after_kill);
     assert!(
-        offset(&after_kill) > 0,
+        offset_after_kill > 0,
         "the collector had already taken {} record(s) and the wake was killed with nothing \
          recorded at all ({after_kill:?}) -- the next wake will rebuild and re-send every one of \
          them. Durability that only happens at end-of-wake is not durability.",
@@ -127,7 +117,7 @@ async fn a_wake_killed_mid_drain_never_re_delivers_what_it_already_got_through()
     collector.set_behavior(Behavior::Accept)?;
     let size = std::fs::metadata(&spool).context("sizing the spool")?.len();
     let mut wakes = 0;
-    while offset(&checkpoint(&harness)?) < size && wakes < 10 {
+    while offset(&checkpoint::checkpoint(&harness)?) < size && wakes < 10 {
         fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
         wakes += 1;
     }
@@ -142,7 +132,7 @@ async fn a_wake_killed_mid_drain_never_re_delivers_what_it_already_got_through()
         repeated.iter().take(5).collect::<Vec<_>>()
     );
     assert_eq!(
-        offset(&checkpoint(&harness)?),
+        offset(&checkpoint::checkpoint(&harness)?),
         size,
         "and the spool must still drain to the end in {wakes} wakes"
     );
@@ -189,7 +179,7 @@ async fn a_wake_killed_mid_drain_loses_nothing_it_had_not_delivered() -> Result<
          {stderr}"
     );
     assert_eq!(
-        checkpoint(&harness)?
+        checkpoint::checkpoint(&harness)?
             .as_ref()
             .and_then(|state| state.get("discarded_total")?.as_u64())
             .unwrap_or_default(),

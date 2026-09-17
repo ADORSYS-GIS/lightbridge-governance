@@ -19,7 +19,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
@@ -28,12 +28,6 @@ use support::{
 /// `tests/` cannot reach `src/`; a drift shows up as the first test below
 /// finding an unreclaimed spool, which is the point.
 const RECLAIM_ABOVE: u64 = 1024 * 1024;
-
-fn checkpoint(harness: &Harness) -> Result<Value> {
-    let path = fixture::checkpoint_path(harness);
-    serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-        .context("parsing the checkpoint")
-}
 
 /// A spool comfortably over the threshold, whose last record carries `marker`
 /// so a delivery assertion can name it.
@@ -78,7 +72,7 @@ async fn an_oversized_spool_that_was_fully_delivered_is_reclaimed() -> Result<()
         stderr.contains("Reclaimed"),
         "a file that empties itself with no explanation is worse than one that grows: {stderr}"
     );
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint_required(&harness)?;
     assert_eq!(
         state.get("offset").and_then(Value::as_u64),
         Some(0),

@@ -10,30 +10,12 @@
 mod support;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
 use support::{
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
 
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
-}
-
-fn field(state: &Option<Value>, key: &str) -> u64 {
-    state
-        .as_ref()
-        .and_then(|value| value.get(key)?.as_u64())
-        .unwrap_or_default()
-}
 /// The other side: a record the collector refuses *every* time is still given
 /// up on, so holding is a delay and never a new poison pill.
 #[tokio::test]
@@ -70,15 +52,15 @@ async fn a_record_refused_on_two_separate_wakes_is_given_up_on() -> Result<()> {
         String::from_utf8_lossy(&second.stderr)
     );
 
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
-        field(&state, "discarded_total"),
+        checkpoint::field(&state, "discarded_total").unwrap_or_default(),
         1,
         "two separate wakes refused it on its own; that is the evidence the rule asks for: \
          {state:?}"
     );
     assert_eq!(
-        field(&state, "offset"),
+        checkpoint::field(&state, "offset").unwrap_or_default(),
         size,
         "and the stream must not stop at its byte offset: {state:?}"
     );

@@ -20,7 +20,7 @@ mod support;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
@@ -44,23 +44,6 @@ const RECLAIM_ABOVE: u64 = 1024 * 1024;
 
 fn size(spool: &std::path::Path) -> Result<u64> {
     Ok(std::fs::metadata(spool).context("sizing")?.len())
-}
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
-}
-
-fn number(state: &Option<Value>, key: &str) -> u64 {
-    state
-        .as_ref()
-        .and_then(|value| value.get(key)?.as_u64())
-        .unwrap_or_default()
 }
 
 fn duplicates(bodies: &[String]) -> Vec<String> {
@@ -96,12 +79,15 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
     let mut reclaimed = false;
     while wakes < 60 {
         let before = size(&spool)?;
-        if number(&checkpoint(&harness)?, "offset") >= before {
+        if checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default()
+            >= before
+        {
             break;
         }
         let output = fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
         wakes += 1;
-        let now = number(&checkpoint(&harness)?, "offset");
+        let now =
+            checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset").unwrap_or_default();
         let shrank = size(&spool)? < before;
         assert!(
             now > previous || shrank,
@@ -112,10 +98,11 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
         previous = if shrank { 0 } else { now };
     }
 
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     let delivered = collector.accepted_log_bodies()?;
     let repeated = duplicates(&delivered);
     let requests = collector.request_count()?;
+    let discarded_total = checkpoint::field(&state, "discarded_total").unwrap_or_default();
     println!(
         "{label}: {count} records / {} refused -> {wakes} wakes, {requests} requests \
          ({:.1}/wake), {} delivered, {} duplicates, discarded_total={}",
@@ -123,11 +110,11 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
         requests as f64 / f64::from(wakes),
         delivered.len(),
         repeated.len(),
-        number(&state, "discarded_total"),
+        discarded_total,
     );
 
     assert_eq!(
-        number(&state, "offset"),
+        checkpoint::field(&state, "offset").unwrap_or_default(),
         size(&spool)?,
         "{label}: not drained"
     );
@@ -140,14 +127,14 @@ async fn drain_to_end(label: &str, count: usize, refused: &[usize]) -> Result<()
     let sample = repeated.iter().take(5).collect::<Vec<_>>();
     assert!(repeated.is_empty(), "{label}: delivered twice: {sample:?}");
     // Conservation: every record either arrived or was counted as lost.
-    let accounted = delivered.len() as u64 + number(&state, "discarded_total");
+    let accounted = delivered.len() as u64 + discarded_total;
     assert_eq!(
         accounted, count as u64,
         "{label}: {count} records went in, {accounted} accounted for -- the offset passed \
          records that were neither delivered nor counted"
     );
     assert_eq!(
-        number(&state, "discarded_total"),
+        discarded_total,
         refused.len() as u64,
         "{label}: exactly the refused records may be discarded, and only after two wakes each"
     );
@@ -181,19 +168,19 @@ async fn no_record_is_ever_discarded_on_one_wakes_evidence() -> Result<()> {
     fixture::write_spool(&spool, &spool_with(64, &[7, 23, 41]))?;
 
     fixture::push(&harness, &collector.base_url, &spool, &[]).await?;
-    let after_first = checkpoint(&harness)?;
+    let after_first = checkpoint::checkpoint(&harness)?;
 
     println!(
         "quarantine: after wake 1 discarded_total={}",
-        number(&after_first, "discarded_total")
+        checkpoint::field(&after_first, "discarded_total").unwrap_or_default()
     );
     assert_eq!(
-        number(&after_first, "discarded_total"),
+        checkpoint::field(&after_first, "discarded_total").unwrap_or_default(),
         0,
         "one wake's 400 is evidence, not a verdict: {after_first:?}"
     );
     assert!(
-        number(&after_first, "offset") > 0,
+        checkpoint::field(&after_first, "offset").unwrap_or_default() > 0,
         "and the records before it must still have been delivered: {after_first:?}"
     );
     Ok(())

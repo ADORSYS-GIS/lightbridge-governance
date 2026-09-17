@@ -16,28 +16,12 @@
 
 mod support;
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::Result;
 use support::{
-    copilot as fixture,
+    checkpoint, copilot as fixture,
     harness::Harness,
     mock_collector::{Behavior, MockCollector},
 };
-
-fn checkpoint(harness: &Harness) -> Result<Option<Value>> {
-    let path = fixture::checkpoint_path(harness);
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_slice(&std::fs::read(&path).context("reading the checkpoint")?)
-            .context("parsing the checkpoint")?,
-    ))
-}
-
-fn field(state: &Option<Value>, key: &str) -> Option<u64> {
-    state.as_ref()?.get(key)?.as_u64()
-}
 
 /// THE silent-loss case. Three records the parser cannot place: nothing is
 /// posted, so a request count proves nothing -- but the bytes are gone from
@@ -65,15 +49,15 @@ async fn records_the_parser_cannot_place_are_counted_as_lost_not_swallowed() -> 
         0,
         "the fixture is only meaningful if nothing was exportable"
     );
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
-        field(&state, "discarded_total"),
+        checkpoint::field(&state, "discarded_total"),
         Some(3),
         "three records were consumed and never delivered; the checkpoint must say so rather than \
          advancing as though they had been. Got: {state:?}"
     );
     assert!(
-        field(&state, "last_discard_unix").is_some(),
+        checkpoint::field(&state, "last_discard_unix").is_some(),
         "a loss with no timestamp cannot be aged out or explained later: {state:?}"
     );
     assert!(
@@ -111,9 +95,9 @@ async fn a_record_that_would_be_exported_empty_is_counted_as_lost_not_delivered(
          Payloads: {:?}",
         collector.payloads()?
     );
-    let state = checkpoint(&harness)?;
+    let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
-        field(&state, "discarded_total"),
+        checkpoint::field(&state, "discarded_total"),
         Some(2),
         "both records were consumed and carried nothing to the collector: {state:?}, stderr: \
          {stderr}"
@@ -141,7 +125,7 @@ async fn a_missing_spool_never_rewinds_the_checkpoint() -> Result<()> {
         "first run failed: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    let after_first = field(&checkpoint(&harness)?, "offset");
+    let after_first = checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset");
     assert!(
         after_first.unwrap_or_default() > 0,
         "the fixture needs a real offset to rewind from"
@@ -159,7 +143,7 @@ async fn a_missing_spool_never_rewinds_the_checkpoint() -> Result<()> {
         "a developer who has not used Chat yet must not see a failing timer: {stderr}"
     );
     assert_eq!(
-        field(&checkpoint(&harness)?, "offset"),
+        checkpoint::field(&checkpoint::checkpoint(&harness)?, "offset"),
         after_first,
         "a spool that is not there says nothing about how far the real one was drained"
     );
