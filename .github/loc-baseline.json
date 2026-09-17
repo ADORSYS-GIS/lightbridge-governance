@@ -26,7 +26,7 @@
   "app/redact-extproc/src/service.rs": 1588,
   "app/redact-gateway/src/proxy.rs": 823,
   "crates/governance-copilot/src/client.rs": 247,
-  "crates/governance-copilot/src/model.rs": 243,
+  "crates/governance-copilot/src/model.rs": 250,
   "crates/governance-copilot/src/parse.rs": 499,
   "crates/governance-copilot/src/seats.rs": 228,
   "crates/governance-copilot/src/store.rs": 486,
