@@ -100,8 +100,8 @@ async fn a_rotation_that_outgrew_the_old_offset_is_still_a_rotation() -> Result<
     );
     let state = checkpoint::checkpoint(&harness)?;
     assert_eq!(
-        checkpoint::field(&state, "discarded_total").unwrap_or_default(),
-        1,
+        checkpoint::field(&state, "discarded_total"),
+        Some(0),
         "nothing here is unreadable; a non-zero count means bytes were consumed as a partial-line \
          fragment at a resume point in the middle of a file: {state:?}"
     );
