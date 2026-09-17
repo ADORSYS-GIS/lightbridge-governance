@@ -49,7 +49,7 @@ of building, testing or deploying the server image.** Check that before adding a
   SQL."
 - **Raw SQL exists and is allowed** where generated CRUD can't express the operation — an
   advisory lock and trigger DDL in `migrate.rs`, a credential-resolve JOIN in `credential.rs`,
-  transactional upserts in `governance-core/src/ingest.rs` and
+  transactional upserts in `governance-core/src/ingest/upsert.rs` and
   `governance-copilot/src/store.rs`, a batch
   `= ANY($3)` lookup in `identity.rs`. It belongs inside a schema `procedure` or a dedicated
   store module, never as a parallel path to the database. See webank-context's
