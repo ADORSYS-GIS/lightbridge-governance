@@ -144,7 +144,12 @@ async fn ingest_telemetry_inner(
             let cost = calculate_model_cost(&mut tx, model_call).await?;
             if let Some(known) = cost {
                 if let Some(total) = &mut total_cost {
-                    *total += known.0;
+                    // Saturating, not wrapping: per-call costs are clamped to
+                    // i64::MAX in pricing.rs (token counts are attacker-controlled
+                    // telemetry), so a plain `+=` can silently wrap negative in a
+                    // release build when two clamped costs are summed. Same failure
+                    // class pricing.rs guards against, one level up.
+                    *total = total.saturating_add(known.0);
                 }
             } else {
                 total_cost = None;

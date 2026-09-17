@@ -370,6 +370,13 @@ async fn reprocessing_is_idempotent_and_preserves_cost_history() {
 
     let mut execution = valid_execution(); // 10 in, 5 out
     execution.model_calls[0].model = MODEL.to_owned();
+    // Unique ids: valid_execution() defaults to trace-1/span-1, which other DB
+    // tests also use -- parallel tests must not collide on rows (the
+    // (trace_id, span_id) unique index is global, not tenant-scoped).
+    execution.trace_id = "trace-idem".to_owned();
+    execution.span_id = "span-idem".to_owned();
+    execution.model_calls[0].trace_id = "trace-idem".to_owned();
+    execution.model_calls[0].span_id = "span-idem:mc".to_owned();
     let executions = vec![execution.clone()];
     let first = ingest_telemetry(
         &pool,
@@ -414,8 +421,8 @@ async fn reprocessing_is_idempotent_and_preserves_cost_history() {
         "SELECT id, estimated_cost_micro_usd FROM executions \
          WHERE trace_id = $1 AND span_id = $2",
     )
-    .bind("trace-1")
-    .bind("span-1")
+    .bind("trace-idem")
+    .bind("span-idem")
     .fetch_one(&pool)
     .await
     .expect("execution row exists");
@@ -472,6 +479,12 @@ async fn a_pricing_change_does_not_rewrite_written_costs() {
     insert_price(&pool, MODEL, &format!("price-{}", cuid::cuid2()), 7_000_000).await;
     let mut execution = valid_execution();
     execution.model_calls[0].model = MODEL.to_owned();
+    // Unique ids: valid_execution() defaults to trace-1/span-1, which other DB
+    // tests also use -- parallel tests must not collide on rows.
+    execution.trace_id = "trace-reprice".to_owned();
+    execution.span_id = "span-reprice".to_owned();
+    execution.model_calls[0].trace_id = "trace-reprice".to_owned();
+    execution.model_calls[0].span_id = "span-reprice:mc".to_owned();
     let executions = vec![execution];
     ingest_telemetry(
         &pool,
@@ -506,8 +519,8 @@ async fn a_pricing_change_does_not_rewrite_written_costs() {
         "SELECT estimated_cost_micro_usd FROM executions \
          WHERE trace_id = $1 AND span_id = $2",
     )
-    .bind("trace-1")
-    .bind("span-1")
+    .bind("trace-reprice")
+    .bind("span-reprice")
     .fetch_one(&pool)
     .await
     .expect("execution row exists");
@@ -515,6 +528,85 @@ async fn a_pricing_change_does_not_rewrite_written_costs() {
         execution_cost,
         Some(105),
         "a pricing change must not rewrite already-stored costs"
+    );
+}
+
+/// The execution total must saturate, never wrap: per-call costs are clamped
+/// to `i64::MAX` in `pricing.rs` (token counts are attacker-controlled), so
+/// two clamped calls summed with a plain `+=` would silently wrap negative in
+/// a release build (overflow checks off). This is the failure class
+/// `pricing.rs` guards against, one level up -- the accumulator must not
+/// reintroduce it.
+#[tokio::test]
+async fn execution_total_saturates_when_costs_would_overflow() {
+    let Some(pool) = connected_pool().await else {
+        eprintln!("skipping: DATABASE_URL not set");
+        return;
+    };
+    let (tenant_id, integration_id) = fixture(&pool, "claude_code").await;
+
+    // A rate large enough that a single call's cost clamps to i64::MAX.
+    const MODEL: &str = "overflow-sonnet";
+    sqlx::query(
+        "INSERT INTO model_pricing (id, model, input_per_million_micro_usd, \
+         output_per_million_micro_usd, effective_from) \
+         VALUES ($1, $2, $3, $4, now())",
+    )
+    .bind(format!("price-{}", cuid::cuid2()))
+    .bind(MODEL)
+    .bind(i64::MAX)
+    .bind(i64::MAX)
+    .execute(&pool)
+    .await
+    .expect("insert pricing fixture");
+
+    // Two model calls, each with token counts that clamp to i64::MAX. Their
+    // sum overflows i64; the accumulator must saturate at i64::MAX, not wrap.
+    let mut execution = valid_execution();
+    execution.trace_id = "trace-overflow".to_owned();
+    execution.span_id = "span-overflow".to_owned();
+    execution.model_calls = vec![
+        ModelCallInput {
+            trace_id: "trace-overflow".to_owned(),
+            span_id: "span-overflow:mc1".to_owned(),
+            model: MODEL.to_owned(),
+            input_tokens: Some(i64::MAX),
+            output_tokens: Some(i64::MAX),
+        },
+        ModelCallInput {
+            trace_id: "trace-overflow".to_owned(),
+            span_id: "span-overflow:mc2".to_owned(),
+            model: MODEL.to_owned(),
+            input_tokens: Some(i64::MAX),
+            output_tokens: Some(i64::MAX),
+        },
+    ];
+    let executions = vec![execution];
+
+    ingest_telemetry(
+        &pool,
+        &tenant_id,
+        &integration_id,
+        "claude_code",
+        &executions,
+    )
+    .await
+    .expect("ingest succeeds");
+
+    let (execution_cost,): (Option<i64>,) = sqlx::query_as(
+        "SELECT estimated_cost_micro_usd FROM executions \
+         WHERE trace_id = $1 AND span_id = $2",
+    )
+    .bind("trace-overflow")
+    .bind("span-overflow")
+    .fetch_one(&pool)
+    .await
+    .expect("execution row exists");
+
+    assert_eq!(
+        execution_cost,
+        Some(i64::MAX),
+        "two clamped costs must saturate at i64::MAX, not wrap negative"
     );
 }
 
