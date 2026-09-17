@@ -69,7 +69,7 @@ world-readable is refused, not loaded.
 | [`config_file.rs`](src/config_file.rs) | The two file layers, and the secret-permission rules. |
 | [`oauth/`](src/oauth/) | `discovery`, `authcode`, `pkce`, `device`, `token_endpoint`, `exchange`, and `mod.rs`'s command orchestration. |
 | [`cache.rs`](src/cache.rs) | The session store, its locking, and the cache→state migration. |
-| [`otel.rs`](src/otel.rs) | Every write into another tool's config file. |
+| [`otel/`](src/otel/) | Every write into another tool's config file. |
 | [`security.rs`](src/security.rs) | The one transport-security predicate, applied at three points. |
 | [`update.rs`](src/update.rs) | Self-update, and the version constant that stops it looping. |
 | [`redacted.rs`](src/redacted.rs) | The secret newtype. |
