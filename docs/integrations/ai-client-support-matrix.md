@@ -274,7 +274,7 @@ about how it is wired are easy to get wrong:
 That is why `governance-auth` still does not configure opencode: both halves
 are already solved by the well-known document, and the one thing
 `governance-auth` could do to it — export a global OTLP endpoint — has now
-stopped. `shell_exports` (`app/governance-auth/src/otel.rs`) writes no `OTEL_*`
+stopped. `shell_exports` (`app/governance-auth/src/otel/shell.rs`) writes no `OTEL_*`
 variable; see the first caveat on this page.
 
 ⚠️ A developer's local `~/.config/opencode/opencode.json` is **JSONC**, so

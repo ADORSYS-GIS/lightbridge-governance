@@ -63,7 +63,7 @@ that can also redirect metrics and traces incorrectly or double the suffix.
 ### Codex: fix each configured HTTP exporter
 
 The incident workstation had `protocol = "binary"` and the same root URL in
-both exporter tables. The updated [writer](../../app/governance-auth/src/otel.rs)
+both exporter tables. The updated [writer](../../app/governance-auth/src/otel/codex.rs)
 produces this telemetry fragment:
 
 ```toml
@@ -90,7 +90,7 @@ contract and route its OTLP/HTTP traffic to `/v1/traces`.
 
 ### Claude Code: preserve the shared endpoint unless evidence says otherwise
 
-Our [Claude Code writer](../../app/governance-auth/src/otel.rs) already uses the
+Our [Claude Code writer](../../app/governance-auth/src/otel/claude.rs) already uses the
 shared OTLP endpoint and HTTP/protobuf. Its relevant `settings.json` fragment is:
 
 ```json
