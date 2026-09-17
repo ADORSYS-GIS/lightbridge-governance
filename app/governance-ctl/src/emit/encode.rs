@@ -35,9 +35,9 @@ fn checked_i64(v: u64) -> Result<i64> {
 }
 
 /// A pure, transport-agnostic log record: a human-readable body plus typed
-/// attributes. Encoding produces these; [`crate::emit::emit`] turns them into
-/// OTLP log records. Kept separate so the encoding is testable without any
-/// network or OTLP SDK machinery.
+/// attributes. Encoding produces these; [`crate::emit::Sink::emit_rows`] turns
+/// them into OTLP log records. Kept separate so the encoding is testable
+/// without any network or OTLP SDK machinery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRecordData {
     pub body: String,

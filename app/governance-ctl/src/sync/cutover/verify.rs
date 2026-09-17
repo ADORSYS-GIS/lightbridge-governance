@@ -36,7 +36,24 @@ pub async fn verify_archive_counts(
     let mut mismatches = Vec::new();
     for (day, report, expected) in manifests {
         let ds = day.to_string();
-        let key = governance_copilot::archive_key(&cfg.org, &report, &ds);
+
+        // A zero-count manifest row is an empty day (GitHub HTTP 204): the
+        // report had no rows, so `ingest_one` recorded a manifest but wrote no
+        // archive. There is nothing to parse back, so there is nothing to
+        // verify -- skipping avoids a spurious mismatch on every empty day.
+        if expected == 0 {
+            continue;
+        }
+
+        // `billing-seats` is archived as a single JSON document under
+        // `seats_archive_key` (`.json`), not as NDJSON under `archive_key`
+        // (`.ndjson`) like the four day reports. Read the right key or the
+        // seats archive is always reported missing.
+        let key = if report == governance_copilot::SEATS_REPORT_TYPE {
+            governance_copilot::seats_archive_key(&cfg.org, &ds)
+        } else {
+            governance_copilot::archive_key(&cfg.org, &report, &ds)
+        };
         let bytes = match cfg.archive.read(&key).await {
             Ok(b) => b,
             Err(e) => {

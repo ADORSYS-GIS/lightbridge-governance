@@ -345,6 +345,28 @@ cross-repo prerequisite for cutover** and are called out per item.
    export because the authz receiver refuses it (known-issue #1) and it is therefore not present
    in the usage store -- asserting it would always mismatch and block the cutover.
 
+8. **`organization-1-day` cost fields are always zero by construction (P2) — intentional
+   design, not a defect.** GitHub's org report carries no cost/credits (those are user-level
+   only), so `parse_org_daily` sets `OrgDaily.ai_credits = 0` and
+   `net_cost_micro_usd = MicroUsd(0)`. The org record's spend is therefore **not** read from the
+   row: `encode_org_daily` receives the org-level spend explicitly, aggregated from the day's
+   `users-1-day` rows by `aggregate_org_cost` (saturating, ADR-0008). The `OrgDaily` cost fields
+   are dead-by-construction and are deliberately discarded by the encoder. **Do not "fix" this
+   by reading `row.ai_credits` / `row.net_cost_micro_usd`** -- they are always zero and would
+   silently claim zero spend. If GitHub ever adds org-level cost, the aggregation source must
+   change in coordination with the usage-side normalizer.
+
+9. **`decommission` drops the shared telemetry tables on a Copilot-only gate (P2) —
+   intentional, with an explicit operator acknowledgement.** `executions` / `model_calls` /
+   `tool_calls` are the shared normalized telemetry model written by EVERY push connector
+   (Foundry, redact), not just Copilot. `verify_archive_counts` only verifies the Copilot S3
+   archive against `ingest_manifests` -- it does **not** verify these tables' migration. Their
+   no-loss bar is the authz-side `verify-counts` CLI (which consumes `export-counts`). Dropping
+   them is therefore gated on the operator explicitly confirming that authz-side assertion
+   passed (the warning in `decommission`), not on the Copilot-only archive check. **Do not treat
+   the missing Copilot-side verification of these tables as a defect**; the shared tables'
+   migration is verified on the authz side by design.
+
 ## Decisions produced
 
 - [ADR-0002](../adr/0002-postgres-is-the-system-of-record-not-parquet-on-s3.md)

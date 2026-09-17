@@ -88,3 +88,86 @@ async fn verify_archive_counts_reports_a_missing_archive_as_a_mismatch() {
     assert_eq!(mismatches[0].expected, 2);
     assert_eq!(mismatches[0].actual, 0);
 }
+
+/// `billing-seats` is archived as a single JSON document under
+/// `seats_archive_key` (`.json`), not as NDJSON under `archive_key` (`.ndjson`)
+/// like the four day reports. `verify_archive_counts` must read the seats key
+/// or the seats archive is always reported missing and the cutover can never
+/// pass.
+#[tokio::test]
+async fn verify_archive_counts_reads_the_seats_json_key() {
+    let Some(pool) = db_pool().await else { return };
+    let tenant_id = format!("it-cutover-verify-seats-{}", std::process::id());
+    let org = "it-cutover-verify-seats-org";
+    let cfg = test_config(
+        tenant_id.clone(),
+        org.to_owned(),
+        tmp_archive_dir("cutover-verify-seats"),
+    );
+
+    let day = "2026-08-01";
+    // A single-JSON-document seats archive (a `Vec<SeatsPage>`), as
+    // `sync_seats` writes it.
+    let json = concat!(
+        "[{\"seats\":[{\"created_at\":\"2026-08-01T00:00:00Z\",",
+        "\"last_activity_at\":null,\"last_activity_editor\":null,",
+        "\"pending_cancellation_date\":null,",
+        "\"assignee\":{\"id\":\"1\",\"login\":\"u1\"}}]}]",
+    );
+    governance_copilot::upsert_manifest(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        org,
+        governance_copilot::SEATS_REPORT_TYPE,
+        day,
+        "ok",
+        1,
+    )
+    .await
+    .unwrap();
+    let key = governance_copilot::seats_archive_key(org, day);
+    cfg.archive.write(&key, json.as_bytes()).await.unwrap();
+
+    let mismatches = verify_archive_counts(&pool, &cfg).await.unwrap();
+    assert!(
+        mismatches.is_empty(),
+        "a complete seats archive must verify clean: {mismatches:?}"
+    );
+}
+
+/// An empty day (GitHub HTTP 204) records a zero-count manifest but writes no
+/// archive. `verify_archive_counts` must not report those as mismatches --
+/// there is nothing archived to verify against.
+#[tokio::test]
+async fn verify_archive_counts_skips_empty_days_with_no_archive() {
+    let Some(pool) = db_pool().await else { return };
+    let tenant_id = format!("it-cutover-verify-empty-{}", std::process::id());
+    let org = "it-cutover-verify-empty-org";
+    let cfg = test_config(
+        tenant_id.clone(),
+        org.to_owned(),
+        tmp_archive_dir("cutover-verify-empty"),
+    );
+
+    let day = "2026-08-01";
+    // A manifest claims 0 rows (empty day) and nothing is archived.
+    governance_copilot::upsert_manifest(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        org,
+        "users-1-day",
+        day,
+        "empty",
+        0,
+    )
+    .await
+    .unwrap();
+
+    let mismatches = verify_archive_counts(&pool, &cfg).await.unwrap();
+    assert!(
+        mismatches.is_empty(),
+        "an empty day with no archive must not be a mismatch: {mismatches:?}"
+    );
+}
