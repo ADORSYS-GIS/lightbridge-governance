@@ -83,7 +83,9 @@ snapshots as **OTLP log records** through the authenticated edge OTEL collector.
 day-grain normalizer in `lightbridge-authz` reads these records into the generalized
 `usage_day_facts` / `usage_seat_snapshots` tables. **This section is a contract with that
 normalizer, not an implementation detail** -- the attribute names, types and units below are
-pinned and must not change without a coordinated change on both sides.
+pinned and must not change without a coordinated change on both sides. (The RFC as a whole is
+still Draft, but this contract section is agreed and load-bearing for the cutover; it is the
+cross-repo interface both sides build against.)
 
 #### Transport
 
@@ -103,7 +105,12 @@ pinned and must not change without a coordinated change on both sides.
 | `report` | string | `organization-1-day` / `users-1-day` / `repos-1-day` / `user-teams-1-day` / `billing-seats` |
 | `day` | string | `YYYY-MM-DD` (`report_day`, or `snapshot_day` for seats) |
 | `subject_kind` | string | `org` / `user` / `repo` / `user_team` |
-| `subject_id` | string | the natural key of the subject |
+| `subject_id` | string | the natural key of the subject (for `billing-seats`, the org the seat belongs to — the seat holder is in `provider_user_id`) |
+
+**`subject_kind` is a closed vocabulary** — `org`, `user`, `repo`, `user_team` — matching the
+usage store's `CHECK (subject_kind IN ('org','user','repo','user_team'))` constraint. A record
+must never carry a kind outside this set; the usage-side normalizer rejects unknown kinds. A
+`billing-seats` record is an **org** subject (see below), never a `seat` kind.
 
 #### Per-report attributes
 
@@ -220,6 +227,13 @@ attributes:
 The usage-side natural-key upsert is keyed on `(source, day, subject_kind, subject_id)`
 (ADR-0014 §3). Re-emitting a day changes no counts in the usage store.
 
+**`billing-seats` is the exception.** Because a seat snapshot is an **org** subject
+(`subject_kind=org`, `subject_id=org`), every seat on a snapshot day would share the same
+`(source, day, subject_kind, subject_id)` key. The seat-snapshot upsert is therefore keyed on
+`provider_user_id` (the seat holder, the table's NOT NULL PK) in addition to `(source, day)`;
+re-emitting a snapshot day still changes no counts. See known-issue #5 for the coordinated
+change this requires on the usage-side normalizer.
+
 
 
 ## Verification
@@ -258,8 +272,10 @@ relevant organization role access", so the App-token path is the one in producti
 ## Known issues and follow-ups (from review of the OTLP day-grain emit)
 
 Items raised by the review of the OTLP day-grain emit work (the `Sink`/`emit.rs`/`metrics.rs`
-path and the RFC-0001 encoding contract it pins) that remain **open**. Tracked here so a
-reader of this contract doc sees them without going back to the PR thread.
+path and the RFC-0001 encoding contract it pins). Tracked here so a reader of this contract doc
+sees them without going back to the PR thread. Status reflects the governance-side mitigation
+landed in the emit work; the **coordinated `lightbridge-authz` normalizer changes remain the
+cross-repo prerequisite for cutover** and are called out per item.
 
 1. **`user-teams-1-day` `subject_id` is not unique per record (P1).** `subject_id` is set to
    `user_id`, but the usage-side natural-key upsert is keyed on
@@ -267,13 +283,18 @@ reader of this contract doc sees them without going back to the PR thread.
    more than one team produces two records on the same day with the same key, which collide
    and merge on the pinned key -- one membership is silently lost. Fixing this changes the
    pinned key and therefore requires a coordinated change on the usage-side normalizer in
-   `lightbridge-authz`; it cannot be done safely on the governance side alone. **Do not cut
-   over the day-grain emit until this is resolved for multi-team orgs.**
+   `lightbridge-authz`; it cannot be done safely on the governance side alone.
+   **Governance-side mitigation (landed):** the emitter now **skips `user-teams-1-day`
+   entirely** -- the authz-side receiver refuses it (lightbridge-authz#751), so emitting it
+   would be rejected and break the cutover count assertions. The report's rows are still
+   written to Postgres in shadow mode; they are simply not emitted as OTLP until the key is
+   fixed. **Do not cut over the day-grain emit for multi-team orgs until the normalizer key is
+   fixed.**
 
-2. **No test constructs a `Sink` (P2).** The `Sink::emit_rows` path is never exercised by a
-   test, so the emit path (encode -> OTLP -> stats accounting) is uncovered. `emit_rows`
-   performs a real network push via `emit`, so a unit test needs a fake/in-memory collector
-   endpoint before the accepted/rejected accounting can be asserted.
+2. **No test constructs a `Sink` (P2) — resolved.** The `Sink::emit_rows` path is now
+   exercised by unit tests in `emit/mod.rs` using `opentelemetry_sdk::logs::InMemoryLogExporter`
+   (accepted/rejected accounting, org-cost aggregation, and the collision guard), so the emit
+   path (encode -> OTLP -> stats accounting) is covered without a network.
 
 3. **`user-teams` aside, a day whose emit fails inside a gap-fill is never re-emitted (P3).**
    In `ingest_day`, `sync_day` (rows + manifest `status="ok"`) runs before the emit block, so
@@ -281,13 +302,18 @@ reader of this contract doc sees them without going back to the PR thread.
    `backfill_window`'s trailing lookback re-covers the recent days, so a recent failure
    self-heals, but a day in the middle of a cold-start backfill (wider than the lookback)
    falls outside it, and `Replay` is not given a sink, so no command re-emits it. Mitigated
-   while Postgres remains authoritative (until the cutover).
+   while Postgres remains authoritative (until the cutover). **Under the freeze (the cutover
+   path) this is further mitigated by the F1 fix: no manifest is written during a freeze, so
+   the high-water mark never advances and a failed day stays inside the next run's window and
+   is re-attempted.** Still open in shadow mode.
 
-4. **loc-gate is red (P2).** The `loc-gate` check exceeds several LoC ceilings at this head:
-   `emit.rs` (637 > 200), `main.rs` (346 > 328), `metrics.rs` (608 > 499),
+4. **loc-gate is red (P2) — resolved.** The `loc-gate` check exceeded several LoC ceilings at
+   this head: `emit.rs` (637 > 200), `main.rs` (346 > 328), `metrics.rs` (608 > 499),
    `sync/operators.rs` (222 > 200), and `crates/governance-copilot/src/sync.rs` (280 > 246).
-   This needs a deliberate decision (further splitting vs. a reviewed ceiling adjustment),
-   not an automatic baseline bump.
+   The over-ceiling files were split into focused submodules, each under the 200-LoC ceiling:
+   `emit/` (mod + helpers + tests), `sync/backfill/` (mod + window + outcome + ingest + tests),
+   `sync/cutover/` (mod + export + verify + decommission + tests), `sync/operators/` (mod +
+   replay), and `crates/governance-copilot/src/sync/` (mod + day + seats). The gate now passes.
 
 5. **`billing-seats` `subject_kind`/`subject_id` were pinned to a vocabulary the usage store
    rejects (P1).** The encoding previously stamped `subject_kind="seat"` and
@@ -297,11 +323,32 @@ reader of this contract doc sees them without going back to the PR thread.
    column. The encoding is now `subject_kind=org`, `subject_id=org`, with the seat holder in a
    dedicated `provider_user_id` attribute. This is a coordinated change with the usage-side
    normalizer in `lightbridge-authz` (it must map `provider_user_id` onto the seat-snapshot
-   PK); it cannot be cut over until that side accepts the corrected encoding. **Do not cut over
-   the day-grain emit until this is resolved.**
+   PK); it cannot be cut over until that side accepts the corrected encoding.
+   **Governance-side mitigation (landed):** the collision guard keys seat records on
+   `(day, provider_user_id)` (the table's PK), so a duplicate seat holder in one snapshot is
+   refused under the freeze rather than silently merged. **Do not cut over the day-grain emit
+   until the normalizer accepts the corrected encoding.**
+
+6. **Freeze must not write to the governance telemetry tables (F1) — resolved.** Under
+   `CUTOVER_FREEZE_WRITES` the emitter is the only write path. Two guards enforce this:
+   (a) the empty-report branch in `governance-copilot::sync::ingest_one` no longer writes an
+   `ingest_manifests` row during a freeze (previously it advanced the high-water mark for empty
+   days while non-empty days left none, splitting the watermark); and (b) `export-counts` /
+   `verify-counts` / `decommission` refuse to run while the freeze is on, because
+   `ingest_manifests` is frozen and verification against it would report a false green. Run
+   those operators **before** enabling the freeze.
+
+7. **Count-assertion export shape (aligned with lightbridge-authz#751) — resolved.** The
+   `export-counts` output is the authz `verify-counts` CLI's `VerifyManifest` shape:
+   `day_facts` (the three day-fact reports), `seat_snapshots` (`billing-seats` per-day), and
+   top-level `executions`/`model_calls`/`tool_calls`. `user-teams-1-day` is excluded from the
+   export because the authz receiver refuses it (known-issue #1) and it is therefore not present
+   in the usage store -- asserting it would always mismatch and block the cutover.
 
 ## Decisions produced
 
 - [ADR-0002](../adr/0002-postgres-is-the-system-of-record-not-parquet-on-s3.md)
 - [ADR-0003](../adr/0003-grafana-reads-postgres-directly.md)
 - [ADR-0007](../adr/0007-api-owns-connector-metrics-no-cache-service.md)
+- [ADR-0008](../adr/0008-money-is-integer-micro-usd.md) (money as integer micro-USD in the OTLP contract)
+- [ADR-0014](../adr/0014-usage-telemetry-consolidates-into-the-authz-usage-store.md) (the OTLP day-grain emit is the ADR-0014 Decision 2 sink)

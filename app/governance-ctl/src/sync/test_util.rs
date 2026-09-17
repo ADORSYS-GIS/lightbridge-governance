@@ -69,5 +69,6 @@ pub fn test_config(tenant_id: String, org: String, archive_dir: std::path::PathB
         archive: Archive::Local { dir: archive_dir },
         lookback_days: 1,
         max_backfill_days: 1,
+        freeze_writes: false,
     }
 }

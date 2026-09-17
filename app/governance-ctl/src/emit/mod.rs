@@ -3,46 +3,58 @@
 //! `governance-ctl` emits day-grain facts and seat snapshots as **OTLP log
 //! records** through the authenticated edge OTEL collector, where the
 //! usage-side day-grain normalizer in `lightbridge-authz` reads them into the
-//! generalized `usage_day_facts` / `usage_seat_snapshots` tables.
-//!
-//! The encoding is a **contract** with that normalizer (RFC-0001 "OTLP
-//! day-grain encoding contract"): one log record per (report, subject), typed
-//! attributes, money as integer micro-USD (ADR-0008). This module is the
-//! governance-side half of that contract.
+//! generalized `usage_day_facts` / `usage_seat_snapshots` tables. The encoding
+//! is a **contract** with that normalizer: one log record per (report,
+//! subject), typed attributes, money as integer micro-USD (ADR-0008).
 //!
 //! Encoding is split from emission so it is unit-testable without a network:
-//! [`encode::LogRecordData`] is a pure, transport-agnostic representation
-//! (body + typed attributes); [`emit`] turns those into OTLP log records over
-//! the collector. The round-trip tests assert the encoding matches the
-//! documented contract exactly.
+//! [`encode::LogRecordData`] is a pure, transport-agnostic representation;
+//! [`Sink`] turns those into OTLP log records over the collector. The pure
+//! helpers (per-report encoding dispatch, org-cost aggregation, collision
+//! guard) live in `helpers`.
+//!
+//! # Accounting semantics (AC 7)
+//!
+//! [`Sink::emit_rows`] counts a batch's records as **accepted** only when the
+//! underlying OTLP export succeeds, and as **rejected** when it fails. This is
+//! a *batch-level* signal: the OpenTelemetry SDK does not expose per-record
+//! accept/reject through the high-level log API, so a partial accept within a
+//! single export is indistinguishable from a full accept at this layer -- the
+//! caller should treat a non-zero `rejected` as the hard signal.
 
 mod encode;
+mod helpers;
+#[cfg(test)]
+mod tests;
 
-use anyhow::Result;
-pub use encode::{
-    AttributeValue, LogRecordData, encode_org_daily, encode_repo_daily, encode_seat,
-    encode_user_daily, encode_user_team,
-};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Result, anyhow};
+use encode::AttributeValue;
+use governance_copilot::ParsedRows;
+use helpers::{aggregate_org_cost, detect_collisions, encode_report};
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, LoggerProvider};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
+use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLogger, SdkLoggerProvider};
 
 /// The OTLP day-grain sink: encodes normalized rows and emits them as OTLP
 /// log records through the authenticated edge collector.
 ///
-/// Config-gated -- constructed from `OTEL_EXPORTER_OTLP_ENDPOINT` (the same
-/// env var `metrics.rs` uses for the operational gauges). The direct-Postgres
-/// write path stays active until the cutover (lightbridge-authz#588); this
-/// sink is the ADR-0014 replacement, ready to be switched over.
+/// Config-gated -- constructed from `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+/// (falling back to `OTEL_EXPORTER_OTLP_ENDPOINT`). The direct-Postgres write
+/// path stays active until the cutover (lightbridge-authz#588); this sink is
+/// the ADR-0014 replacement, ready to be switched over.
 ///
-/// The sink tracks per-report accepted counts and a rejected count (AC 7) so
-/// the caller can surface a partial accept as an error metric rather than
-/// swallowing it. `emit_rows` records a report's records as accepted only if
-/// the export succeeds; a failed export counts them as rejected.
+/// The sink owns a single [`SdkLoggerProvider`] built once at construction and
+/// reuses it across every `emit_rows` call (rebuilding an exporter/provider
+/// per call would open a fresh gRPC connection for each). The provider is
+/// force-flushed after each batch so a failed export surfaces to the caller
+/// and is counted as rejected (AC 7).
 #[derive(Clone)]
 pub struct Sink {
-    endpoint: String,
-    stats: std::sync::Arc<std::sync::Mutex<EmitStats>>,
+    logger: SdkLogger,
+    provider: SdkLoggerProvider,
+    stats: Arc<Mutex<EmitStats>>,
 }
 
 #[derive(Default)]
@@ -52,16 +64,55 @@ struct EmitStats {
 }
 
 impl Sink {
-    /// Build from `OTEL_EXPORTER_OTLP_ENDPOINT`. `None` when unset/empty --
-    /// the sink is then simply not used (the Postgres path remains).
-    pub fn from_env() -> Option<Sink> {
-        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+    /// Build from `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, falling back to
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`. `Ok(None)` when neither is set/empty
+    /// (the Postgres path remains); a configured-but-unbuildable endpoint is
+    /// an `Err` (fail loudly rather than silently disable the write path).
+    pub fn from_env() -> Result<Option<Sink>> {
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
             .ok()
-            .filter(|e| !e.is_empty())?;
-        Some(Sink {
-            endpoint,
-            stats: std::sync::Arc::default(),
+            .filter(|e| !e.is_empty())
+            .or_else(|| {
+                std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                    .ok()
+                    .filter(|e| !e.is_empty())
+            });
+        let Some(endpoint) = endpoint else {
+            return Ok(None);
+        };
+        Ok(Some(Self::new(endpoint)?))
+    }
+
+    /// Build a sink over a real OTLP endpoint; the exporter/provider are
+    /// constructed once here and reused for the lifetime of the sink.
+    fn new(endpoint: String) -> Result<Sink> {
+        let exporter = opentelemetry_otlp::LogExporter::builder()
+            .with_tonic()
+            .with_endpoint(&endpoint)
+            .build()
+            .map_err(|e| anyhow!("otlp log exporter: {e}"))?;
+        let processor = BatchLogProcessor::builder(exporter).build();
+        let provider = SdkLoggerProvider::builder()
+            .with_log_processor(processor)
+            .build();
+        let logger = provider.logger("governance_copilot");
+        Ok(Sink {
+            logger,
+            provider,
+            stats: Arc::default(),
         })
+    }
+
+    /// Build a sink over an injected provider (tests use an in-memory
+    /// exporter). Test-only: unreachable from any production build.
+    #[cfg(test)]
+    fn from_provider(provider: SdkLoggerProvider) -> Sink {
+        let logger = provider.logger("governance_copilot_test");
+        Sink {
+            logger,
+            provider,
+            stats: Arc::default(),
+        }
     }
 
     /// Accepted records by report, and the total rejected count, since this
@@ -71,100 +122,76 @@ impl Sink {
         (stats.accepted_by_report.clone(), stats.rejected)
     }
 
-    /// Encode `rows` and emit them as OTLP log records. Returns the number of
-    /// records emitted. A failed export surfaces as `Err` (the caller decides
-    /// whether to treat it as a run failure); it is never swallowed here, and
-    /// the records are counted as rejected for the AC 7 metric.
+    /// Encode `rows` (all report kinds for one day) and emit them as OTLP log
+    /// records. Returns the number of records emitted. A failed export
+    /// surfaces as `Err` (never swallowed) and the records are counted as
+    /// rejected for the AC 7 metric.
+    ///
+    /// `strict` is the cutover switch (`cfg.freeze_writes`): a natural-key
+    /// collision within the batch (RFC-0001 known-issues #1/#5) fails the emit
+    /// loudly when `true`, and is logged as a warning when `false` (shadow
+    /// mode, Postgres still authoritative).
     pub async fn emit_rows(
         &self,
         tenant_id: &str,
         org: &str,
-        rows: &governance_copilot::ParsedRows,
+        rows: &[ParsedRows],
+        strict: bool,
     ) -> Result<usize> {
-        let (report, records): (String, Vec<LogRecordData>) = match rows {
-            governance_copilot::ParsedRows::Org(rs) => (
-                "organization-1-day".to_owned(),
-                rs.iter()
-                    .map(|r| encode_org_daily(tenant_id, org, r))
-                    .collect(),
-            ),
-            governance_copilot::ParsedRows::User(rs) => (
-                "users-1-day".to_owned(),
-                rs.iter()
-                    .map(|r| encode_user_daily(tenant_id, org, r))
-                    .collect(),
-            ),
-            governance_copilot::ParsedRows::Repo(rs) => (
-                "repos-1-day".to_owned(),
-                rs.iter()
-                    .map(|r| encode_repo_daily(tenant_id, org, r))
-                    .collect(),
-            ),
-            governance_copilot::ParsedRows::UserTeam(rs) => (
-                "user-teams-1-day".to_owned(),
-                rs.iter()
-                    .map(|r| encode_user_team(tenant_id, org, r))
-                    .collect(),
-            ),
-            governance_copilot::ParsedRows::Seat(rs) => (
-                "billing-seats".to_owned(),
-                rs.iter().map(|r| encode_seat(tenant_id, org, r)).collect(),
-            ),
-        };
-        let n = records.len() as u64;
-        match emit(&records, &self.endpoint).await {
+        // The org report carries no cost (GitHub reports credits/cost per-user
+        // only), so the org-level spend is aggregated from the day's user rows.
+        let (org_credits, org_cost) = aggregate_org_cost(rows);
+
+        let mut records = Vec::new();
+        let mut per_report: Vec<(String, u64)> = Vec::new();
+        for parsed in rows {
+            // `user-teams-1-day` is not cut over: the authz-side receiver
+            // refuses it (RFC-0001 known-issue #1), so it is skipped here.
+            if matches!(parsed, ParsedRows::UserTeam(_)) {
+                tracing::warn!(
+                    "user-teams-1-day is not cut over (RFC-0001 known-issue #1); \
+                     the authz-side receiver refuses it, skipping its OTLP emission"
+                );
+                continue;
+            }
+            let (report, recs) = encode_report(tenant_id, org, parsed, org_credits, org_cost)?;
+            per_report.push((report, recs.len() as u64));
+            records.extend(recs);
+        }
+
+        // Refuse (or warn) on natural-key collisions so a lost record is loud.
+        detect_collisions(&records, strict)?;
+
+        let total = records.len() as u64;
+        for r in &records {
+            let mut record = self.logger.create_log_record();
+            record.set_body(AnyValue::from(r.body.clone()));
+            record.set_severity_text("INFO");
+            for (k, v) in &r.attributes {
+                match v {
+                    AttributeValue::Str(s) => record.add_attribute(k.clone(), s.clone()),
+                    AttributeValue::Int(i) => record.add_attribute(k.clone(), *i),
+                }
+            }
+            self.logger.emit(record);
+        }
+
+        match self.provider.force_flush() {
             Ok(()) => {
                 self.stats
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .accepted_by_report
-                    .push((report, n));
-                Ok(n as usize)
+                    .extend(per_report);
+                Ok(total as usize)
             }
             Err(e) => {
                 self.stats
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .rejected += n;
-                Err(e)
+                    .rejected += total;
+                Err(anyhow!("otlp log flush: {e}"))
             }
         }
     }
-}
-
-/// Emit `records` as OTLP log records through the collector at `endpoint`.
-///
-/// A failed push is surfaced to the caller (the run decides whether to treat
-/// it as a failure); it is not swallowed here. The caller is responsible for
-/// the partial-accept accounting (AC 7) -- this function reports the raw
-/// export result.
-pub async fn emit(records: &[LogRecordData], endpoint: &str) -> Result<()> {
-    let exporter = opentelemetry_otlp::LogExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint)
-        .build()
-        .map_err(|e| anyhow::anyhow!("otlp log exporter: {e}"))?;
-    let processor = BatchLogProcessor::builder(exporter).build();
-    let provider = SdkLoggerProvider::builder()
-        .with_log_processor(processor)
-        .build();
-    let logger = provider.logger("governance_copilot");
-
-    for r in records {
-        let mut record = logger.create_log_record();
-        record.set_body(AnyValue::from(r.body.clone()));
-        record.set_severity_text("INFO");
-        for (k, v) in &r.attributes {
-            match v {
-                AttributeValue::Str(s) => record.add_attribute(k.clone(), s.clone()),
-                AttributeValue::Int(i) => record.add_attribute(k.clone(), *i),
-            }
-        }
-        logger.emit(record);
-    }
-
-    provider
-        .force_flush()
-        .map_err(|e| anyhow::anyhow!("otlp log flush: {e}"))?;
-    Ok(())
 }
