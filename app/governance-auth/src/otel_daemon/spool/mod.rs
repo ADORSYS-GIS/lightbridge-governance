@@ -151,7 +151,7 @@ impl DurableSpool {
     /// location. Never fails on a missing spool or checkpoint -- only an
     /// unreadable one, fatal by design (see [`crate::durable_state`]).
     pub fn open() -> Result<Self> {
-        let dir = crate::cache::state_dir()?;
+        let dir = crate::paths::state_dir()?;
         Self::at(dir.join(FILE_NAME), checkpoint::path(&dir))
     }
 

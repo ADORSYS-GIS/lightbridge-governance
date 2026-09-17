@@ -21,7 +21,6 @@
 use std::path::PathBuf;
 
 use super::{checkpoint, spool};
-use crate::cache;
 
 pub struct DaemonSpoolStatus {
     pub path: PathBuf,
@@ -56,7 +55,7 @@ impl DaemonSpoolStatus {
     /// which case `status` shows no row rather than one full of guesses,
     /// mirroring `copilot::status::SpoolStatus::survey`.
     pub fn survey() -> Option<Self> {
-        let state_dir = cache::state_dir().ok()?;
+        let state_dir = crate::paths::state_dir().ok()?;
         let path = state_dir.join(spool::FILE_NAME);
         let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
 

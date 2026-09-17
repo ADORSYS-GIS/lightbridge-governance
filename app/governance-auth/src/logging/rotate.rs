@@ -56,7 +56,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::cache::{FileLock, state_dir};
+use crate::{file_lock::FileLock, paths::state_dir};
 
 /// Rotate once the live file passes this. 1 MiB is ~10k events, comfortably
 /// more than any one debugging session needs to look back over.

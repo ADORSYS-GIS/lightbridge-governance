@@ -33,10 +33,11 @@ pub use refresh::run as refresh;
 use telemetry_wiring::TelemetryWiring;
 
 use crate::{
-    cache::{self, CachedSession, FileLock},
+    cache::{self, CachedSession},
     cli,
     config::OauthConfig,
     config_file, config_persist,
+    file_lock::FileLock,
     freshness::Freshness,
     optout::ClientOptOut,
     otel,
@@ -63,10 +64,9 @@ pub async fn login(
     eprintln!("Logged in; session cached, expires in {expires_in}s.");
 
     // Remember what worked, so `token`/`status`/`logout` stop demanding
-    // `--issuer`/`--client-id` that this command has just proved. Same
-    // non-fatal posture as `apply_telemetry` below and for the same reason:
-    // the credential is already cached and usable, so a read-only config
-    // directory must not turn a successful login into a failed command.
+    // `--issuer`/`--client-id` that this command proved. Same non-fatal
+    // posture as `apply_telemetry` below: credential is already cached,
+    // so a read-only config dir must not turn login into a failed command.
     remember_settings(config, optout);
 
     // Deliberately not `?`: the session is already cached and valid by this

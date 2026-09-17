@@ -134,6 +134,6 @@ pub async fn run(http: &reqwest::Client, config: &OauthConfig, dry_run: bool) ->
 pub fn resolve_spool_path(config: &OauthConfig) -> Result<PathBuf> {
     match &config.copilot_spool_path {
         Some(path) => Ok(PathBuf::from(path)),
-        None => Ok(crate::cache::state_dir()?.join(spool::DEFAULT_FILE_NAME)),
+        None => Ok(crate::paths::state_dir()?.join(spool::DEFAULT_FILE_NAME)),
     }
 }

@@ -14,7 +14,7 @@
 //!
 //! ## Why not the session lock
 //!
-//! [`crate::cache::FileLock`] already guards the session file, and
+//! [`crate::file_lock::FileLock`] already guards the session file, and
 //! `oauth::current_session` takes it -- but drops it on return, long before
 //! the spool is opened. It is also keyed on issuer/client, and the spool
 //! belongs to the machine's VS Code install rather than to whichever identity
@@ -26,7 +26,7 @@ use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 
-use crate::cache::FileLock;
+use crate::file_lock::FileLock;
 
 /// Sits beside `copilot-push.json`, named after it for the same reason it is:
 /// the thing being guarded is the spool's progress, not a session.
