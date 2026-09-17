@@ -40,7 +40,7 @@
   "crates/governance-core/src/connector_metrics.rs": 294,
   "crates/governance-core/src/credential.rs": 288,
   "crates/governance-core/src/identity.rs": 390,
-  "crates/governance-core/src/ingest.rs": 1278,
+  "crates/governance-core/src/ingest/tests.rs": 910,
   "crates/governance-core/src/migrate.rs": 241,
   "crates/governance-core/src/org_kpis.rs": 504,
   "crates/governance-core/tests/migrate_and_create.rs": 1613,

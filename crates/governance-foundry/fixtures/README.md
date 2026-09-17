@@ -63,7 +63,7 @@ connector already claims to handle:
 | `valid` | happy path: one execution, one priced model call, one tool call |
 | `absent_user_email` | no `user.email` on the resource -> `user_email: null`, not a rejection |
 | `missing_token_counts` | no token-count attributes -> `input_tokens`/`output_tokens: null` (unknown cost), never a fabricated `0` (story #31 AC6) |
-| `unknown_model` | `model.name` names a model with no pricing row anywhere -> the normalizer passes the string through unmodified; it does not reject, substitute, or zero anything. The "unpriced, not zero" guarantee itself is `governance-core::calculate_model_cost`'s job, already covered by its own DB-gated test (`missing_pricing_is_stored_as_unknown_not_zero` in `crates/governance-core/src/ingest.rs`) -- this fixture only pins the normalizer's half |
+| `unknown_model` | `model.name` names a model with no pricing row anywhere -> the normalizer passes the string through unmodified; it does not reject, substitute, or zero anything. The "unpriced, not zero" guarantee itself is `governance-core::calculate_model_cost`'s job, already covered by its own DB-gated test (`missing_pricing_is_stored_as_unknown_not_zero` in `crates/governance-core/src/ingest/tests.rs`) -- this fixture only pins the normalizer's half |
 | `malformed_events` | `events` is a string, not an array -> rejects (`InvalidFieldType`), never silently treated as "zero tool calls" |
 | `end_before_start_timestamp` | `endTimeUnixNano < startTimeUnixNano` -> rejects (`InvalidDuration`), never a clamped/negative duration |
 
