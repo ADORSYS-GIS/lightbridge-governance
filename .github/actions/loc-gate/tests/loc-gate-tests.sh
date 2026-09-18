@@ -159,6 +159,39 @@ commit_head
 run_gate
 check "normal-change-no-baseline-edit: gate exits zero" "0" "${RUN_EXIT}"
 
+# ================================================================= case 8
+# MALFORMED baseline at head (not JSON) → must FAIL even before the raise
+# decision: an unparseable baseline cannot be verified as unraised, and the
+# override label does not rescue it (fail-closed, exit-status keyed — the
+# earlier draft detected jq errors by message text, which missed failures
+# whose text did not match, silently passing a raise).
+echo 'NOT JSON AT ALL' >"${REPO}/.github/loc-baseline.json"
+commit_head
+run_gate
+check "malformed-baseline-head: gate exits nonzero" "1" "${RUN_EXIT}"
+output_contains "malformed-baseline-head: states fail-closed refusal" "Fail-closed"
+
+run_gate "loc-baseline-raise"
+check "malformed-baseline-head: label does NOT rescue an unparseable baseline" "1" "${RUN_EXIT}"
+
+rm -rf "${REPO}"; REPO="$(mktemp -d "${TMPDIR:-/tmp}/loc-gate-XXXXXX")"
+new_repo "${REPO}"
+echo '{"crates/demo/lib.rs": 50}' >"${REPO}/.github/loc-baseline.json"
+commit_base
+echo '{"crates/demo/lib.rs": 70}' >"${REPO}/.github/loc-baseline.json"
+commit_head
+
+# ================================================================= case 9
+# Label look-alikes must NOT unlock the override: the list is a comma-joined
+# exact match, so names containing loc-baseline-raise as one space-delimited
+# word or as a suffix/prefix are not the label.
+run_gate "wip loc-baseline-raise"
+check "look-alike-with-space: raise still fails" "1" "${RUN_EXIT}"
+run_gate "pending-loc-baseline-raise"
+check "look-alike-suffix: raise still fails" "1" "${RUN_EXIT}"
+run_gate "loc-baseline-raise-X"
+check "look-alike-prefixed: raise still fails" "1" "${RUN_EXIT}"
+
 rm -rf "${REPO}"
 
 echo
