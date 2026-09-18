@@ -20,8 +20,8 @@ pub async fn verify_archive_counts(
     cfg: &Config,
 ) -> Result<Vec<CountMismatch>> {
     refuse_during_freeze(cfg)?;
-    let manifests: Vec<(chrono::NaiveDate, String, i64)> = cratestack::sqlx::query_as(
-        "SELECT report_day::date, report_type, record_count \
+    let manifests: Vec<(chrono::NaiveDate, String, String, i64)> = cratestack::sqlx::query_as(
+        "SELECT report_day::date, report_type, status, record_count \
          FROM ingest_manifests \
          WHERE tenant_id = $1 AND provider = $2 AND scope_id = $3 \
          ORDER BY report_day ASC, report_type ASC",
@@ -34,14 +34,21 @@ pub async fn verify_archive_counts(
     .context("reading ingest_manifests for archive verification")?;
 
     let mut mismatches = Vec::new();
-    for (day, report, expected) in manifests {
+    for (day, report, status, expected) in manifests {
         let ds = day.to_string();
 
-        // A zero-count manifest row is an empty day (GitHub HTTP 204): the
-        // report had no rows, so `ingest_one` recorded a manifest but wrote no
-        // archive. There is nothing to parse back, so there is nothing to
+        // An `empty` manifest row is GitHub's HTTP 204 ("not published yet"):
+        // the report had no rows, so `ingest_one` recorded a manifest but wrote
+        // no archive. There is nothing to parse back, so there is nothing to
         // verify -- skipping avoids a spurious mismatch on every empty day.
-        if expected == 0 {
+        //
+        // Gate on `status`, not on `record_count == 0`: a zero-count row is not
+        // necessarily empty. `billing-seats` always upserts `status = "ok"` and
+        // archives a real `.json` document even for a zero-seat org, and the
+        // four day reports can legitimately be `"ok"` with zero rows. Skipping
+        // on the count would silently never verify those rows -- defeating the
+        // no-loss bar for exactly the row class it exists to protect.
+        if status == "empty" {
             continue;
         }
 

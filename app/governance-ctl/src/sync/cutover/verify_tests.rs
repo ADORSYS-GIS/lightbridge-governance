@@ -136,6 +136,51 @@ async fn verify_archive_counts_reads_the_seats_json_key() {
     );
 }
 
+/// A zero-count `ok` manifest is NOT an empty day: `billing-seats` always
+/// upserts `status = "ok"` and archives a real `.json` document even for a
+/// zero-seat org, and the four day reports can be `"ok"` with zero rows. The
+/// skip must gate on `status == "empty"`, not on `record_count == 0`, or these
+/// rows are silently never verified and the no-loss bar is defeated.
+#[tokio::test]
+async fn verify_archive_counts_does_not_skip_zero_count_ok_manifests() {
+    let Some(pool) = db_pool().await else { return };
+    let tenant_id = format!("it-cutover-verify-okzero-{}", std::process::id());
+    let org = "it-cutover-verify-okzero-org";
+    let cfg = test_config(
+        tenant_id.clone(),
+        org.to_owned(),
+        tmp_archive_dir("cutover-verify-okzero"),
+    );
+
+    let day = "2026-08-01";
+    // A manifest claims 0 rows with status "ok" -- a real write with no rows,
+    // which should still have an archived document to verify against.
+    governance_copilot::upsert_manifest(
+        &pool,
+        &tenant_id,
+        "github_copilot",
+        org,
+        "users-1-day",
+        day,
+        "ok",
+        0,
+    )
+    .await
+    .unwrap();
+
+    // Nothing is archived: this must be reported as a mismatch, not skipped.
+    let mismatches = verify_archive_counts(&pool, &cfg).await.unwrap();
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "a zero-count ok row must still be verified"
+    );
+    assert_eq!(mismatches[0].day, day);
+    assert_eq!(mismatches[0].report, "users-1-day");
+    assert_eq!(mismatches[0].expected, 0);
+    assert_eq!(mismatches[0].actual, 0);
+}
+
 /// An empty day (GitHub HTTP 204) records a zero-count manifest but writes no
 /// archive. `verify_archive_counts` must not report those as mismatches --
 /// there is nothing archived to verify against.
