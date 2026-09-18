@@ -12,6 +12,7 @@
 
 mod backfill;
 mod config;
+mod cutover;
 mod operators;
 #[cfg(test)]
 mod operators_tests;
@@ -20,4 +21,5 @@ mod test_util;
 
 pub use backfill::run_backfill;
 pub use config::Config;
+pub use cutover::{decommission, export_counts, verify_archive_counts};
 pub use operators::{SyncStatus, run_replay, run_status, run_sync_day, run_verify};

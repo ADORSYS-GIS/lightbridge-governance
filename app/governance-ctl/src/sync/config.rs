@@ -54,6 +54,15 @@ pub struct Config {
     /// stale or absent (`COPILOT_MAX_BACKFILL_DAYS`, default
     /// [`DEFAULT_MAX_BACKFILL_DAYS`]).
     pub max_backfill_days: i64,
+    /// ADR-0014 cutover switch (`CUTOVER_FREEZE_WRITES`, default `false`).
+    /// When `true`, the direct-Postgres write path is frozen: `sync`/`replay`
+    /// emit day-grain facts and seat snapshots as OTLP log records through the
+    /// usage ingest sink as the ONLY write path, and never write to the
+    /// governance telemetry tables. Requires an OTLP sink
+    /// (`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, falling back to
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`); a freeze with no sink fails loudly
+    /// rather than silently writing nothing.
+    pub freeze_writes: bool,
 }
 
 impl Config {
@@ -110,7 +119,21 @@ impl Config {
                 "COPILOT_MAX_BACKFILL_DAYS",
                 DEFAULT_MAX_BACKFILL_DAYS,
             ),
+            freeze_writes: env_bool("CUTOVER_FREEZE_WRITES"),
         })
+    }
+}
+
+/// Read a boolean env var, defaulting to `false` when absent or unparseable.
+/// Used for the ADR-0014 cutover switch: a malformed value must degrade to the
+/// safe (pre-cutover) default, never crash the CronJob at startup.
+fn env_bool(key: &str) -> bool {
+    match std::env::var(key) {
+        Err(_) => false,
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
     }
 }
 

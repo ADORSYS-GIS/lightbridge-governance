@@ -62,6 +62,31 @@ enum Command {
     },
     /// Reconcile stored row counts against the manifests and report drift.
     Verify,
+    /// Export the expected counts from `ingest_manifests` (plus per-table
+    /// telemetry counts) as JSON -- the export the authz-side `verify-counts`
+    /// CLI consumes (ADR-0014 cutover, lightbridge-authz#588).
+    ExportCounts,
+    /// Governance-side no-loss bar: verify the S3 raw archive is complete
+    /// against `ingest_manifests` by parsing each archived (day, report) back
+    /// and comparing counts. Exits non-zero on any mismatch so the cutover
+    /// blocks loudly (no tables dropped).
+    VerifyCounts,
+    /// Drop the governance telemetry tables after counts are asserted
+    /// (ADR-0014 cutover). Requires `--confirm` and a clean
+    /// `verify-counts`; a count mismatch blocks the drop.
+    Decommission {
+        /// Acknowledge that dropping the telemetry tables is destructive and
+        /// coordinated with the authz-side count assertions.
+        #[arg(long)]
+        confirm: bool,
+        /// Also drop the SHARED telemetry tables
+        /// (`executions`/`model_calls`/`tool_calls`), which the Foundry and
+        /// redact connectors also write. Their no-loss bar is the authz-side
+        /// `verify-counts`, not the governance-side verify here, so this must
+        /// be an explicit flag -- never a default.
+        #[arg(long)]
+        include_shared_tables: bool,
+    },
     /// Report per-provider identity attribution (attributed/unattributed/
     /// mismatched) and fail if any provider has unattributed executions.
     VerifyAttribution,
@@ -109,7 +134,7 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let sink = emit::Sink::from_env();
+            let sink = emit::Sink::from_env()?;
             let result = sync::run_backfill(&client, &pool, &cfg, sink.as_ref()).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
                 metrics::push_run_metrics(
@@ -139,7 +164,7 @@ async fn main() -> Result<()> {
             let cfg = sync::Config::from_env().await?;
             let client = governance_copilot::GithubClient::for_github()?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let sink = emit::Sink::from_env();
+            let sink = emit::Sink::from_env()?;
             let outcomes = sync::run_sync_day(&client, &pool, &cfg, &day, sink.as_ref()).await?;
             if let Some(endpoint) = metrics::endpoint_from_env() {
                 metrics::push_run_metrics(&endpoint, "sync_day", &outcomes, 1).await;
@@ -154,7 +179,14 @@ async fn main() -> Result<()> {
         Command::Replay { from, to } => {
             let cfg = sync::Config::from_env().await?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            sync::run_replay(&pool, &cfg, &from, &to).await?;
+            let sink = emit::Sink::from_env()?;
+            sync::run_replay(&pool, &cfg, &from, &to, sink.as_ref()).await?;
+            if let Some(sink) = &sink {
+                let (accepted, rejected) = sink.stats();
+                if let Some(endpoint) = metrics::endpoint_from_env() {
+                    metrics::push_emit_metrics(&endpoint, &accepted, rejected).await;
+                }
+            }
         }
         Command::Verify => {
             let cfg = sync::Config::from_env().await?;
@@ -163,6 +195,43 @@ async fn main() -> Result<()> {
             if let Some(endpoint) = metrics::endpoint_from_env() {
                 metrics::push_verify_metrics(&endpoint, mismatch).await;
             }
+        }
+        Command::ExportCounts => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let export = sync::export_counts(&pool, &cfg).await?;
+            println!("{}", serde_json::to_string_pretty(&export)?);
+        }
+        Command::VerifyCounts => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let mismatches = sync::verify_archive_counts(&pool, &cfg).await?;
+            for m in &mismatches {
+                tracing::warn!(
+                    day = m.day,
+                    report = m.report,
+                    expected = m.expected,
+                    actual = m.actual,
+                    "archive/manifest count mismatch"
+                );
+            }
+            if !mismatches.is_empty() {
+                anyhow::bail!(
+                    "verify-counts: {} count mismatch(es) between the archive and \
+                     ingest_manifests; the cutover is blocked (no tables dropped)",
+                    mismatches.len()
+                );
+            }
+            tracing::info!("verify-counts: archive matches ingest_manifests; cutover may proceed");
+        }
+        Command::Decommission {
+            confirm,
+            include_shared_tables,
+        } => {
+            let cfg = sync::Config::from_env().await?;
+            let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
+            let dropped = sync::decommission(&pool, &cfg, confirm, include_shared_tables).await?;
+            tracing::info!(tables = ?dropped, "governance telemetry tables dropped");
         }
         Command::VerifyAttribution => {
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;

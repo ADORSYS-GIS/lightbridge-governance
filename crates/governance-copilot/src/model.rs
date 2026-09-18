@@ -177,6 +177,13 @@ impl ReportEnvelope {
 }
 
 /// A normalized row for `copilot_org_dailys`.
+///
+/// `ai_credits` and `net_cost_micro_usd` are **always zero by construction**:
+/// GitHub's org report carries no cost/credits (those are user-level only), so
+/// `parse_org_daily` hard-codes them to 0. The org-level spend is aggregated
+/// from the day's `users-1-day` rows and passed to the OTLP encoder explicitly
+/// (see `app/governance-ctl/src/emit/encode/daily.rs` and RFC-0001 known-issue
+/// #8). Do not read these fields as the org's spend -- they are dead by design.
 #[derive(Debug, Clone)]
 pub struct OrgDaily {
     pub organization_id: String,

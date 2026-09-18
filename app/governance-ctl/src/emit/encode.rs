@@ -12,6 +12,7 @@ mod tests;
 #[cfg(test)]
 mod tests_teams_seats;
 
+use anyhow::{Result, anyhow};
 pub use daily::{encode_org_daily, encode_repo_daily, encode_user_daily};
 pub use seats::encode_seat;
 pub use teams::encode_user_team;
@@ -20,10 +21,23 @@ pub use teams::encode_user_team;
 /// RFC-0001 contract). The usage-side normalizer keys on this.
 pub const SOURCE: &str = "github-copilot";
 
+/// Convert a `u64` count to the contract's `i64` "int" attribute type,
+/// refusing (rather than silently wrapping) if it ever exceeds `i64::MAX`.
+///
+/// Counts from GitHub are `u64`; the OTLP contract pins them as `i64`, and a
+/// bare `as i64` cast would wrap a value past `i64::MAX` into a negative --
+/// emitting a corrupt count into a load-bearing contract. Realistic values are
+/// far below the bound, so this only fires on a genuinely impossible input,
+/// and when it does it fails loudly instead of corrupting the record.
+fn checked_i64(v: u64) -> Result<i64> {
+    i64::try_from(v)
+        .map_err(|_| anyhow!("count {v} exceeds i64 range; refusing to emit a wrapped value"))
+}
+
 /// A pure, transport-agnostic log record: a human-readable body plus typed
-/// attributes. Encoding produces these; [`crate::emit::emit`] turns them into
-/// OTLP log records. Kept separate so the encoding is testable without any
-/// network or OTLP SDK machinery.
+/// attributes. Encoding produces these; [`crate::emit::Sink::emit_rows`] turns
+/// them into OTLP log records. Kept separate so the encoding is testable
+/// without any network or OTLP SDK machinery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRecordData {
     pub body: String,
