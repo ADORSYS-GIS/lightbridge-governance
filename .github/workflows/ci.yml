@@ -58,11 +58,14 @@ jobs:
       - run: cargo +nightly fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Blocks new or changed Rust files over 200 LoC (ADORSYS-GIS/lightbridge-governance#172).
-  # Diff-scoped: only files this change actually touched are measured, and files
-  # already over the ceiling are grandfathered against .github/loc-baseline.json —
-  # they may be touched but must not grow. Runs in parallel with the other checks
-  # so a size violation fails fast without waiting on the full build.
+  # Blocks new or changed Rust files over 200 LoC (ADORSYS-GIS/lightbridge-governance#172)
+  # and forbids the grandfather baseline itself from rising in the same change
+  # (see .github/actions/loc-gate/loc-gate.sh's header) unless the PR carries
+  # `loc-baseline-raise`. Diff-scoped: only files this change actually touched
+  # are measured, and files already over the ceiling are grandfathered against
+  # .github/loc-baseline.json — they may be touched but must not grow. Runs in
+  # parallel with the other checks so a size violation fails fast without
+  # waiting on the full build.
   loc-gate:
     runs-on: ubuntu-latest
     steps:
@@ -75,6 +78,18 @@ jobs:
         with:
           base-sha: ${{ github.event.pull_request.base.sha || github.event.before }}
           head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+
+  # The rails that keep the rails straight: runs the gate's own self-test suite
+  # (.github/actions/loc-gate/tests/) so a regression in loc-gate.sh itself —
+  # including one that makes the ratchet silently pass again — fails CI rather
+  # than shipping.
+  loc-gate-self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the LoC gate self-tests
+        run: bash .github/actions/loc-gate/tests/loc-gate-tests.sh
 
   # Every dashboard generator under scripts/ is committed-JSON-generates-a-
   # file, standard-library-only Python (see any of their own module
