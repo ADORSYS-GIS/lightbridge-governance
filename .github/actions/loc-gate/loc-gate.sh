@@ -8,6 +8,16 @@
 #
 # The gate is diff-scoped, never tree-wide: untouched legacy files never fail it,
 # and a one-line edit to a grandfathered file passes as long as it does not grow.
+#
+# Two independent guards:
+# 1. the per-file ceiling scan (below) — a measured file may not grow past its
+#    recorded ceiling;
+# 2. the baseline ratchet (ADORSYS-GIS/lightbridge-governance#344, ported with
+#    ADORSYS-GIS/lightbridge-governance#172's hole) — the baseline ITSELF may
+#    not rise in the same change unless the change carries an explicit
+#    `loc-baseline-raise` PR label. Regenerating the baseline to meet grown
+#    code closes nothing (lightbridge-governance's omel.rs walked 1522 -> 1837
+#    across four commits, one titled "chore(loc-gate): raise the baseline").
 set -euo pipefail
 
 BASE_SHA="${INPUT_BASE_SHA:?base-sha input is required}"
@@ -15,11 +25,27 @@ HEAD_SHA="${INPUT_HEAD_SHA:-${GITHUB_SHA:-}}"
 THRESHOLD="${INPUT_THRESHOLD:-200}"
 BASELINE_FILE="${INPUT_BASELINE_FILE:-.github/loc-baseline.json}"
 PATHS="${INPUT_PATHS:-crates app}"
+LABELS="${INPUT_LABELS:-}"
 
 if [[ -z "${HEAD_SHA}" ]]; then
   echo "::error::head-sha input is required (or GITHUB_SHA must be set)."
   exit 1
 fi
+
+# --- Override label (ADORSYS-GIS/lightbridge-governance#344) -------------------
+# A baseline raise is a deliberate decision, never a side effect: the PR must
+# carry the `loc-baseline-raise` label (maintainer approval of the change to
+# the baseline file is then enforced by CODEOWNERS review, not by this script —
+# GitHub does not expose who applied a label). Lowering entries stays
+# always-free and needs no label.
+OVERRIDE_LABEL="loc-baseline-raise"
+has_override_label() {
+  if [[ ",${LABELS// /,}," == *",${OVERRIDE_LABEL},"* ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
 
 # --- Load the grandfather baseline: path -> allowed line count ----------------
 declare -A BASELINE
@@ -46,10 +72,70 @@ in_paths() {
   return 1
 }
 
-# --- Diff-scoped scan ----------------------------------------------------------
+# --- Baseline ratchet (ADORSYS-GIS/lightbridge-governance#344) ------------------
+# Diff the committed baseline between base and head. A key whose value rises,
+# or a key that appears for the first time, is a raise: fail unless the change
+# carries the override label. Decreases and removals always pass — that is the
+# one direction a burn-down moves in.
+fail=0
+
+# Read the checked-in baseline at a SHA; a missing file is an empty baseline.
+baseline_at() {
+  if git cat-file -e "${1}:${BASELINE_FILE}" 2>/dev/null; then
+    git show "${1}:${BASELINE_FILE}"
+  else
+    echo "{}"
+  fi
+}
+
+base_baseline="$(baseline_at "${BASE_SHA}")"
+head_baseline="$(baseline_at "${HEAD_SHA}")"
+
+# Emits `RAISE\t<key>\t<base>\t<head>` for an existing key that went up and
+# `NEW\t<key>\t(null)\t<head>` for a first appearance.
+violations="$(jq -r --argjson b "${base_baseline}" --argjson h "${head_baseline}" '
+  ($h | keys[]) as $k
+  | if ($b | has($k) | not) then
+      "NEW\t\($k)\t(null)\t\($h[$k])"
+    elif $h[$k] > $b[$k] then
+      "RAISE\t\($k)\t\($b[$k])\t\($h[$k])"
+    else
+      empty
+    end
+' <<<"${head_baseline}" 2>&1 || true)"
+
+if [[ -n "${violations}" ]]; then
+  if [[ "${violations}" == *'jq: error'* || "${violations}" == *'parse error'* ]]; then
+    echo "::error::Could not parse ${BASELINE_FILE} at base or head: ${violations}"
+    fail=1
+  elif has_override_label; then
+    echo "::notice::Baseline raise approved via the ${OVERRIDE_LABEL} label for:"
+    while IFS=$'\t' read -r _kind key _base head_val; do
+      echo "::notice file=${key}::${key}: ceiling now ${head_val} (override: ${OVERRIDE_LABEL})"
+    done <<<"${violations}"
+  else
+    while IFS=$'\t' read -r kind key base_val head_val; do
+      if [[ "${kind}" == "NEW" ]]; then
+        echo "::error file=${key}::${key}: NEW baseline entry (${head_val}). New \
+grandfather entries require an explicit decision: add the ${OVERRIDE_LABEL} \
+label to this PR and have a maintainer approve the ${BASELINE_FILE} change. \
+Otherwise, split the file to <= ${THRESHOLD} LoC."
+      else
+        echo "::error file=${key}::${key}: baseline raised ${base_val} -> ${head_val}. \
+The ratchet only moves DOWN. A raise is an explicit decision: add the \
+${OVERRIDE_LABEL} label to this PR and have a maintainer approve the \
+${BASELINE_FILE} change. Otherwise, split the file."
+      fi
+    done <<<"${violations}"
+    echo "::error::To override: add the ${OVERRIDE_LABEL} label to this PR and have a \
+maintainer approve the ${BASELINE_FILE} change. Lowering an entry never needs it."
+    fail=1
+  fi
+fi
+
+# --- Diff-scoped per-file ceiling scan ------------------------------------------
 # Three-dot diff (merge-base..head) so only files this change actually touched
 # are considered, not everything that differs from the base branch tip.
-fail=0
 # `git diff --name-status` emits a rename as `R<score>\t<old>\t<new>` (rename
 # detection is on by default). Reading only `status path` would swallow the new
 # path into `path` as `old\tnew` (tab included), so the `-f` check below would
@@ -89,8 +175,9 @@ while IFS=$'\t' read -r status path newpath; do
 done < <(git diff --name-status "${BASE_SHA}...${HEAD_SHA}")
 
 if (( fail )); then
-  echo "::error::LoC gate failed. Split the file(s) above, or — only for genuinely "
-  echo "::error::pre-existing files — raise their entry in ${BASELINE_FILE}."
+  echo "::error::LoC gate failed. Split the file(s) above, or — only for a genuinely \
+pre-existing file that grew by legitimate means — raise its entry via the \
+${OVERRIDE_LABEL} label, see the ${BASELINE_FILE} errors above."
   exit 1
 fi
 
