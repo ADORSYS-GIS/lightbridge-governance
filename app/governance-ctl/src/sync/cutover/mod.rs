@@ -24,6 +24,8 @@ mod export;
 mod export_tests;
 mod verify;
 #[cfg(test)]
+mod verify_seats_tests;
+#[cfg(test)]
 mod verify_tests;
 
 use anyhow::Result;
