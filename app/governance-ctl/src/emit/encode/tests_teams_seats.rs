@@ -2,10 +2,7 @@
 
 use governance_copilot::{SeatSnapshot, UserTeam};
 
-use super::{
-    super::{encode_seat, encode_user_team},
-    test_util::str_attr,
-};
+use super::{encode_seat, encode_user_team, test_util::str_attr};
 
 /// `user-teams-1-day` worked example from the RFC-0001 contract.
 #[test]
@@ -43,11 +40,11 @@ fn seat_matches_the_contract_worked_example() {
     assert_eq!(str_attr(&rec.attributes, "user_login"), "octocat");
     assert_eq!(
         str_attr(&rec.attributes, "seat_assigned_at"),
-        "2026-01-01T00:00:00+00:00"
+        "2026-01-01T00:00:00Z"
     );
     assert_eq!(
         str_attr(&rec.attributes, "last_activity_at"),
-        "2026-08-01T09:30:00+00:00"
+        "2026-08-01T09:30:00Z"
     );
     assert_eq!(
         str_attr(&rec.attributes, "last_activity_editor"),

@@ -17,6 +17,62 @@ pub fn date(s: &str) -> chrono::NaiveDate {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
 }
 
+/// A `users-1-day` NDJSON payload with `n` rows, matching the format
+/// `governance-copilot`'s own `tests/store.rs` uses. Shared by the cutover
+/// `verify-counts` and `decommission` tests.
+pub fn users_ndjson(day: &str, n: u32) -> String {
+    let mut out = String::new();
+    for i in 1..=n {
+        out.push_str(&format!(
+            "{{\"day\":\"{day}\",\"user_id\":\"{i}\",\"user_login\":\"user{i}\",\
+             \"total_engagements\":1,\"total_completions\":1,\"ai_credits\":0.5}}\n"
+        ));
+    }
+    out
+}
+
+/// Swap the database name in a `postgres://` URL.
+pub fn replace_db(url: &str, db: &str) -> String {
+    // postgres://user:pass@host:port/db -> postgres://user:pass@host:port/<db>
+    let (head, _tail) = url.rsplit_once('/').unwrap_or((url, ""));
+    format!("{head}/{db}")
+}
+
+/// A dedicated, freshly-migrated database for a destructive test (e.g.
+/// `decommission`, which drops the telemetry tables and would destroy the
+/// shared test schema every other test depends on). Returns the pool and the
+/// database name; the caller drops the database (after closing the pool) when
+/// done.
+///
+/// Fails loudly (rather than silently skipping) if the database cannot be
+/// created -- a destructive test that silently no-ops would be a green job
+/// that ran nothing.
+pub async fn fresh_db(label: &str) -> anyhow::Result<(cratestack::sqlx::PgPool, String)> {
+    let url = std::env::var("DATABASE_URL")
+        .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set to run the destructive test"))?;
+    // Point at the server's `postgres` maintenance database to run DDL.
+    let admin_url = replace_db(&url, "postgres");
+    let db_name = format!("lb_decom_{label}_{}", std::process::id());
+    let admin = cratestack::sqlx::PgPool::connect(&admin_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("connecting to postgres maintenance db: {e}"))?;
+    let _ = cratestack::sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name}"))
+        .execute(&admin)
+        .await;
+    cratestack::sqlx::query(&format!("CREATE DATABASE {db_name}"))
+        .execute(&admin)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating destructive test db: {e}"))?;
+    admin.close().await;
+    let pool = cratestack::sqlx::PgPool::connect(&replace_db(&url, &db_name))
+        .await
+        .map_err(|e| anyhow::anyhow!("connecting to destructive test db: {e}"))?;
+    governance_core::migrate::run(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("migrating destructive test db: {e}"))?;
+    Ok((pool, db_name))
+}
+
 /// `DATABASE_URL`-gated, matching `crates/governance-copilot/tests/
 /// store.rs`'s convention: skip (with an explicit message, not a silent
 /// no-op) when no database is configured, otherwise migrate and hand
@@ -69,5 +125,6 @@ pub fn test_config(tenant_id: String, org: String, archive_dir: std::path::PathB
         archive: Archive::Local { dir: archive_dir },
         lookback_days: 1,
         max_backfill_days: 1,
+        freeze_writes: false,
     }
 }
