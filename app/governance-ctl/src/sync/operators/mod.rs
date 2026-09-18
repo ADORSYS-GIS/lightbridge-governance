@@ -1,12 +1,13 @@
 //! The archive-facing and status operators: `sync-day`, `replay`, `verify`,
 //! and `status`. Split out of `sync.rs` (#178). These are the subcommands an
 //! operator runs directly, as opposed to the scheduled backfill in
-//! `backfill.rs`.
+//! `backfill.rs`. `replay` lives in its own submodule (it is the largest).
+
+mod replay;
 
 use anyhow::{Context, Result};
-use governance_copilot::{
-    high_water_mark, manifest_schema_version, replay_report, unmapped_user_count, verify_manifests,
-};
+use governance_copilot::{high_water_mark, unmapped_user_count, verify_manifests};
+pub use replay::run_replay;
 use tracing::{info, warn};
 
 use super::config::Config;
@@ -24,78 +25,6 @@ pub async fn run_sync_day(
     chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
         .with_context(|| format!("invalid day {day:?}, want YYYY-MM-DD"))?;
     super::backfill::ingest_day(client, pool, cfg, day, sink).await
-}
-
-/// Replay a day range from the raw archive, without calling GitHub at all.
-///
-/// This is the recovery path for a parse/upsert bug (RFC-0001): the archive
-/// holds the exact bytes a re-fetch would return, so the replay exercises the
-/// same `replay_report` code path as live ingestion.
-pub async fn run_replay(
-    pool: &cratestack::sqlx::PgPool,
-    cfg: &Config,
-    from: &str,
-    to: &str,
-) -> Result<()> {
-    let from = chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d")
-        .with_context(|| format!("invalid day {from:?}, want YYYY-MM-DD"))?;
-    let to = chrono::NaiveDate::parse_from_str(to, "%Y-%m-%d")
-        .with_context(|| format!("invalid day {to:?}, want YYYY-MM-DD"))?;
-    if to < from {
-        anyhow::bail!("replay range is inverted: {from} > {to}");
-    }
-
-    let mut day = from;
-    while day <= to {
-        let ds = day.format("%Y-%m-%d").to_string();
-        let keys = cfg.archive.list_day(&cfg.org, &ds).await?;
-        if keys.is_empty() {
-            info!(day = ds, "no archived reports for day; nothing to replay");
-        }
-        for key in keys {
-            // The four day-based reports archive as `{report}.ndjson`; the
-            // seat snapshot archives as `{SEATS_REPORT_TYPE}.json` (see
-            // `governance_copilot::seats_archive_key`'s doc comment for
-            // why it is a single JSON document, not NDJSON) -- strip
-            // whichever suffix the key actually carries so both replay
-            // through the identical `replay_report` call below.
-            let report = key
-                .rsplit('/')
-                .next()
-                .and_then(|f| {
-                    f.strip_suffix(".ndjson")
-                        .or_else(|| f.strip_suffix(".json"))
-                })
-                .unwrap_or(&key)
-                .to_owned();
-            let bytes = cfg.archive.read(&key).await?;
-            // A schema bump invalidates old archives; surface it rather than
-            // silently replaying into the new shape (SCHEMA_VERSION).
-            if let Some(version) = manifest_schema_version(
-                pool,
-                &cfg.tenant_id,
-                "github_copilot",
-                &cfg.org,
-                &report,
-                &ds,
-            )
-            .await?
-                && version < governance_copilot::SCHEMA_VERSION
-            {
-                warn!(
-                    report = report,
-                    day = ds,
-                    archived_schema = version,
-                    current_schema = governance_copilot::SCHEMA_VERSION,
-                    "replaying archive written under an older schema"
-                );
-            }
-            let n = replay_report(pool, &cfg.tenant_id, &cfg.org, &ds, &report, &bytes).await?;
-            info!(report = report, day = ds, count = n, "replayed report");
-        }
-        day = day + chrono::Days::new(1);
-    }
-    Ok(())
 }
 
 /// Reconcile stored row counts against the manifests and report drift.

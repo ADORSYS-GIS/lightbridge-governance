@@ -1,5 +1,6 @@
 //! `billing-seats` encoder.
 
+use chrono::SecondsFormat;
 use governance_copilot::SeatSnapshot;
 
 use super::{AttributeValue, LogRecordData, common};
@@ -34,13 +35,16 @@ pub fn encode_seat(tenant_id: &str, org: &str, row: &SeatSnapshot) -> LogRecordD
     if let Some(t) = &row.seat_assigned_at {
         attrs.push((
             "seat_assigned_at".to_owned(),
-            AttributeValue::Str(t.to_rfc3339()),
+            // RFC-0001 pins these as RFC 3339 with a `Z` suffix for UTC; the
+            // default `to_rfc3339()` renders `+00:00`, which a strict
+            // normalizer parser could reject. `use_z = true` emits `Z`.
+            AttributeValue::Str(t.to_rfc3339_opts(SecondsFormat::Secs, true)),
         ));
     }
     if let Some(t) = &row.last_activity_at {
         attrs.push((
             "last_activity_at".to_owned(),
-            AttributeValue::Str(t.to_rfc3339()),
+            AttributeValue::Str(t.to_rfc3339_opts(SecondsFormat::Secs, true)),
         ));
     }
     if let Some(e) = &row.last_activity_editor {
