@@ -65,6 +65,10 @@ pub async fn verify_archive_counts(
             Ok(b) => b,
             Err(e) => {
                 warn!(day = ds, report = report, error = %e, "archived report missing");
+                // A missing archive is always a mismatch regardless of the
+                // expected count -- the archive must be present and parseable
+                // for the no-loss bar to pass, so we push unconditionally here
+                // rather than going through the `actual != expected` gate below.
                 mismatches.push(CountMismatch {
                     day: ds,
                     report,
@@ -78,6 +82,10 @@ pub async fn verify_archive_counts(
             Ok(rows) => rows.len() as i64,
             Err(e) => {
                 warn!(day = ds, report = report, error = %e, "archived report unparseable");
+                // An unparseable archive is always a mismatch regardless of the
+                // expected count -- the archive must be present and parseable
+                // for the no-loss bar to pass, so we push unconditionally here
+                // rather than going through the `actual != expected` gate below.
                 mismatches.push(CountMismatch {
                     day: ds,
                     report,

@@ -79,6 +79,13 @@ enum Command {
         /// coordinated with the authz-side count assertions.
         #[arg(long)]
         confirm: bool,
+        /// Also drop the SHARED telemetry tables
+        /// (`executions`/`model_calls`/`tool_calls`), which the Foundry and
+        /// redact connectors also write. Their no-loss bar is the authz-side
+        /// `verify-counts`, not the governance-side verify here, so this must
+        /// be an explicit flag -- never a default.
+        #[arg(long)]
+        include_shared_tables: bool,
     },
     /// Report per-provider identity attribution (attributed/unattributed/
     /// mismatched) and fail if any provider has unattributed executions.
@@ -217,10 +224,13 @@ async fn main() -> Result<()> {
             }
             tracing::info!("verify-counts: archive matches ingest_manifests; cutover may proceed");
         }
-        Command::Decommission { confirm } => {
+        Command::Decommission {
+            confirm,
+            include_shared_tables,
+        } => {
             let cfg = sync::Config::from_env().await?;
             let pool = cratestack::sqlx::PgPool::connect(&args.database_url).await?;
-            let dropped = sync::decommission(&pool, &cfg, confirm).await?;
+            let dropped = sync::decommission(&pool, &cfg, confirm, include_shared_tables).await?;
             tracing::info!(tables = ?dropped, "governance telemetry tables dropped");
         }
         Command::VerifyAttribution => {

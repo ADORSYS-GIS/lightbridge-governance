@@ -18,6 +18,8 @@
 
 mod decommission;
 #[cfg(test)]
+mod decommission_shared_tests;
+#[cfg(test)]
 mod decommission_tests;
 mod export;
 #[cfg(test)]
@@ -36,28 +38,33 @@ pub use verify::verify_archive_counts;
 
 use super::config::Config;
 
-/// The governance telemetry tables decommissioned at the cutover. The Copilot
-/// day tables are migrated by replaying the S3 archive through the day-grain
-/// ingest API; the execution/model-call/tool-call tables are migrated
-/// table-to-table. `ingest_manifests` is deliberately NOT in this list: it is
-/// the metadata record the count assertions read from and is not telemetry.
+/// The Copilot day-fact telemetry tables decommissioned at the cutover. These
+/// are migrated by replaying the S3 archive through the day-grain ingest API,
+/// and their no-loss bar is the governance-side [`verify_archive_counts`].
+/// `ingest_manifests` is deliberately NOT in this list: it is the metadata
+/// record the count assertions read from and is not telemetry.
 ///
 /// `copilot_user_teams` is deliberately NOT in this list either: `user-teams-1-day`
 /// is not cut over (the authz receiver refuses it, RFC-0001 known-issue #1), so
 /// its rows have no usage-store equivalent and dropping the table would
 /// permanently destroy data that was never migrated. It is left in place until
 /// the natural-key fix lands and the report is cut over.
-const TELEMETRY_TABLES: &[&str] = &[
+const COPILOT_DAY_TABLES: &[&str] = &[
     "copilot_org_dailys",
     "copilot_user_dailys",
     "copilot_repo_dailys",
     "copilot_seat_snapshots",
-    // Children before parents: `model_calls`/`tool_calls` hold a foreign key
-    // to `executions`, so they must be dropped first or Postgres refuses.
-    "model_calls",
-    "tool_calls",
-    "executions",
 ];
+
+/// The shared normalized telemetry tables written by EVERY push connector
+/// (Copilot, Foundry, redact), not just Copilot. Their no-loss bar is the
+/// authz-side `verify-counts` CLI (which consumes `export-counts`), which this
+/// binary cannot call -- so dropping them is gated on an explicit
+/// `--include-shared-tables` flag, never a default (see `decommission`).
+///
+/// Children before parents: `model_calls`/`tool_calls` hold a foreign key to
+/// `executions`, so they must be dropped first or Postgres refuses.
+const SHARED_TABLES: &[&str] = &["model_calls", "tool_calls", "executions"];
 
 /// One expected `(day, report)` count, as recorded in `ingest_manifests`.
 #[derive(Debug, Clone, Serialize)]

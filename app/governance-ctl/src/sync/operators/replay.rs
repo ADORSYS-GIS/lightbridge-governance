@@ -55,37 +55,7 @@ pub async fn run_replay(
             )?;
             let mut all_rows = Vec::new();
             for key in keys {
-                let report = key
-                    .rsplit('/')
-                    .next()
-                    .and_then(|f| {
-                        f.strip_suffix(".ndjson")
-                            .or_else(|| f.strip_suffix(".json"))
-                    })
-                    .unwrap_or(&key)
-                    .to_owned();
-                let bytes = cfg.archive.read(&key).await?;
-                // A schema bump invalidates old archives; surface it rather
-                // than silently replaying into the new shape (SCHEMA_VERSION).
-                if let Some(version) = manifest_schema_version(
-                    pool,
-                    &cfg.tenant_id,
-                    "github_copilot",
-                    &cfg.org,
-                    &report,
-                    &ds,
-                )
-                .await?
-                    && version < governance_copilot::SCHEMA_VERSION
-                {
-                    warn!(
-                        report = report,
-                        day = ds,
-                        archived_schema = version,
-                        current_schema = governance_copilot::SCHEMA_VERSION,
-                        "replaying archive written under an older schema"
-                    );
-                }
+                let (report, bytes) = read_archived_report(pool, cfg, &key, &ds).await?;
                 all_rows.push(governance_copilot::parse_report_rows(&report, &bytes, &ds)?);
             }
             let n = sink
@@ -94,37 +64,7 @@ pub async fn run_replay(
             info!(day = ds, count = n, "replayed day via OTLP sink");
         } else {
             for key in keys {
-                let report = key
-                    .rsplit('/')
-                    .next()
-                    .and_then(|f| {
-                        f.strip_suffix(".ndjson")
-                            .or_else(|| f.strip_suffix(".json"))
-                    })
-                    .unwrap_or(&key)
-                    .to_owned();
-                let bytes = cfg.archive.read(&key).await?;
-                // A schema bump invalidates old archives; surface it rather
-                // than silently replaying into the new shape (SCHEMA_VERSION).
-                if let Some(version) = manifest_schema_version(
-                    pool,
-                    &cfg.tenant_id,
-                    "github_copilot",
-                    &cfg.org,
-                    &report,
-                    &ds,
-                )
-                .await?
-                    && version < governance_copilot::SCHEMA_VERSION
-                {
-                    warn!(
-                        report = report,
-                        day = ds,
-                        archived_schema = version,
-                        current_schema = governance_copilot::SCHEMA_VERSION,
-                        "replaying archive written under an older schema"
-                    );
-                }
+                let (report, bytes) = read_archived_report(pool, cfg, &key, &ds).await?;
                 let n = replay_report(pool, &cfg.tenant_id, &cfg.org, &ds, &report, &bytes).await?;
                 info!(report = report, day = ds, count = n, "replayed report");
             }
@@ -132,4 +72,49 @@ pub async fn run_replay(
         day = day + chrono::Days::new(1);
     }
     Ok(())
+}
+
+/// Read one archived report and surface a schema-version mismatch. Returns the
+/// report name and the raw bytes. Shared by the freeze (emit) and non-freeze
+/// (upsert) replay branches so they diverge only at the write step -- an
+/// operator studying the cutover reasons about one branch and cannot miss a
+/// divergence in the other.
+async fn read_archived_report(
+    pool: &cratestack::sqlx::PgPool,
+    cfg: &Config,
+    key: &str,
+    ds: &str,
+) -> Result<(String, Vec<u8>)> {
+    let report = key
+        .rsplit('/')
+        .next()
+        .and_then(|f| {
+            f.strip_suffix(".ndjson")
+                .or_else(|| f.strip_suffix(".json"))
+        })
+        .unwrap_or(key)
+        .to_owned();
+    let bytes = cfg.archive.read(key).await?;
+    // A schema bump invalidates old archives; surface it rather than silently
+    // replaying into the new shape (SCHEMA_VERSION).
+    if let Some(version) = manifest_schema_version(
+        pool,
+        &cfg.tenant_id,
+        "github_copilot",
+        &cfg.org,
+        &report,
+        ds,
+    )
+    .await?
+        && version < governance_copilot::SCHEMA_VERSION
+    {
+        warn!(
+            report = report,
+            day = ds,
+            archived_schema = version,
+            current_schema = governance_copilot::SCHEMA_VERSION,
+            "replaying archive written under an older schema"
+        );
+    }
+    Ok((report, bytes))
 }

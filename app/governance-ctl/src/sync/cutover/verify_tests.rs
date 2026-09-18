@@ -1,20 +1,7 @@
 //! Tests for the `verify-counts` operator.
 
 use super::verify_archive_counts;
-use crate::sync::test_util::{db_pool, test_config, tmp_archive_dir};
-
-/// A `users-1-day` NDJSON payload with `n` rows, matching the format
-/// `governance-copilot`'s own `tests/store.rs` uses.
-fn users_ndjson(day: &str, n: u32) -> String {
-    let mut out = String::new();
-    for i in 1..=n {
-        out.push_str(&format!(
-            "{{\"day\":\"{day}\",\"user_id\":\"{i}\",\"user_login\":\"user{i}\",\
-             \"total_engagements\":1,\"total_completions\":1,\"ai_credits\":0.5}}\n"
-        ));
-    }
-    out
-}
+use crate::sync::test_util::{db_pool, test_config, tmp_archive_dir, users_ndjson};
 
 /// `verify_archive_counts` passes when the archive matches the manifests.
 #[tokio::test]

@@ -1,62 +1,9 @@
 //! Tests for the `decommission` operator.
 
-use super::{TELEMETRY_TABLES, decommission};
-use crate::sync::test_util::{db_pool, test_config, tmp_archive_dir};
-
-/// A dedicated, freshly-migrated database for the destructive
-/// `decommission` test. `decommission` drops the telemetry tables, which
-/// would destroy the shared test schema every other test depends on, so it
-/// must run against its own database. Returns the pool and the database
-/// name; the caller drops the database (after closing the pool) when done.
-///
-/// Fails loudly (rather than silently skipping) if the database cannot be
-/// created -- a destructive test that silently no-ops would be a green
-/// job that ran nothing.
-async fn fresh_db(label: &str) -> anyhow::Result<(cratestack::sqlx::PgPool, String)> {
-    let url = std::env::var("DATABASE_URL")
-        .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set to run the decommission test"))?;
-    // Point at the server's `postgres` maintenance database to run DDL.
-    let admin_url = replace_db(&url, "postgres");
-    let db_name = format!("lb_decom_{label}_{}", std::process::id());
-    let admin = cratestack::sqlx::PgPool::connect(&admin_url)
-        .await
-        .map_err(|e| anyhow::anyhow!("connecting to postgres maintenance db: {e}"))?;
-    let _ = cratestack::sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name}"))
-        .execute(&admin)
-        .await;
-    cratestack::sqlx::query(&format!("CREATE DATABASE {db_name}"))
-        .execute(&admin)
-        .await
-        .map_err(|e| anyhow::anyhow!("creating decommission test db: {e}"))?;
-    admin.close().await;
-    let pool = cratestack::sqlx::PgPool::connect(&replace_db(&url, &db_name))
-        .await
-        .map_err(|e| anyhow::anyhow!("connecting to decommission test db: {e}"))?;
-    governance_core::migrate::run(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("migrating decommission test db: {e}"))?;
-    Ok((pool, db_name))
-}
-
-/// Swap the database name in a `postgres://` URL.
-fn replace_db(url: &str, db: &str) -> String {
-    // postgres://user:pass@host:port/db -> postgres://user:pass@host:port/<db>
-    let (head, _tail) = url.rsplit_once('/').unwrap_or((url, ""));
-    format!("{head}/{db}")
-}
-
-/// A `users-1-day` NDJSON payload with `n` rows, matching the format
-/// `governance-copilot`'s own `tests/store.rs` uses.
-fn users_ndjson(day: &str, n: u32) -> String {
-    let mut out = String::new();
-    for i in 1..=n {
-        out.push_str(&format!(
-            "{{\"day\":\"{day}\",\"user_id\":\"{i}\",\"user_login\":\"user{i}\",\
-             \"total_engagements\":1,\"total_completions\":1,\"ai_credits\":0.5}}\n"
-        ));
-    }
-    out
-}
+use super::{COPILOT_DAY_TABLES, SHARED_TABLES, decommission};
+use crate::sync::test_util::{
+    db_pool, fresh_db, replace_db, test_config, tmp_archive_dir, users_ndjson,
+};
 
 /// `decommission` refuses without `--confirm` -- dropping tables is
 /// destructive and must be an explicit operator action.
@@ -73,7 +20,7 @@ async fn decommission_refuses_without_confirm() {
         tmp_archive_dir("cutover-decom-noconfirm"),
     );
 
-    let err = decommission(&pool, &cfg, false).await.unwrap_err();
+    let err = decommission(&pool, &cfg, false, false).await.unwrap_err();
     assert!(
         format!("{err:#}").contains("--confirm"),
         "decommission without confirm must refuse: {err:#}"
@@ -109,7 +56,7 @@ async fn decommission_blocks_on_a_count_mismatch() {
     .await
     .unwrap();
 
-    let err = decommission(&pool, &cfg, true).await.unwrap_err();
+    let err = decommission(&pool, &cfg, true, false).await.unwrap_err();
     assert!(
         format!("{err:#}").contains("blocked"),
         "decommission must block on a count mismatch: {err:#}"
@@ -160,8 +107,11 @@ async fn decommission_drops_tables_after_a_clean_verify_and_confirm() {
     let key = governance_copilot::archive_key(org, "users-1-day", day);
     cfg.archive.write(&key, ndjson.as_bytes()).await.unwrap();
 
-    let dropped = decommission(&pool, &cfg, true).await.unwrap();
-    assert_eq!(dropped.len(), TELEMETRY_TABLES.len());
+    let dropped = decommission(&pool, &cfg, true, true).await.unwrap();
+    assert_eq!(
+        dropped.len(),
+        COPILOT_DAY_TABLES.len() + SHARED_TABLES.len()
+    );
 
     // The telemetry tables are gone (not dormant).
     let (n,): (i64,) = cratestack::sqlx::query_as(
