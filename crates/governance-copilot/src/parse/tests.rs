@@ -1,0 +1,283 @@
+//! Tests for [`super`]. Split into its own file (issue #175) rather than
+//! raising the already-grandfathered LoC ceiling -- the same move
+//! `otel/tests.rs` made, applied to the whole `mod tests` block.
+
+use super::*;
+
+#[test]
+fn credits_to_micro_usd_uses_integer_math() {
+    // 1 AI credit = 1 cent = 10_000 micro-USD.
+    assert_eq!(credits_to_micro_usd(1.0), MicroUsd(10_000));
+    // 12.5 credits = 125_000 micro-USD; rounding of halves is integer not float.
+    assert_eq!(credits_to_micro_usd(12.5), MicroUsd(125_000));
+}
+
+#[test]
+fn parse_org_daily_extracts_aggregates_and_skips_bare_lines() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"organization_id\":\"g1\",",
+        "\"total_active_users\":10,\"total_engaged_users\":4,",
+        "\"total_completions\":120,\"total_chat_engagements\":30}\n",
+        // A row without an org id is skipped, not fabricated.
+        "{\"day\":\"2026-08-01\",\"total_completions\":5}\n",
+    );
+    let rows = parse_org_daily(ndjson.as_bytes(), "organization-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].organization_id, "g1");
+    assert_eq!(rows[0].active_users, 10);
+    assert_eq!(rows[0].engaged_users, 4);
+    assert_eq!(rows[0].total_interactions, 150); // 120 + 30
+    assert_eq!(rows[0].total_completions, 120);
+}
+
+#[test]
+fn parse_user_daily_converts_credits_to_micro_usd() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"user_id\":\"1001\",\"user_login\":\"octocat\",",
+        "\"total_engagements\":42,\"total_completions\":20,\"ai_credits\":2.5}\n",
+    );
+    let rows = parse_user_daily(ndjson.as_bytes(), "users-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].provider_user_id, "1001");
+    assert_eq!(rows[0].user_login, "octocat");
+    assert_eq!(rows[0].total_interactions, 42);
+    // 2.5 credits: money is exact (2.5 * 10k), the stored credit count is
+    // derived from that money value (25000 / 10000 = 2), so the two
+    // columns always agree in origin.
+    assert_eq!(rows[0].ai_credits, 2);
+    assert_eq!(rows[0].net_cost_micro_usd, MicroUsd(25_000));
+}
+
+#[test]
+fn parse_user_team_maps_user_to_team() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"user_id\":\"1001\",\"user_login\":\"octocat\",",
+        "\"team_id\":\"9001\",\"slug\":\"eng-platform\"}\n",
+    );
+    let rows = parse_user_team(ndjson.as_bytes(), "user-teams-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].user_id, "1001");
+    assert_eq!(rows[0].team_id, "9001");
+    assert_eq!(rows[0].team_slug, "eng-platform");
+}
+
+#[test]
+fn malformed_line_surfaces_a_parse_error() {
+    let err = parse_user_team(b"not-json\n", "user-teams-1-day", "2026-08-01").unwrap_err();
+    match err {
+        CopilotError::Parse { report, day, .. } => {
+            assert_eq!(report, "user-teams-1-day");
+            assert_eq!(day, "2026-08-01");
+        }
+        _ => panic!("expected a Parse error"),
+    }
+}
+
+/// Reproduces the production failure directly (2026-08-07): live GitHub
+/// `repos-1-day` NDJSON sends `repo_id` as a bare JSON integer, not the
+/// string every fixture here (and the vendor docs) assumed. Every day's
+/// repo report failed to parse with "invalid type: integer, expected a
+/// string" until this was fixed.
+#[test]
+fn parse_repo_daily_accepts_an_integer_repo_id() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"repo_id\":844522530,\"repo_name\":\"lightbridge-governance\",",
+        "\"coding_agent_activity\":3,\"code_review_activity\":1,\"pull_request_activity\":2}\n",
+    );
+    let rows = parse_repo_daily(ndjson.as_bytes(), "repos-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].repository_id, "844522530");
+    assert_eq!(rows[0].coding_agent_activity, 3);
+}
+
+/// The other three report types type their id fields the identical way
+/// (`Option<String>`) on the same wrong assumption -- only `repos-1-day`
+/// had non-empty rows the day this was caught, so these three were
+/// latent, not actually exercised yet. Locking in the fix for all of
+/// them, not just the one that happened to fail first.
+#[test]
+fn parse_org_daily_accepts_an_integer_organization_id() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"organization_id\":139577169,",
+        "\"total_active_users\":10,\"total_engaged_users\":4,",
+        "\"total_completions\":120,\"total_chat_engagements\":30}\n",
+    );
+    let rows = parse_org_daily(ndjson.as_bytes(), "organization-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].organization_id, "139577169");
+}
+
+#[test]
+fn parse_user_daily_accepts_an_integer_user_id() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"user_id\":1001,\"user_login\":\"octocat\",",
+        "\"total_engagements\":42,\"total_completions\":20,\"ai_credits\":2.5}\n",
+    );
+    let rows = parse_user_daily(ndjson.as_bytes(), "users-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].provider_user_id, "1001");
+}
+
+#[test]
+fn parse_user_team_accepts_integer_user_and_team_ids() {
+    let ndjson = concat!(
+        "{\"day\":\"2026-08-01\",\"user_id\":1001,\"user_login\":\"octocat\",",
+        "\"team_id\":9001,\"slug\":\"eng-platform\"}\n",
+    );
+    let rows = parse_user_team(ndjson.as_bytes(), "user-teams-1-day", "2026-08-01").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].user_id, "1001");
+    assert_eq!(rows[0].team_id, "9001");
+}
+
+#[test]
+fn seat_state_is_active_without_a_pending_cancellation_date() {
+    assert_eq!(seat_state(None), "active");
+}
+
+#[test]
+fn seat_state_is_pending_cancellation_when_the_date_is_present() {
+    assert_eq!(seat_state(Some("2026-09-01")), "pending_cancellation");
+}
+
+#[test]
+fn parse_seat_timestamp_parses_a_valid_rfc3339_value() {
+    let parsed = parse_seat_timestamp(Some("2026-08-01T12:00:00Z")).unwrap();
+    assert_eq!(parsed.to_rfc3339(), "2026-08-01T12:00:00+00:00");
+}
+
+/// An absent or malformed timestamp must become `None` (unknown), never
+/// a fabricated default -- this is what the whole test proves, not just
+/// that a good value parses.
+#[test]
+fn parse_seat_timestamp_treats_absence_and_garbage_as_unknown() {
+    assert_eq!(parse_seat_timestamp(None), None);
+    assert_eq!(parse_seat_timestamp(Some("not-a-timestamp")), None);
+}
+
+fn seats_archive(pages: &[&str]) -> Vec<u8> {
+    let joined = pages.join(",");
+    format!("[{joined}]").into_bytes()
+}
+
+#[test]
+fn parse_seats_maps_github_fields_onto_the_normalized_row() {
+    let page = concat!(
+        r#"{"total_seats":1,"seats":[{"#,
+        r#""created_at":"2026-01-01T00:00:00Z","#,
+        r#""last_activity_at":"2026-08-01T09:30:00Z","#,
+        r#""last_activity_editor":"vscode/1.90.0/copilot/1.200.0","#,
+        r#""pending_cancellation_date":null,"#,
+        r#""assignee":{"id":1001,"login":"octocat"}"#,
+        r#"}]}"#,
+    );
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.provider_user_id, "1001");
+    assert_eq!(row.user_login, "octocat");
+    assert_eq!(row.snapshot_day, "2026-08-07");
+    assert_eq!(row.seat_state, "active");
+    assert_eq!(
+        row.last_activity_editor.as_deref(),
+        Some("vscode/1.90.0/copilot/1.200.0")
+    );
+    assert!(row.seat_assigned_at.is_some());
+    assert!(row.last_activity_at.is_some());
+}
+
+/// A seat whose `last_activity_at` is entirely absent (never used) must
+/// stay `None`, not become a fabricated "never" sentinel that would
+/// read as a real timestamp downstream -- this is RFC-0001's exact
+/// motivating question ("who has a seat and has never used it").
+#[test]
+fn parse_seats_treats_a_never_used_seat_as_null_not_a_default() {
+    let page = concat!(
+        r#"{"seats":[{"#,
+        r#""created_at":"2026-01-01T00:00:00Z","#,
+        r#""last_activity_at":null,"#,
+        r#""last_activity_editor":null,"#,
+        r#""pending_cancellation_date":null,"#,
+        r#""assignee":{"id":2002,"login":"neveruser"}"#,
+        r#"}]}"#,
+    );
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].last_activity_at, None);
+    assert_eq!(rows[0].last_activity_editor, None);
+}
+
+#[test]
+fn parse_seats_marks_pending_cancellation_from_the_date_field() {
+    let page = concat!(
+        r#"{"seats":[{"#,
+        r#""created_at":"2026-01-01T00:00:00Z","#,
+        r#""pending_cancellation_date":"2026-09-01","#,
+        r#""assignee":{"id":3003,"login":"leaving"}"#,
+        r#"}]}"#,
+    );
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].seat_state, "pending_cancellation");
+}
+
+/// A row with no assignee at all is skipped, not fabricated -- mirrors
+/// `parse_org_daily`'s "no org id" handling.
+#[test]
+fn parse_seats_skips_a_row_with_no_assignee() {
+    let page = r#"{"seats":[{"created_at":"2026-01-01T00:00:00Z"}]}"#;
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert!(rows.is_empty());
+}
+
+/// An empty org's page (`seats: []`) must parse to zero rows, not an
+/// error -- this is the "empty org" case the manifest's "empty" status
+/// depends on.
+#[test]
+fn parse_seats_on_an_empty_org_yields_zero_rows() {
+    let page = r#"{"total_seats":0,"seats":[]}"#;
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert!(rows.is_empty());
+}
+
+/// Multiple archived pages must all contribute rows -- proves
+/// `parse_seats` walks every page in the archived JSON array, not just
+/// the first.
+#[test]
+fn parse_seats_combines_rows_from_every_page() {
+    let page1 = r#"{"seats":[{"assignee":{"id":1,"login":"a"}}]}"#;
+    let page2 = r#"{"seats":[{"assignee":{"id":2,"login":"b"}}]}"#;
+    let rows = parse_seats(
+        &seats_archive(&[page1, page2]),
+        "billing-seats",
+        "2026-08-07",
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let ids: Vec<&str> = rows.iter().map(|r| r.provider_user_id.as_str()).collect();
+    assert_eq!(ids, vec!["1", "2"]);
+}
+
+/// Live GitHub sends `assignee.id` as a bare JSON integer -- the exact
+/// production failure `flexible_id` already fixed for the other four
+/// reports (see the `repos-1-day` regression test above). Applied here
+/// too, on the same assumption.
+#[test]
+fn parse_seats_accepts_an_integer_assignee_id() {
+    let page = r#"{"seats":[{"assignee":{"id":844522530,"login":"octocat"}}]}"#;
+    let rows = parse_seats(&seats_archive(&[page]), "billing-seats", "2026-08-07").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].provider_user_id, "844522530");
+}
+
+#[test]
+fn parse_seats_on_a_malformed_archive_surfaces_a_parse_error() {
+    let err = parse_seats(b"not-json", "billing-seats", "2026-08-07").unwrap_err();
+    match err {
+        CopilotError::Parse { report, day, .. } => {
+            assert_eq!(report, "billing-seats");
+            assert_eq!(day, "2026-08-07");
+        }
+        _ => panic!("expected a Parse error"),
+    }
+}
