@@ -69,6 +69,8 @@ pub async fn verify_archive_counts(
                 // expected count -- the archive must be present and parseable
                 // for the no-loss bar to pass, so we push unconditionally here
                 // rather than going through the `actual != expected` gate below.
+                // `actual: 0` is the "archive missing" sentinel (see
+                // `CountMismatch`).
                 mismatches.push(CountMismatch {
                     day: ds,
                     report,
@@ -86,6 +88,8 @@ pub async fn verify_archive_counts(
                 // expected count -- the archive must be present and parseable
                 // for the no-loss bar to pass, so we push unconditionally here
                 // rather than going through the `actual != expected` gate below.
+                // `actual: -1` is the "present but unparseable" sentinel (see
+                // `CountMismatch`).
                 mismatches.push(CountMismatch {
                     day: ds,
                     report,

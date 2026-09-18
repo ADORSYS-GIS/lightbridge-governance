@@ -83,6 +83,18 @@ pub struct SeatExpectation {
 }
 
 /// One `(day, report)` whose archived record count disagrees with the manifest.
+///
+/// `actual` carries two sentinel values that are load-bearing for any consumer
+/// that branches on it (the authz-side `verify-counts` CLI, a monitoring
+/// script):
+///
+/// - `actual == 0` means the archive was **missing** (or parsed to zero rows):
+///   the file could not be read at all, so nothing was verified.
+/// - `actual == -1` means the archive was **present but unparseable**: the file
+///   existed but could not be parsed back into rows.
+///
+/// A non-negative `actual` is a real parsed row count that disagreed with
+/// `expected`. Consumers must not treat `-1` as a count.
 #[derive(Debug, Clone)]
 pub struct CountMismatch {
     pub day: String,
