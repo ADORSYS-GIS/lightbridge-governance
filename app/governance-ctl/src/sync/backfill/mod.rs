@@ -1,19 +1,21 @@
 //! Backfill orchestration: compute the window, ingest each day, snapshot seats
 //! once per run, and decide whether the run should exit non-zero.
 //!
-//! Split out of `sync.rs` (#178) and then further into focused submodules:
-//! `ingest` (fetch/archive/upsert/emit), `window` (the pure window math), and
-//! `outcome` (the run result + exit decision). This root holds the
-//! orchestration (`run_backfill`/`run_backfill_at`) and re-exports the public
-//! surface `main.rs`/`metrics.rs`/`operators.rs` consume.
+//! Split out of `sync.rs` (#178). The window math (`backfill_window`) is pure
+//! and unit-tested; the `run_backfill_at`/`run_status` integration tests live
+//! in `tests_days`/`tests_seats`, sharing helpers from `test_util`.
 
 mod ingest;
 mod outcome;
+#[cfg(test)]
+mod tests_days;
+#[cfg(test)]
+mod tests_seats;
 mod window;
 
 use anyhow::Result;
 use governance_copilot::{GithubClient, high_water_mark};
-pub(super) use ingest::ingest_day;
+pub(super) use ingest::{ingest_day, ingest_seats};
 pub use outcome::BackfillOutcome;
 use tracing::{info, warn};
 pub use window::backfill_window;
@@ -84,7 +86,7 @@ pub async fn run_backfill_at(
     // snapshot today's seats has lost that day's seat data permanently, not
     // deferred it to a later run.
     let today_str = today.format("%Y-%m-%d").to_string();
-    let seats = match ingest::ingest_seats(client, pool, cfg, &today_str, sink).await {
+    let seats = match ingest_seats(client, pool, cfg, &today_str, sink).await {
         Ok(outcome) => {
             let n = outcome.record_count;
             all.push(outcome);
@@ -104,12 +106,3 @@ pub async fn run_backfill_at(
         seats,
     })
 }
-
-#[cfg(test)]
-mod outcome_tests;
-#[cfg(test)]
-mod seats_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod window_tests;

@@ -4,7 +4,7 @@ use governance_copilot::{OrgDaily, RepoDaily, UserDaily};
 use governance_core::MicroUsd;
 
 use super::{
-    super::{encode_org_daily, encode_repo_daily, encode_user_daily},
+    encode_org_daily, encode_repo_daily, encode_user_daily,
     test_util::{int, str_attr},
 };
 
@@ -23,7 +23,7 @@ fn common_attributes_are_pinned_on_every_record() {
         ai_credits: 0,
         net_cost_micro_usd: MicroUsd(0),
     };
-    let rec = encode_org_daily("t1", "g1", &row);
+    let rec = encode_org_daily("t1", "g1", &row, 0, MicroUsd(0)).unwrap();
     assert_eq!(str_attr(&rec.attributes, "source"), "github-copilot");
     assert_eq!(str_attr(&rec.attributes, "tenant_id"), "t1");
     assert_eq!(str_attr(&rec.attributes, "org"), "g1");
@@ -46,13 +46,33 @@ fn org_daily_matches_the_contract_worked_example() {
         ai_credits: 0,
         net_cost_micro_usd: MicroUsd(0),
     };
-    let rec = encode_org_daily("t1", "g1", &row);
+    let rec = encode_org_daily("t1", "g1", &row, 0, MicroUsd(0)).unwrap();
     assert_eq!(int(&rec.attributes, "active_users"), 10);
     assert_eq!(int(&rec.attributes, "engaged_users"), 4);
     assert_eq!(int(&rec.attributes, "total_interactions"), 150);
     assert_eq!(int(&rec.attributes, "total_completions"), 120);
     assert_eq!(int(&rec.attributes, "ai_credits"), 0);
     assert_eq!(int(&rec.attributes, "net_cost_micro_usd"), 0);
+}
+
+/// The org-level cost is aggregated from the day's user rows and threaded into
+/// the org encoder (GitHub's org report carries no cost). A non-zero aggregate
+/// must land on the org record, not be silently zeroed.
+#[test]
+fn org_daily_reflects_the_aggregated_org_cost() {
+    let row = OrgDaily {
+        organization_id: "g1".to_owned(),
+        report_day: "2026-08-01".to_owned(),
+        active_users: 10,
+        engaged_users: 4,
+        total_interactions: 150,
+        total_completions: 120,
+        ai_credits: 0,
+        net_cost_micro_usd: MicroUsd(0),
+    };
+    let rec = encode_org_daily("t1", "g1", &row, 7, MicroUsd(75_000)).unwrap();
+    assert_eq!(int(&rec.attributes, "ai_credits"), 7);
+    assert_eq!(int(&rec.attributes, "net_cost_micro_usd"), 75_000);
 }
 
 /// `users-1-day` worked example from the RFC-0001 contract: money is integer
@@ -68,7 +88,7 @@ fn user_daily_matches_the_contract_worked_example() {
         ai_credits: 2,
         net_cost_micro_usd: MicroUsd(25_000),
     };
-    let rec = encode_user_daily("t1", "g1", &row);
+    let rec = encode_user_daily("t1", "g1", &row).unwrap();
     assert_eq!(str_attr(&rec.attributes, "subject_kind"), "user");
     assert_eq!(str_attr(&rec.attributes, "subject_id"), "1001");
     assert_eq!(str_attr(&rec.attributes, "user_login"), "octocat");
@@ -88,7 +108,7 @@ fn repo_daily_matches_the_contract_worked_example() {
         code_review_activity: 1,
         pull_request_activity: 2,
     };
-    let rec = encode_repo_daily("t1", "g1", &row);
+    let rec = encode_repo_daily("t1", "g1", &row).unwrap();
     assert_eq!(str_attr(&rec.attributes, "subject_kind"), "repo");
     assert_eq!(str_attr(&rec.attributes, "subject_id"), "844522530");
     assert_eq!(int(&rec.attributes, "coding_agent_activity"), 3);
@@ -124,7 +144,7 @@ fn one_record_per_subject() {
     ];
     let records: Vec<_> = rows
         .iter()
-        .map(|r| encode_org_daily("t1", "g1", r))
+        .map(|r| encode_org_daily("t1", "g1", r, 0, MicroUsd(0)).unwrap())
         .collect();
     assert_eq!(records.len(), 2);
     assert_eq!(str_attr(&records[0].attributes, "subject_id"), "g1");

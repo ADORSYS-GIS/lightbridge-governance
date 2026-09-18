@@ -95,4 +95,5 @@ and replay work is real and must be verified by row counts, not assumed.
 
 - lightbridge-authz: ADR-0027, #535, #491, #489, #549; ADR-0022 (query contract prior art)
 - this repo: #182, #167, #159, #161, #160, #30, #36, RFC-0003, ADR-0002, ADR-0003, ADR-0008,
-  ADR-0013
+  ADR-0013, [RFC-0001](../rfc/0001-github-copilot-connector.md) (the OTLP day-grain encoding
+  contract that implements Decision 2)
