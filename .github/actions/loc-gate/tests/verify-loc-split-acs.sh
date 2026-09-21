@@ -12,6 +12,13 @@
 #   AC3  Committed and regenerable by a script, not hand-maintained.
 #   AC4  Measured at a named commit.
 #
+# The baseline is a SNAPSHOT at a named commit (AC4): it records the exact code
+# state it was measured at, so the numbers are reproducible by checking out that
+# commit. It is NOT expected to equal the current HEAD — the repo advances past
+# it as feature work lands, and the baseline is regenerated deliberately when
+# debt is reduced. AC3b therefore regenerates at the RECORDED commit, not HEAD,
+# and AC4c checks the recorded commit is a real commit in the repo.
+#
 # Plain bash + git + jq + python3 (all preinstalled on GitHub-hosted runners).
 #
 # Usage: verify-loc-split-acs.sh [generator-script]
@@ -104,22 +111,32 @@ else
   fail=$((fail + 1))
 fi
 
-# AC3b: regenerating via the script reproduces the committed artifact. Compare
-# the meaningful content (commit + files); measured_at is a timestamp and may
-# legitimately differ if run on another day.
-tmp="$(mktemp)"
-bash "${GEN}" 200 "${tmp}" crates app >/dev/null
-if jq -n --argjson a "$(jq '{commit, files}' "${BASELINE}")" \
-         --argjson b "$(jq '{commit, files}' "${tmp}")" \
-         '$a == $b' | grep -q true; then
-  echo "PASS: AC3b: regenerating reproduces the committed artifact"
+# AC3b: regenerating at the RECORDED commit reproduces the committed artifact.
+# The baseline is a snapshot at its named commit, so we check out that commit's
+# tree (a detached worktree), run the generator there, and compare. This proves
+# the artifact is script-regenerable, not hand-maintained.
+RECORDED_COMMIT="$(jq -r '.commit' "${BASELINE}")"
+tmp_worktree="$(mktemp -d)"
+tmp_out="$(mktemp)"
+cleanup() {
+  git -C "${REPO_ROOT}" worktree remove --force "${tmp_worktree}" >/dev/null 2>&1 || true
+  rm -f "${tmp_out}"
+}
+trap cleanup EXIT
+if git -C "${REPO_ROOT}" worktree add --detach "${tmp_worktree}" "${RECORDED_COMMIT}" >/dev/null 2>&1 \
+   && ( cd "${tmp_worktree}" && bash "${GEN}" 200 "${tmp_out}" crates app >/dev/null ) \
+   && jq -n --argjson a "$(jq '{commit, files}' "${BASELINE}")" \
+            --argjson b "$(jq '{commit, files}' "${tmp_out}")" \
+            '$a == $b' | grep -q true; then
+  echo "PASS: AC3b: regenerating at the recorded commit reproduces the artifact"
   pass=$((pass + 1))
 else
-  echo "FAIL: AC3b: regenerated output differs from the committed artifact"
-  diff <(jq '{commit, files}' "${BASELINE}") <(jq '{commit, files}' "${tmp}") || true
+  echo "FAIL: AC3b: regenerating at ${RECORDED_COMMIT} differs from the committed artifact"
+  if [[ -f "${tmp_out}" ]]; then
+    diff <(jq -S '{commit, files}' "${BASELINE}") <(jq -S '{commit, files}' "${tmp_out}") || true
+  fi
   fail=$((fail + 1))
 fi
-rm -f "${tmp}"
 
 # ================================================================= AC4
 # Measured at a named commit.
@@ -128,14 +145,11 @@ echo "--- AC4: measured at a named commit ---"
 # AC4a: the artifact records a commit.
 check "AC4a: artifact has a commit key" "true" "$(jq_eval 'has("commit")')"
 
-# AC4b: the recorded commit is a real commit in the repo.
-check "AC4b: commit is a real commit SHA" "true" "$(
-  jq_eval '.commit as $c | ($c | test("^[0-9a-f]{40}$"))'
+# AC4b: the recorded commit is a real commit in the repo (a named commit you
+# can check out and reproduce the numbers at — the point of AC4).
+check "AC4b: recorded commit exists in the repo" "true" "$(
+  git -C "${REPO_ROOT}" cat-file -e "$(jq -r '.commit' "${BASELINE}")^{commit}" 2>/dev/null && echo true || echo false
 )"
-
-# AC4c: the recorded commit is the current HEAD (the baseline is current).
-HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
-check "AC4c: commit equals current HEAD" "${HEAD_SHA}" "$(jq_eval '.commit')"
 
 echo
 echo "loc-split AC verification: ${pass} passed, ${fail} failed"
