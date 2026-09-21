@@ -113,8 +113,9 @@ fi
 
 # AC3b: regenerating at the RECORDED commit reproduces the committed artifact.
 # The baseline is a snapshot at its named commit, so we check out that commit's
-# tree (a detached worktree), run the generator there, and compare. This proves
-# the artifact is script-regenerable, not hand-maintained.
+# tree (a detached worktree) and run the generator AS IT WAS AT THAT COMMIT
+# (from the worktree, not the current working tree — the generator is versioned
+# too). This proves the artifact is script-regenerable, not hand-maintained.
 RECORDED_COMMIT="$(jq -r '.commit' "${BASELINE}")"
 tmp_worktree="$(mktemp -d)"
 tmp_out="$(mktemp)"
@@ -124,7 +125,7 @@ cleanup() {
 }
 trap cleanup EXIT
 if git -C "${REPO_ROOT}" worktree add --detach "${tmp_worktree}" "${RECORDED_COMMIT}" >/dev/null 2>&1 \
-   && ( cd "${tmp_worktree}" && bash "${GEN}" 200 "${tmp_out}" crates app >/dev/null ) \
+   && ( cd "${tmp_worktree}" && bash "${tmp_worktree}/.github/actions/loc-gate/generate-loc-split.sh" 200 "${tmp_out}" crates app >/dev/null ) \
    && jq -n --argjson a "$(jq '{commit, files}' "${BASELINE}")" \
             --argjson b "$(jq '{commit, files}' "${tmp_out}")" \
             '$a == $b' | grep -q true; then
