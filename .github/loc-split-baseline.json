@@ -1,5 +1,5 @@
 {
-  "commit": "8151dabc04ba383b80e8460c05eef1b2a3e83c3b",
+  "commit": "f9a93d3a4c8b3967154639c3e817f87fa719d887",
   "measured_at": "2026-09-21",
   "threshold": 200,
   "files": [
@@ -103,12 +103,6 @@
       "path": "crates/governance-copilot/src/model.rs",
       "total": 250,
       "prod": 250,
-      "test": 0
-    },
-    {
-      "path": "app/governance-ctl/src/test_support.rs",
-      "total": 247,
-      "prod": 247,
       "test": 0
     },
     {
