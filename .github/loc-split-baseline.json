@@ -1,0 +1,229 @@
+{
+  "commit": "8151dabc04ba383b80e8460c05eef1b2a3e83c3b",
+  "measured_at": "2026-09-21",
+  "threshold": 200,
+  "files": [
+    {
+      "path": "app/redact-gateway/src/proxy.rs",
+      "total": 823,
+      "prod": 675,
+      "test": 148
+    },
+    {
+      "path": "app/governance-auth/src/config/mod.rs",
+      "total": 665,
+      "prod": 665,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/oauth/mod.rs",
+      "total": 597,
+      "prod": 497,
+      "test": 100
+    },
+    {
+      "path": "crates/governance-copilot/src/store.rs",
+      "total": 486,
+      "prod": 486,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/sse/mod.rs",
+      "total": 479,
+      "prod": 479,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/update/mod.rs",
+      "total": 441,
+      "prod": 441,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/streaming/mod.rs",
+      "total": 393,
+      "prod": 393,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-core/src/identity.rs",
+      "total": 390,
+      "prod": 390,
+      "test": 0
+    },
+    {
+      "path": "app/governance-ctl/src/metrics.rs",
+      "total": 386,
+      "prod": 311,
+      "test": 75
+    },
+    {
+      "path": "app/governance-ctl/src/main.rs",
+      "total": 299,
+      "prod": 299,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/cache.rs",
+      "total": 325,
+      "prod": 277,
+      "test": 48
+    },
+    {
+      "path": "app/governance-auth/src/file_lock/mod.rs",
+      "total": 263,
+      "prod": 263,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/dashboard/spool.rs",
+      "total": 262,
+      "prod": 262,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-core/src/credential.rs",
+      "total": 288,
+      "prod": 256,
+      "test": 32
+    },
+    {
+      "path": "app/lightbridge-governance/src/resolve.rs",
+      "total": 255,
+      "prod": 255,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/engine.rs",
+      "total": 404,
+      "prod": 252,
+      "test": 152
+    },
+    {
+      "path": "crates/governance-copilot/src/model.rs",
+      "total": 250,
+      "prod": 250,
+      "test": 0
+    },
+    {
+      "path": "app/governance-ctl/src/test_support.rs",
+      "total": 247,
+      "prod": 247,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-core/src/migrate.rs",
+      "total": 241,
+      "prod": 241,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/holdback.rs",
+      "total": 372,
+      "prod": 238,
+      "test": 134
+    },
+    {
+      "path": "app/governance-auth/src/config_file/mod.rs",
+      "total": 233,
+      "prod": 233,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/profile.rs",
+      "total": 314,
+      "prod": 231,
+      "test": 83
+    },
+    {
+      "path": "crates/governance-copilot/src/parse/mod.rs",
+      "total": 219,
+      "prod": 219,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/oauth/discovery.rs",
+      "total": 296,
+      "prod": 218,
+      "test": 78
+    },
+    {
+      "path": "crates/governance-core/src/org_kpis/mod.rs",
+      "total": 218,
+      "prod": 218,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/config_persist/mod.rs",
+      "total": 216,
+      "prod": 216,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/otel_daemon/mod.rs",
+      "total": 216,
+      "prod": 216,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-foundry/src/normalizer/otlp.rs",
+      "total": 357,
+      "prod": 211,
+      "test": 146
+    },
+    {
+      "path": "app/governance-auth/src/logging/mod.rs",
+      "total": 205,
+      "prod": 205,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-redact/src/lib.rs",
+      "total": 202,
+      "prod": 202,
+      "test": 0
+    },
+    {
+      "path": "app/governance-auth/src/otel_daemon/spool/mod.rs",
+      "total": 201,
+      "prod": 201,
+      "test": 0
+    },
+    {
+      "path": "crates/governance-copilot/src/seats.rs",
+      "total": 228,
+      "prod": 187,
+      "test": 41
+    },
+    {
+      "path": "crates/governance-copilot/src/client.rs",
+      "total": 247,
+      "prod": 180,
+      "test": 67
+    },
+    {
+      "path": "crates/governance-redact/src/secrets.rs",
+      "total": 203,
+      "prod": 180,
+      "test": 23
+    },
+    {
+      "path": "crates/governance-redact/src/payload.rs",
+      "total": 336,
+      "prod": 179,
+      "test": 157
+    },
+    {
+      "path": "app/governance-ctl/src/archive.rs",
+      "total": 231,
+      "prod": 175,
+      "test": 56
+    },
+    {
+      "path": "crates/governance-core/src/connector_metrics.rs",
+      "total": 294,
+      "prod": 94,
+      "test": 200
+    }
+  ]
+}
