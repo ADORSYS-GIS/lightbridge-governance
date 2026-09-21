@@ -89,6 +89,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The split-baseline AC verification checks out the commit the
+          # baseline was measured at (AC3b/AC4b), so the full history must be
+          # present — a shallow (depth: 1) checkout cannot resolve it.
+          fetch-depth: 0
       - name: Run the LoC gate self-tests
         run: bash .github/actions/loc-gate/tests/loc-gate-tests.sh
       - name: Run the LoC split generator self-tests

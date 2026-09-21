@@ -131,9 +131,13 @@ if git -C "${REPO_ROOT}" worktree add --detach "${tmp_worktree}" "${RECORDED_COM
   echo "PASS: AC3b: regenerating at the recorded commit reproduces the artifact"
   pass=$((pass + 1))
 else
-  echo "FAIL: AC3b: regenerating at ${RECORDED_COMMIT} differs from the committed artifact"
-  if [[ -f "${tmp_out}" ]]; then
-    diff <(jq -S '{commit, files}' "${BASELINE}") <(jq -S '{commit, files}' "${tmp_out}") || true
+  if ! git -C "${REPO_ROOT}" cat-file -e "${RECORDED_COMMIT}^{commit}" 2>/dev/null; then
+    echo "FAIL: AC3b: recorded commit ${RECORDED_COMMIT} is not available in this checkout (shallow clone?)"
+  else
+    echo "FAIL: AC3b: regenerating at ${RECORDED_COMMIT} differs from the committed artifact"
+    if [[ -f "${tmp_out}" ]]; then
+      diff <(jq -S '{commit, files}' "${BASELINE}") <(jq -S '{commit, files}' "${tmp_out}") || true
+    fi
   fi
   fail=$((fail + 1))
 fi
