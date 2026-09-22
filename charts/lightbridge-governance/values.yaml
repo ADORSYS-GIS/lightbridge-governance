@@ -627,7 +627,20 @@ aiCliOtel:
     # confirmed live: `kubectl -n converse get svc` shows
     # `lightbridge-usage` on `3000/TCP,3006/TCP`, matching the ingest/query
     # split this leg targets the ingest port for.
-    endpoint: "http://lightbridge-usage.converse.svc.cluster.local:3000"
+    #
+    # ⚠️ `https://`, NOT `http://` (found live, governance#358's original
+    # bug): "UNAUTHENTICATED" above means no bearer/client-cert is required
+    # once inside the TLS session -- it does NOT mean plaintext. Port 3000
+    # unconditionally terminates TLS with the self-signed `authz-tls`
+    # cert-manager Certificate (ai-helm-values lightbridge-app.yaml: "the pod
+    # terminates TLS on 3000... issued by ClusterIssuer self-signed-ca").
+    # A plain-HTTP request against this port gets the server's TLS stack to
+    # reject the ClientHello-shaped garbage with a fatal `decode_error`
+    # alert -- reproduced live, every export failing with "malformed HTTP
+    # response \x15\x03\x03\x00\x02\x02\x32" (a raw TLS alert record) until
+    # this was corrected. See `usageExport`'s `tls.insecure_skip_verify`
+    # comment below for why skip-verify (not a mounted CA) is the paired fix.
+    endpoint: "https://lightbridge-usage.converse.svc.cluster.local:3000"
   # memory_limiter runs first in every pipeline; these are its bounds.
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
@@ -819,7 +832,10 @@ opencodeOtel:
   usageExport:
     enabled: false
     source: opencode
-    endpoint: "http://lightbridge-usage.converse.svc.cluster.local:3000"
+    # `https://`, not `http://` -- see aiCliOtel.usageExport.endpoint's comment
+    # for why (port 3000 unconditionally terminates TLS; "unauthenticated"
+    # never meant plaintext).
+    endpoint: "https://lightbridge-usage.converse.svc.cluster.local:3000"
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
