@@ -579,7 +579,23 @@ the signal that might need it.
         metrics_endpoint: {{ printf "%s/v1/otel/metrics" $otel.usageExport.endpoint | quote }}
         logs_endpoint: {{ printf "%s/v1/otel/logs" $otel.usageExport.endpoint | quote }}
         tls:
-          insecure: true
+          # `insecure: true` (found live, governance#358's original bug) tells the OTel
+          # Collector's configtls to drop TLS ENTIRELY when no CA is set (upstream
+          # configtls.go: `if c.Insecure && !c.hasCA() { return nil, nil }`) -- plain HTTP.
+          # lightbridge-authz-usage's ingest listener is "UNAUTHENTICATED" (no bearer, no
+          # client cert), NOT "plaintext": it unconditionally terminates TLS on :3000 with
+          # the self-signed `authz-tls` cert-manager Certificate (confirmed live via
+          # ai-helm-values' lightbridge-app.yaml comments + `kubectl -n converse get
+          # certificate authz-tls`). A plain-HTTP request against a TLS-only port makes the
+          # server's TLS stack reject the ClientHello-shaped garbage with a fatal
+          # `decode_error` alert -- reproduced live: every export failed with
+          # "malformed HTTP response \x15\x03\x03\x00\x02\x02\x32" (a raw TLS alert record).
+          # `insecure_skip_verify: true` keeps TLS on but skips verifying the self-signed
+          # cert -- this collector has no CA bundle mounted to verify it properly, and the
+          # ADR-0028 D8 trust boundary for this whole leg is already "ClusterIP + network
+          # topology, not a token/cert", so skipping verification adds no new exposure over
+          # what this leg already accepts.
+          insecure_skip_verify: true
         headers:
           X-Source: {{ $otel.usageExport.source | quote }}
         # Independent queue/retry from Alloy and S3 -- same reasoning as the
