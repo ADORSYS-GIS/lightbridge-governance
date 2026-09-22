@@ -1,5 +1,5 @@
 {
-  "commit": "81b717780e90b6152158917159e00e07fa5dc6d9",
+  "commit": "a00313e8bf28317a25e49397ebda6e2a8a2e0338",
   "measured_at": "2026-09-22",
   "threshold": 200,
   "files": [
@@ -149,12 +149,6 @@
     },
     {
       "path": "app/governance-auth/src/config_persist/mod.rs",
-      "total": 216,
-      "prod": 216,
-      "test": 0
-    },
-    {
-      "path": "app/governance-auth/src/otel_daemon/mod.rs",
       "total": 216,
       "prod": 216,
       "test": 0
