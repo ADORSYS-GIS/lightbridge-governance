@@ -83,13 +83,23 @@ jobs:
   # The rails that keep the rails straight: runs the gate's own self-test suite
   # (.github/actions/loc-gate/tests/) so a regression in loc-gate.sh itself —
   # including one that makes the ratchet silently pass again — fails CI rather
-  # than shipping.
+  # than shipping. Also runs the production-vs-test split generator's self-tests
+  # (#173), so the planning baseline stays reproducible.
   loc-gate-self-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The split-baseline AC verification checks out the commit the
+          # baseline was measured at (AC3b/AC4b), so the full history must be
+          # present — a shallow (depth: 1) checkout cannot resolve it.
+          fetch-depth: 0
       - name: Run the LoC gate self-tests
         run: bash .github/actions/loc-gate/tests/loc-gate-tests.sh
+      - name: Run the LoC split generator self-tests
+        run: bash .github/actions/loc-gate/tests/generate-loc-split-tests.sh
+      - name: Verify the LoC split baseline against the ticket's acceptance criteria
+        run: bash .github/actions/loc-gate/tests/verify-loc-split-acs.sh
 
   # Every dashboard generator under scripts/ is committed-JSON-generates-a-
   # file, standard-library-only Python (see any of their own module
