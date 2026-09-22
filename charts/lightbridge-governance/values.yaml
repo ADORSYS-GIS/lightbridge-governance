@@ -622,11 +622,12 @@ aiCliOtel:
     source: claude-code
     # lightbridge-authz-usage's UNAUTHENTICATED ingest listener (ADR-0028
     # D8 leg 2: "the collector->usage hop carries no second credential" --
-    # the boundary is ClusterIP + network topology, not a token). Verify
-    # the Service name/namespace against the live `lightbridge-authz-usage`
-    # release before enabling; `<release>.<namespace>.svc.cluster.local`
-    # per the bjw-s app-template default.
-    endpoint: "http://lightbridge-authz-usage.converse.svc.cluster.local:3000"
+    # the boundary is ClusterIP + network topology, not a token). The
+    # release is named `lightbridge-usage` (not the crate/repo name) --
+    # confirmed live: `kubectl -n converse get svc` shows
+    # `lightbridge-usage` on `3000/TCP,3006/TCP`, matching the ingest/query
+    # split this leg targets the ingest port for.
+    endpoint: "http://lightbridge-usage.converse.svc.cluster.local:3000"
   # memory_limiter runs first in every pipeline; these are its bounds.
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
@@ -818,7 +819,7 @@ opencodeOtel:
   usageExport:
     enabled: false
     source: opencode
-    endpoint: "http://lightbridge-authz-usage.converse.svc.cluster.local:3000"
+    endpoint: "http://lightbridge-usage.converse.svc.cluster.local:3000"
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"
