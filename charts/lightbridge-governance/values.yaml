@@ -569,6 +569,64 @@ aiCliOtel:
   # collector, so is one client fleet from another. RFC-0003 §2 matrix row
   # name, lowercased, matching `microsoft-foundry`'s existing convention.
   sourceAttribute: ai-cli
+  # Fourth exporter leg (governance#358), parallel to Alloy/S3, not behind
+  # them: request-grain telemetry into lightbridge-authz-usage, so laptop AI
+  # clients feed the same usage/billing store the gateway (EAIG) already
+  # does. lightbridge-authz's `resolve_source` (`normalizer/mod.rs`) reads
+  # the source from the `X-Source` header set below, and rejects any request
+  # missing it or carrying a value outside its closed registry.
+  #
+  # ⚠️ NOT SAFE TO ENABLE ON THIS COLLECTOR YET (governance#358) -- an
+  # earlier version of this comment claimed `claude-code` was correct here
+  # because Codex's credential (`aud: lightbridge-api-key`) 401s at this
+  # collector's OIDC extension. That was wrong: `governance-auth`'s local
+  # collector daemon (ADR-0016, the DEFAULT profile) forwards Claude Code's,
+  # Codex's AND VS Code Copilot's telemetry through ONE bearer
+  # (`aud: governance-auth-cli`, the same audience this collector already
+  # accepts) -- there is no credential-level separation between them once a
+  # developer is on the daemon profile, which is the default. Live-verified:
+  # a developer's own `~/.codex/config.toml` points its OTLP exporter at
+  # `127.0.0.1:<daemon port>`, not at this collector's hostname.
+  #
+  # `app/governance-auth/src/otel_daemon/source_stamp.rs` now derives a
+  # trustworthy PER-RESOURCE `governance.source` from each resource's own
+  # `event.name` before the daemon forwards -- safe to do at the daemon
+  # (unlike at this public collector) because ADR-0016 already accepts that
+  # any local process can forge telemetry attributable to its own developer,
+  # so a same-developer TOOL label from a signal the process already
+  # controls adds no new exposure. The `resource` processor's `governance.source`
+  # action was changed from `upsert` to `insert` (below) so that per-resource
+  # value survives instead of being overwritten with this collector's own
+  # coarse `ai-cli` default.
+  #
+  # This `usageExport.source` field is a single STATIC `X-Source` header
+  # applied to the WHOLE outgoing HTTP request, which by itself would be too
+  # coarse: one request forwarded through this collector can legitimately
+  # carry a MIX of `claude-code` and `codex` resources (daemon-forwarded,
+  # batched together by this collector's own `batch` processor). Resolved on
+  # the authz side, not here: `lightbridge-authz`'s
+  # `extract_log_events`/`extract_trace_events`/`extract_metric_events` now
+  # resolve source PER RESOURCE via `resolve_event_source`, preferring each
+  # resource's own (now-trustworthy) `governance.source` attribute and
+  # falling back to this header only when a resource has none of its own (or
+  # an unrecognised one) -- so the header below remains a correct DEFAULT,
+  # not the only source of truth. It stays exactly right for `opencodeOtel`
+  # (single-source, no mixing possible) and for any `manual`-profile /
+  # pre-daemon traffic that reaches this collector without ever passing
+  # through `source_stamp.rs`.
+  usageExport:
+    # Off by default, same convention as `enabled`/`s3.enabled` above: an
+    # explicit act in the values repo. Both this leg and its authz-side
+    # per-resource preference (above) are code-complete and tested.
+    enabled: false
+    source: claude-code
+    # lightbridge-authz-usage's UNAUTHENTICATED ingest listener (ADR-0028
+    # D8 leg 2: "the collector->usage hop carries no second credential" --
+    # the boundary is ClusterIP + network topology, not a token). Verify
+    # the Service name/namespace against the live `lightbridge-authz-usage`
+    # release before enabling; `<release>.<namespace>.svc.cluster.local`
+    # per the bjw-s app-template default.
+    endpoint: "http://lightbridge-authz-usage.converse.svc.cluster.local:3000"
   # memory_limiter runs first in every pipeline; these are its bounds.
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
@@ -752,6 +810,15 @@ opencodeOtel:
   # `opencode` is also the token this repo already uses for the client
   # everywhere else (`opencode-cli`, `opencode-oauth2`).
   sourceAttribute: opencode
+  # Same fourth exporter leg as aiCliOtel.usageExport (governance#358) -- see
+  # its comment for the full mechanism. This collector has no ambiguity
+  # problem: it is OpenCode's own dedicated audience/collector (that is the
+  # entire reason it exists as a second instance, see this file's own header
+  # comment), so every request that authenticates here really is OpenCode.
+  usageExport:
+    enabled: false
+    source: opencode
+    endpoint: "http://lightbridge-authz-usage.converse.svc.cluster.local:3000"
   memoryLimiterMib: 400
   memorySpikeLimitMib: 100
   alloyEndpoint: "alloy.observability.svc.cluster.local:4317"

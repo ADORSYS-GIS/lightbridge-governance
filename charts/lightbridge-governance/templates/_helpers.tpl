@@ -344,8 +344,26 @@ Now also which client FLEET it came from, since there is more than one public
 collector. The token is the RFC-0003 §2 matrix row's name, lowercased to match
 `microsoft-foundry`'s existing convention (`ai-cli`, `opencode`) -- it is a
 values field, not a literal, so do not invent a new one per collector.
+
+⚠️ `insert`, NOT `upsert` (governance#358). `governance-auth`'s local collector
+daemon (ADR-0016; app/governance-auth/src/otel_daemon/source_stamp.rs) already
+stamps a per-EVENT `governance.source` (`claude-code`/`codex`) on every
+daemon-forwarded resource, derived from that resource's own `event.name` at a
+trust boundary ADR-0016 already accepts (any local process can forge
+telemetry attributable to its own developer -- see that ADR's threat model).
+`aiCliOtel` carries BOTH Claude Code's and Codex's daemon-forwarded traffic
+under the SAME credential (the daemon mints one bearer for everything it
+forwards), so a per-collector-instance fleet label here can no longer
+distinguish them -- only the per-resource value the daemon already computed
+can. `upsert` would silently overwrite that correct, per-event value with
+this collector's own coarse fleet-wide default on every single request.
+`insert` only fills the key when absent, so: a daemon-stamped resource keeps
+its real per-tool source untouched, and anything that reaches this collector
+WITHOUT going through the daemon (a `manual`-profile client, or any traffic
+that predates this daemon capability) still gets a sane default instead of
+`governance.source` being silently absent.
 */}}
-          - action: upsert
+          - action: insert
             key: governance.source
             value: {{ $otel.sourceAttribute }}
 {{- /*
@@ -525,6 +543,39 @@ the signal that might need it.
         endpoint: {{ $otel.alloyEndpoint | quote }}
         tls:
           insecure: true
+{{- if $otel.usageExport.enabled }}
+      # Fourth exporter leg (governance#358): request-grain telemetry into
+      # lightbridge-authz-usage's UNAUTHENTICATED `/v1/otel/*` ingest --
+      # ADR-0028 D8 leg 2, "the collector -> usage hop carries no second
+      # credential" (the boundary is ClusterIP + network topology, not a
+      # token; see `$otel.usageExport.endpoint`'s comment in values.yaml).
+      # Explicit per-signal `*_endpoint` fields, NOT the bare `endpoint` +
+      # otlphttp's own default suffixing -- the default appends `/v1/traces`
+      # etc directly to `endpoint`, but this service's routes are nested
+      # under `/v1/otel/...`.
+      #
+      # `X-Source` is a STATIC header from chart config, never the payload
+      # -- see `$otel.usageExport.source`'s comment in values.yaml for why
+      # that value is safe (or is not yet safe) for THIS collector instance.
+      otlphttp/usage:
+        traces_endpoint: {{ printf "%s/v1/otel/traces" $otel.usageExport.endpoint | quote }}
+        metrics_endpoint: {{ printf "%s/v1/otel/metrics" $otel.usageExport.endpoint | quote }}
+        logs_endpoint: {{ printf "%s/v1/otel/logs" $otel.usageExport.endpoint | quote }}
+        tls:
+          insecure: true
+        headers:
+          X-Source: {{ $otel.usageExport.source | quote }}
+        # Independent queue/retry from Alloy and S3 -- same reasoning as the
+        # awss3 leg (D10): a blocked/unreachable usage service alarms but
+        # never blocks the governed/observability path.
+        sending_queue:
+          enabled: true
+          num_consumers: 10
+          queue_size: 100
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 5m
+{{- end }}
 {{- if $otel.s3.enabled }}
       # Raw OTLP archive leg (lightbridge-authz #692 / #589): a third exporter,
       # parallel to -- not behind -- the Alloy leg, writing verbatim OTLP to
@@ -602,7 +653,7 @@ payload past this point must never carry it forward).
         traces:
           receivers: [otlp]
           processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
-          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}{{- if $otel.usageExport.enabled }}, otlphttp/usage{{- end }}]
         metrics:
           receivers: [otlp]
           # transform/strip_retry_key_from_metrics is metrics-only (see its
@@ -623,11 +674,11 @@ payload past this point must never carry it forward).
           # daemon already stamped before this collector ever received the
           # record, unrelated to anything `resource` or the xff transform do.
           processors: [memory_limiter, transform/strip_retry_key_from_metrics, resource, transform/client_address_from_xff, batch]
-          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}{{- if $otel.usageExport.enabled }}, otlphttp/usage{{- end }}]
         logs:
           receivers: [otlp]
           processors: [memory_limiter, resource, transform/client_address_from_xff, batch]
-          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}]
+          exporters: [otlp/alloy{{- if $otel.s3.enabled }}, awss3{{- end }}{{- if $otel.usageExport.enabled }}, otlphttp/usage{{- end }}]
 {{- if $otel.refusalCapture.enabled }}
         # ⚠️ lightbridge-governance#275: classified refusals go to Alloy/Loki.
         # No feedback loop here: the otlp/alloy exporter is a network export and

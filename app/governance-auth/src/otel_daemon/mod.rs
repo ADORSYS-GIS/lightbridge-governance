@@ -39,6 +39,7 @@ mod protobuf;
 mod receive;
 mod shutdown;
 mod signal;
+mod source_stamp;
 mod spool;
 mod spool_compaction;
 mod status;
@@ -177,7 +178,14 @@ async fn handle_request(
         return StatusCode::BAD_REQUEST.into_response();
     };
     let body = if signal == signal::Signal::Logs {
-        codex_cost::enrich(&incoming.body, incoming.format)
+        // Source stamping needs no bearer, so it runs here rather than
+        // waiting for drain/forward -- see source_stamp's module doc for why
+        // this admission point (not the public collector) is where it is
+        // safe to derive `governance.source` from `event.name`.
+        codex_cost::enrich(
+            &source_stamp::enrich(&incoming.body, incoming.format),
+            incoming.format,
+        )
     } else {
         incoming.body
     };
