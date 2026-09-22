@@ -5,17 +5,26 @@
 //!
 //! lightbridge-authz ADR-0028 D8 rules out deriving the usage-store `source`
 //! from `event.name`/`service.name` at the PUBLIC collector: any internet
-//! caller holding a valid-but-generic credential could claim to be any tool,
-//! so that collector's `resource` processor stamps a fixed, per-collector
-//! value instead. That threat model does not transfer to this loopback
-//! listener. ADR-0016 already accepts that any local process can forge
-//! telemetry attributable to this developer ("the residual risk is
-//! accepted: forged telemetry from a machine the developer already
-//! controls"), so deriving a same-developer TOOL label from a signal a local
-//! process already legitimately controls adds no new exposure over what that
-//! ADR already accepts. `codex_cost::enrich` already relies on the identical
-//! event-name signal (`codex.sse_event`) for cost estimation, at this same
-//! trust boundary and admission point.
+//! caller holding a valid-but-generic credential could claim to be any tool.
+//! That threat model does not transfer to this loopback listener. ADR-0016
+//! already accepts that any local process can forge telemetry attributable
+//! to this developer ("the residual risk is accepted: forged telemetry from
+//! a machine the developer already controls"), so deriving a same-developer
+//! TOOL label from a signal a local process already legitimately controls
+//! adds no new exposure over what that ADR already accepts. `codex_cost::
+//! enrich` already relies on the identical event-name signal
+//! (`codex.sse_event`) for cost estimation, at this same trust boundary and
+//! admission point.
+//!
+//! ⚠️ The public collector's `resource` processor (`charts/lightbridge-
+//! governance` `_helpers.tpl`) does NOT overwrite this key once set --
+//! `insert`, not `upsert` (governance#358), specifically so this stamp
+//! survives. That means a `manual`-profile client calling the collector
+//! directly, under the same shared audience credential this loopback
+//! listener's daemon also forwards under, can set its own `governance.source`
+//! and have it preserved too. Accepted as a bounded residual risk (found in
+//! PR review on #359, not fixed before merge) -- see the chart helper's own
+//! comment for the full reasoning and why it is bounded.
 //!
 //! ## Event-name taxonomy
 //!
@@ -73,6 +82,16 @@ const CLAUDE_CODE_EVENTS: [&str; 9] = [
 const CLAUDE_CODE_EVENT_PREFIX: &str = "plugin_";
 const CODEX_EVENT_PREFIX: &str = "codex.";
 
+/// Decodes the whole request through the compiled OTLP types to stamp one
+/// attribute, then re-encodes it (found in PR review on #359) -- any field
+/// unknown to this pinned `opentelemetry-proto`/serde schema is silently
+/// dropped from every `resource_logs` entry in the batch, not just the one
+/// that matched, on both the protobuf and JSON paths. Not a new risk: the
+/// K8s collector's own processor pipeline already round-trips every payload
+/// through its own typed model, and `codex_cost::enrich` already does the
+/// identical decode/mutate/re-encode at this same admission point. Accepted
+/// as the standing cost of touching OTLP via typed structs at all; only
+/// bytes this function actually changes (`changed == true` below) pay it.
 pub(super) fn enrich(body: &[u8], format: WireFormat) -> Vec<u8> {
     let parsed: Option<ExportLogsServiceRequest> = match format {
         WireFormat::Json => serde_json::from_slice(body).ok(),

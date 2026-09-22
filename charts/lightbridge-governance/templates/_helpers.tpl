@@ -362,6 +362,23 @@ its real per-tool source untouched, and anything that reaches this collector
 WITHOUT going through the daemon (a `manual`-profile client, or any traffic
 that predates this daemon capability) still gets a sane default instead of
 `governance.source` being silently absent.
+
+⚠️ ACCEPTED RESIDUAL RISK (found in PR review on #359, not fixed before
+merge): this receiver is one shared, audience-scoped OIDC bearer for the
+whole `aiCliOtel` fleet -- the SAME credential type `manual`-profile clients
+use to call it directly, bypassing the daemon. Because `insert` preserves
+whatever `governance.source` a caller already put in the payload body, a
+`manual`-profile Claude Code caller could set `governance.source: codex` (or
+vice versa) and have it survive, since the authz side's `resolve_event_source`
+trusts any resource-level value that matches a known source on this exact
+path (ADR-0028 D8's `ResourceMayRefine`). This is a strictly bounded version
+of the risk ADR-0016 already accepts for the daemon itself (a
+credential-holder misattributing ITS OWN traffic between two tools it is
+already authorized to use under that one credential) -- not privilege
+escalation, not cross-account/budget bypass, and `manual` is documented as a
+rare legacy escape hatch, not the default profile. Closing it properly needs
+a daemon-only audience the collector (or an upstream check) can require
+before trusting this key -- new scope, its own design, not attempted here.
 */}}
           - action: insert
             key: governance.source
