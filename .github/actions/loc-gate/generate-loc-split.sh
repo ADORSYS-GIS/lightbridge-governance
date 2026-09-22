@@ -83,7 +83,8 @@ def find_test_only_modules(paths):
                 for k in (i, j):
                     if k >= n:
                         continue
-                    m = re.match(r"\s*mod\s+([A-Za-z0-9_]+)\s*;", lines[k])
+                    # matches `mod x;`, `pub mod x;`, `pub(crate) mod x;`
+                    m = re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;", lines[k])
                     if m:
                         name = m.group(1)
                         d = os.path.dirname(path)
