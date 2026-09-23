@@ -117,7 +117,10 @@ copilot:
     host: ""
     port: "4317"
 
-# Dedicated push -> pull bridge for copilot-sync's operational OTLP metrics.
+# Dedicated push -> pull bridge for copilot-sync's operational OTLP metrics --
+# AND, since governance#358/lightbridge-authz#588, the forwarding leg for the
+# day-grain backfill's actual Copilot facts (logs signal). Two jobs sharing one
+# collector, not one:
 #
 # ADR-0007 is explicit that metrics on this platform are pull-based: Alloy
 # discovers ServiceMonitor/PodMonitor CRDs cluster-wide and remote-writes to
@@ -128,10 +131,16 @@ copilot:
 # CR sits in between and turns the one-shot push into something Alloy can
 # pull continuously, without contradicting ADR-0007's decision -- it doesn't
 # reintroduce a pushgateway or a second copy of `governance_connector_*` (the
-# API still owns those, derived from ingest_manifest); it only carries what
-# copilot-sync emits about its OWN run (duration, records processed, etc.):
+# API still owns those, derived from ingest_manifest); the METRICS pipeline
+# only carries what copilot-sync emits about its OWN run (duration, records
+# processed, etc.):
 #
 #   copilot-sync --OTLP/gRPC:4317--> collector --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+#
+# Separately, the LOGS pipeline (templates/otelcollector.yaml) carries the
+# day-grain backfill's actual data (suggestions/acceptances/lines/seats) on
+# to lightbridge-authz-usage -- see that template's header comment for why,
+# and for the 2026-09-23 outage this caused when that pipeline didn't exist.
 #
 # Requires the OpenTelemetry Operator to be installed on the cluster
 # (confirmed present; not something this chart can verify at render time).

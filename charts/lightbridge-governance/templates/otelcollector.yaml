@@ -1,11 +1,23 @@
 {{- if .Values.copilotOtel.enabled }}
 {{- /*
-Push -> pull bridge for the collector CronJobs' operational OTLP metrics
-(copilot-sync per-run, copilot-verify daily drift/unmapped gauges) -- see
-copilotOtel's header comment in values.yaml for the full ADR-0007 reasoning.
-In one line:
+Two jobs, not one (governance#358/lightbridge-authz#588): a push -> pull bridge for the
+collector CronJobs' operational OTLP metrics (copilot-sync per-run, copilot-verify daily
+drift/unmapped gauges) -- see copilotOtel's header comment in values.yaml for the full
+ADR-0007 reasoning -- AND the forwarding leg for governance-ctl's Copilot day-grain
+backfill, which pushes its actual facts (suggestions/acceptances/lines, per
+app/governance-ctl/src/sync/backfill/ingest.rs) as OTLP LOGS to this SAME collector, not
+just metrics about its own run. In one line each:
 
   copilot-sync/copilot-verify --OTLP/gRPC:4317--> (this collector) --prometheus exporter--> ServiceMonitor --> Alloy --> Mimir
+  copilot-sync (day-grain backfill) --OTLP/gRPC:4317, logs--> (this collector) --otlphttp/usage, X-Source: github-copilot--> lightbridge-usage --> usage_day_facts / usage_seat_snapshots
+
+⚠️ Until this comment was corrected (2026-09-23), this file described itself as
+metrics-only. That was true when written but stopped being true once the day-grain
+backfill started exporting logs through the same endpoint -- with no `logs:` pipeline
+here, every single backfill day failed with `gRPC Unimplemented` (the OTLP receiver never
+registers a Logs service handler for a signal with no pipeline), and `usage_day_facts`/
+`usage_seat_snapshots` sat empty since. Don't let this drift stale again: any future
+governance-ctl `emit` change needs the same signal wired here.
 
 This is `opentelemetry.io/v1beta1`. In v1beta1 `spec.config` is a nested YAML
 OBJECT, not a string -- that changed from v1alpha1, and getting it wrong
@@ -142,10 +154,43 @@ spec:
         # far in the past, which would otherwise make a value that displays
         # correctly at /metrics still silently fail to land in Mimir.
         send_timestamps: false
+      # governance#358/lightbridge-authz#588 cutover leg: governance-ctl's day-grain
+      # backfill (app/governance-ctl/src/sync/backfill/ingest.rs) exports its Copilot
+      # day-grain facts as OTLP LOGS to this SAME collector (this file's header comment
+      # calling it "operational metrics only" predates that -- verified live 2026-09-23:
+      # every single backfill day failed with `gRPC Unimplemented` because no `logs:`
+      # pipeline existed here at all, so the OTLP receiver never registered a Logs
+      # service handler for this signal -- `usage_day_facts`/`usage_seat_snapshots`
+      # have been empty since, not because the GitHub Copilot API returned nothing).
+      # `X-Source: github-copilot` matches `lightbridge-authz-usage`'s
+      # `normalizer::day_grain::DAY_GRAIN_SOURCE` exactly -- `ingest_logs` on the
+      # unauthenticated `/v1/otel/logs` leg (ADR-0028 D8 leg 2, same endpoint aiCliOtel/
+      # opencodeOtel's usageExport already uses) checks that header and routes straight
+      # to the day-grain handler instead of the per-event usage_events path.
+      # `insecure_skip_verify: true` matches that same leg's own comment: no CA bundle
+      # is mounted here, and the trust boundary is already "ClusterIP + network
+      # topology, not a token/cert".
+      otlphttp/usage:
+        logs_endpoint: "https://lightbridge-usage.converse.svc.cluster.local:3000/v1/otel/logs"
+        tls:
+          insecure_skip_verify: true
+        headers:
+          X-Source: "github-copilot"
+        sending_queue:
+          enabled: true
+          num_consumers: 10
+          queue_size: 100
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 5m
     service:
       pipelines:
         metrics:
           receivers: [otlp]
           processors: [resource]
           exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [resource]
+          exporters: [otlphttp/usage]
 {{- end }}
