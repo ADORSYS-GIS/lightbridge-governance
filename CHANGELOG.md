@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.9.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.9.0...v2.9.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **governance-auth:** split per-request handling out of otel_daemon/mod.rs (LoC gate) ([e2fa121](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/e2fa1212c3753503953b2a1ff5c5ab90a5e7dfbf))
+* **governance-auth:** stamp per-tool source at the local collector daemon ([2bba5ff](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/2bba5ffc0085c6eb3d651e93d71c44b69fad60a8))
+* **governance-auth:** stamp per-tool source at the local collector daemon ([#358](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/358)) ([41a9079](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/41a9079c98d6a13167bfbf2f1bf06babac8c1294))
+* **governance-auth:** stamp VS Code Copilot Chat's own source, not claude-code ([09916b6](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/09916b6299a957b27d527db750926c41008697a4))
+* **governance-auth:** stamp VS Code Copilot Chat's own source, not claude-code ([96edb77](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/96edb77692eee829e549c95d03d7bba7fd16fb2c))
+* **governance:** correct the guessed usage-service endpoint ([4a66433](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4a66433952315b915b16f35d0f1692d056924278))
+* **lightbridge-governance:** use TLS for the usageExport leg, not plain HTTP ([336882f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/336882ffe03b8f5b8acc5deb727fd1b3988c9df4))
+* **lightbridge-governance:** use TLS for the usageExport leg, not plain HTTP ([1366b86](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/1366b86b3d508b5a7acb07267bebb91d98ed66fe))
+* **lightbridge-governance:** wire the copilot day-grain logs pipeline ([94912de](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/94912de05e34a4f7da9cc007e18de137c4ec7936))
+* **lightbridge-governance:** wire the copilot day-grain logs pipeline ([6fe9935](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/6fe9935555322d000947096d233f6e35941225a1))
+
+
+### Documentation
+
+* **governance-auth:** document the manual-profile source-forgery residual risk ([#358](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/358)) ([d626fa0](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/d626fa023d2b57009833b0a5b4f4f0b6e204db1d))
+* **lightbridge-governance:** cite the live Service selector for the copilot CNP egress rule ([26b37b7](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/26b37b79a2c8f4b5c526ca38c0f063d41e39b343))
+
 ## [2.9.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.8.0...v2.9.0) (2026-09-21)
 
 
