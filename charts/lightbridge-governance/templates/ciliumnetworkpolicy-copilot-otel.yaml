@@ -71,13 +71,34 @@ spec:
     # Kubelet probes -- see the trap called out above this policy.
     - fromEntities: [host, remote-node, health]
   egress:
-    # DNS only. This pipeline (otlp receiver -> resource processor ->
-    # prometheus exporter) makes no outbound calls of its own -- the
-    # prometheus exporter is pull-only, and there's no second exporter
-    # forwarding anywhere. Kept anyway for consistency with the rest of this
-    # chart's CiliumNetworkPolicies, and so a future pipeline change (e.g.
-    # adding an otlp exporter to forward traces too) isn't silently dropped
-    # at the DNS layer on top of needing its own egress rule.
+    # governance#358/lightbridge-authz#588: the future pipeline change this
+    # file's own comment warned about arrived -- the logs pipeline
+    # (templates/otelcollector.yaml) now forwards the day-grain backfill to
+    # lightbridge-usage via `otlphttp/usage`, and DNS alone silently dropped
+    # it at this layer exactly as predicted (found live 2026-09-23:
+    # "context deadline exceeded" on every export attempt, the collector
+    # reporting a healthy job upstream in governance-ctl while nothing ever
+    # reached lightbridge-usage -- the classic default-deny-egress symptom
+    # this repo's CLAUDE.md documents for every other operator/collector
+    # that's hit it). Scoped to the one destination this leg actually needs
+    # (not the unscoped "egress intentionally unrestricted" shape aiCliOtel/
+    # opencodeOtel settled on in #85/#87/#88/#89 -- that incident was about a
+    # scoped rule breaking PUBLIC HTTPS/OIDC egress for those collectors; this
+    # is one ClusterIP, in-cluster, same shape already proven safe elsewhere
+    # in this repo's own CiliumNetworkPolicies).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: converse
+            k8s:app.kubernetes.io/name: usage
+            k8s:app.kubernetes.io/instance: lightbridge
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # DNS. This pipeline's metrics leg makes no outbound calls of its own --
+    # the prometheus exporter is pull-only -- but the logs leg above does, so
+    # this collector needs a resolvable hostname for the endpoint even though
+    # `lightbridge-usage.converse.svc.cluster.local` never leaves the cluster.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
