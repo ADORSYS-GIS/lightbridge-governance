@@ -86,6 +86,15 @@ spec:
     # scoped rule breaking PUBLIC HTTPS/OIDC egress for those collectors; this
     # is one ClusterIP, in-cluster, same shape already proven safe elsewhere
     # in this repo's own CiliumNetworkPolicies).
+    #
+    # Selector + port read off the LIVE Service, not guessed from the usage
+    # chart's assumed release name (redact-gateway's own CiliumNetworkPolicy
+    # header names this exact trap -- a wrong selector or port here fails
+    # CLOSED and reads identically to the outage this rule fixes):
+    #   kubectl -n converse get svc lightbridge-usage -o jsonpath='{.spec.selector}'
+    #     -> {"app.kubernetes.io/controller":"main","app.kubernetes.io/instance":"lightbridge","app.kubernetes.io/name":"usage"}
+    #   kubectl -n converse get svc lightbridge-usage -o jsonpath='{.spec.ports}'
+    #     -> [{"name":"http","port":3000,...},{"name":"query","port":3006,...}] -- "http" is the OTLP ingest leg this rule targets.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: converse
