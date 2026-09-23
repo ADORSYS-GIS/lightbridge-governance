@@ -45,17 +45,22 @@ pub(super) async fn handle_request(
     let Some(signal) = classify::signal(&incoming.body, incoming.format, &incoming.path) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let body = if signal == signal::Signal::Logs {
-        // Source stamping needs no bearer, so it runs here rather than
-        // waiting for drain/forward -- see source_stamp's module doc for why
-        // this admission point (not the public collector) is where it is
-        // safe to derive `governance.source` from `event.name`.
-        codex_cost::enrich(
-            &source_stamp::enrich(&incoming.body, incoming.format),
-            incoming.format,
-        )
-    } else {
-        incoming.body
+    let body = match signal {
+        signal::Signal::Logs => {
+            // Source stamping needs no bearer, so it runs here rather than
+            // waiting for drain/forward -- see source_stamp's module doc for
+            // why this admission point (not the public collector) is where
+            // it is safe to derive `governance.source` from `event.name`.
+            codex_cost::enrich(
+                &source_stamp::enrich(&incoming.body, incoming.format),
+                incoming.format,
+            )
+        }
+        // VS Code Copilot Chat's own metrics -- source_stamp's module doc
+        // covers why this needs its own signal-specific check, parallel to
+        // the logs one above rather than folded into it.
+        signal::Signal::Metrics => source_stamp::enrich_metrics(&incoming.body, incoming.format),
+        signal::Signal::Traces => incoming.body,
     };
     retained_response(&state, signal, body, incoming.format).await
 }

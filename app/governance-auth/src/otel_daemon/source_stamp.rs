@@ -37,9 +37,35 @@
 //! prefixes a Claude Code event, and none of Claude Code's own names carry
 //! any prefix at all.
 //!
-//! An event name matching neither taxonomy (VS Code Copilot's, or anything
-//! future) leaves `governance.source` untouched for that resource -- absence
-//! is the honest answer, never a guess.
+//! An event name matching neither taxonomy leaves `governance.source`
+//! untouched for that resource -- absence is the honest answer, never a
+//! guess.
+//!
+//! ## VS Code Copilot Chat is on the METRICS signal, not logs
+//!
+//! Found live 2026-09-23: real Copilot Chat sessions land on this daemon
+//! (confirmed with matching `user_name`/timing), but the rich data --
+//! `gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
+//! `copilot_chat.time_to_first_token`, `copilot_chat.tool.call.count`,
+//! `copilot_chat.agent.turn.count`, etc -- is exported as METRICS, not logs.
+//! `event.name`-based stamping above cannot reach it: metrics carry no
+//! `event.name` attribute at all, they carry a metric NAME. Every observed
+//! Copilot metrics batch carries at least one `copilot_chat.`-prefixed
+//! metric name alongside the shared `gen_ai.client.*` ones (VS Code's OTel
+//! SDK batches all registered instruments together each collection tick),
+//! so keying on that one prefix reliably labels the whole resource --
+//! [`metrics::enrich_metrics`], re-exported below and called from
+//! `request.rs` on `Signal::Metrics`, parallel to this module's own
+//! logs-only [`enrich`]. Split into its own file by the LoC gate
+//! (lightbridge-governance#172).
+//!
+//! Before this, an unrecognised resource on the `aiCliOtel` collector fell
+//! back to that collector's own `X-Source` default (hardcoded to
+//! `"claude-code"`) -- so every Copilot Chat metric was silently counted as
+//! Claude Code usage. `KNOWN_SOURCES` (lightbridge-authz ADR-0028 D4)
+//! already reserves `"github-copilot"` for exactly this tool; this module
+//! now actually stamps it instead of leaving the gap for the collector's
+//! coarse default to paper over.
 //!
 //! ## What this does NOT do
 //!
@@ -59,6 +85,9 @@ use opentelemetry_proto::tonic::{
 use prost::Message;
 
 use super::receive::WireFormat;
+
+mod metrics;
+pub(super) use metrics::enrich_metrics;
 
 /// The resource attribute this module writes. Matches the key
 /// `charts/lightbridge-governance`'s `publicOtelCollector` helper stamps --
