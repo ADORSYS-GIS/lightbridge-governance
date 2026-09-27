@@ -34,11 +34,17 @@ pub async fn run(
     config: &OauthConfig,
     metadata: &OidcMetadata,
 ) -> Result<CachedSession> {
-    let listener = callback_port::bind()?;
+    let listener = callback_port::bind_with(config.callback_bind, config.callback_port)?;
     let port = listener
         .local_addr()
         .context("reading loopback listener address")?
         .port();
+    // The redirect URI host is ALWAYS 127.0.0.1, regardless of
+    // `--callback-bind`: it is what the authorization server has
+    // `redirect_uris` registered for (see `callback_port`), not where this
+    // process happens to listen. A container binds 0.0.0.0 and still
+    // publishes `127.0.0.1:<port>:<port>` on the host for exactly this
+    // reason.
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     let pkce = pkce::generate()?;

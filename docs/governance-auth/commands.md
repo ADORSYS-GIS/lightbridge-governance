@@ -43,15 +43,24 @@ deliberately no flag, env var or config key to turn it off — this is a public 
 secret, so the verifier is the only thing binding the authorization code to this process.
 `tests/pkce_authcode.rs` pins it.
 
-**The callback port is fixed, and it is a cross-repo contract.** `login` binds the first free
-port of `17452-17456` and builds `http://127.0.0.1:<port>/callback`. All five are registered
+**The callback port block is fixed, and it is a cross-repo contract.** `login` binds a port of
+`17452-17456` and builds `http://127.0.0.1:<port>/callback`. All five are registered
 as `redirect_uris` on the `governance-auth-cli` client; the authorization server matches
 redirect URIs by exact string equality, so a port that is not registered is refused with
 `400 invalid redirect_uri`.
 
-There is no flag to change the port, deliberately: changing it unilaterally would break login
-rather than customise it. Both sides move together — `CALLBACK_PORTS` in
-`app/governance-auth/src/oauth/callback_port.rs`, and `redirect_uris` in `ai-helm-values`
+**`--callback-port` selects *within* that block; it cannot name an arbitrary port.**
+Unset, `login` tries every port of the block in order and binds the first free one — the
+original, and still the default, behaviour. `--callback-port 17454` (or
+`GOVERNANCE_AUTH_CALLBACK_PORT`, or `callback_port` in a config file) binds exactly that one:
+a value outside `17452-17456` is refused before OIDC discovery ever runs (the block is a
+compiled constant, so checking membership costs nothing and needs no network), and a chosen
+port that is already busy is refused **by name** — never silently retried on a sibling port
+from the block, because that would bind a port the caller did not ask for. Unset (the
+default) still falls back through the whole block, exactly as before this flag existed;
+naming one port only makes sense to pin a fixed port for something like a container's
+published port mapping. Both registration sides still move together — `CALLBACK_PORTS` in
+`app/governance-auth/src/oauth/callback_port/mod.rs`, and `redirect_uris` in `ai-helm-values`
 `environments/prod/values/lightbridge-app.yaml` — registration first.
 
 ⚠️ This is a **workaround for a server-side spec violation**, not a design choice. RFC 8252
@@ -61,9 +70,20 @@ exemption ([upstream #291](https://github.com/marcjazz/authkestra/issues/291)). 
 the CLI goes back to an ephemeral port and the extra registrations are deleted. See
 [ADR-0015](../adr/0015-pin-the-loopback-callback-to-a-registered-port-block.md).
 
-If all five ports are held, `login` **refuses and names them** rather than falling back to an
-ephemeral port — a fallback would bind fine and then fail at `/authorize`, pointing at the
-server instead of the local collision. Use `--device-code`, which needs no local listener.
+If all five ports are held (or the one named by `--callback-port` is), `login` **refuses and
+names them** rather than falling back to an ephemeral port — a fallback would bind fine and
+then fail at `/authorize`, pointing at the server instead of the local collision. Use
+`--device-code`, which needs no local listener.
+
+**`--callback-bind` changes where the listener binds, never where the browser is told to
+redirect.** Default `127.0.0.1`, matching every build before this flag existed. Its one
+purpose is a container: bind `0.0.0.0` *inside* the container and publish
+`127.0.0.1:<port>:<port>` on the host, so the host's own loopback still reaches the listener.
+The authorize URL's `redirect_uri` host is **always** `127.0.0.1`, regardless of
+`--callback-bind` — that is the host the authorization server has registered, and RFC 8252's
+loopback pattern is about that redirect target, not about where this process happens to
+listen. Treat this flag as opt-in and rarely needed: on a developer's own machine there is no
+reason to bind anywhere but loopback.
 
 ### `login --device-code`
 

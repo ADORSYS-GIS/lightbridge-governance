@@ -16,7 +16,7 @@ machine-wide file can supply the issuer while a flag overrides the scopes.
 | 2. Env var | `GOVERNANCE_AUTH_ISSUER=…` |
 | 3. Per-user file | `$XDG_CONFIG_HOME/governance-auth/config.toml`, else `~/.config/governance-auth/config.toml` |
 | 4. Machine-wide file | `/etc/governance-auth/config.toml` |
-| 5. Compiled default | only for `scopes`, `otel_headers_debounce_ms`, `open_browser`, `token_exchange` |
+| 5. Compiled default | only for `scopes`, `otel_headers_debounce_ms`, `open_browser`, `callback_bind`, `token_exchange` |
 
 `~/.config` on **macOS too** — a deliberate divergence from the Claude Code managed-settings
 convention, argued in ADR-0012 Decision 1. There is no XDG-like systemwide analogue on
@@ -36,6 +36,8 @@ either platform, so the machine-wide path is a fixed constant.
 | `--copilot-spool-path` | `GOVERNANCE_AUTH_COPILOT_SPOOL_PATH` | `copilot_spool_path` | `<state dir>/governance-auth/copilot-otel.jsonl` | Where VS Code Copilot Chat's file exporter writes, for [`copilot push`](./commands.md#copilot-push) to drain. `configure` writes the resolved value into `github.copilot.chat.otel.outfile` **and** into the drain's schedule, so the two cannot disagree. Not checked for existence — Copilot creates it on its first export. |
 | `--otel-headers-debounce-ms` | `GOVERNANCE_AUTH_OTEL_HEADERS_DEBOUNCE_MS` | `otel_headers_debounce_ms` | `240000` | How often Claude Code re-runs the helpers, and so how much life a token must have left before `token`/`otel headers` will print it. Needs `accessTokenLifespan` >= 2 x (this + 30s). |
 | `--open-browser` | `GOVERNANCE_AUTH_OPEN_BROWSER` | `open_browser` | `false` | Whether `login`'s loopback flow launches a browser. Usable bare (`--open-browser`) or explicit (`--open-browser=false`). |
+| `--callback-port` | `GOVERNANCE_AUTH_CALLBACK_PORT` | `callback_port` | unset (tries the block) | Which port of the registered loopback block (`17452`-`17456`) `login`'s browser flow binds. Only *selects within* that block — a value outside it is refused before discovery, and a busy chosen port is refused rather than retried on another. See [`commands.md`](./commands.md#login). |
+| `--callback-bind` | `GOVERNANCE_AUTH_CALLBACK_BIND` | `callback_bind` | `127.0.0.1` | The loopback listener's LISTEN address. Opt-in, for a container (bind `0.0.0.0` inside it, publish `127.0.0.1:<port>:<port>` on the host). The authorize URL's `redirect_uri` host stays `127.0.0.1` regardless. |
 | `--token-exchange` | `GOVERNANCE_AUTH_TOKEN_EXCHANGE` | `token_exchange` | `false` | Opt into RFC 8693 exchange in `token`/`otel headers`. See [`token-exchange.md`](./token-exchange.md). |
 | `--exchange-issuer` | `GOVERNANCE_AUTH_EXCHANGE_ISSUER` | `exchange_issuer` | — | Exchange server, resolved by discovery. |
 | `--exchange-token-endpoint` | `GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT` | `exchange_token_endpoint` | — | Exchange token endpoint given directly; skips discovery. **Wins over `--exchange-issuer`** when both are set. |

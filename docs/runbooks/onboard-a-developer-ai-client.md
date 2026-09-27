@@ -49,7 +49,7 @@ Which login paths actually work:
   [marcjazz/authkestra#291](https://github.com/marcjazz/authkestra/issues/291); when it
   lands, the CLI goes back to an ephemeral port and the extra registrations are deleted.
   Until then the two lists are a **contract**: the ports in
-  `app/governance-auth/src/oauth/callback_port.rs` and the `redirect_uris` in
+  `app/governance-auth/src/oauth/callback_port/mod.rs` and the `redirect_uris` in
   `ai-helm-values` must match byte-for-byte, or `/authorize` answers
   `400 invalid redirect_uri`.
 
