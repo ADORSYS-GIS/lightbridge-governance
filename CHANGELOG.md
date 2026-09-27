@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.9.1...v2.10.0) (2026-09-27)
+
+
+### Features
+
+* **governance-auth:** add --callback-port/--callback-bind to login ([#365](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/365)) ([15d80c4](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/15d80c46998876ca197a4342d6eb4e5d4b3348e6))
+
 ## [2.9.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.9.0...v2.9.1) (2026-09-23)
 
 
