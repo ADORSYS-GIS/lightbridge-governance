@@ -14,7 +14,7 @@ use std::path::Path;
 
 use super::*;
 
-fn config() -> OauthConfig {
+pub(super) fn config() -> OauthConfig {
     OauthConfig {
         issuer: "https://issuer.example.com".to_owned(),
         client_id: "cli".to_owned(),
@@ -30,6 +30,8 @@ fn config() -> OauthConfig {
         copilot_spool_path: Some("/state/copilot-otel.jsonl".to_owned()),
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
+        callback_port: None,
+        callback_bind: std::net::IpAddr::from([127, 0, 0, 1]),
         token_exchange: None,
         last_no_claude: false,
         last_no_codex: false,
@@ -136,35 +138,6 @@ fn the_timer_fires_on_the_interval_the_drain_was_designed_for() {
 }
 
 #[test]
-fn the_plist_escapes_xml_rather_than_emitting_a_broken_agent() {
-    // launchd refuses to bootstrap a plist it cannot parse, and a bare `&` in
-    // a query string is exactly that -- the job would then never run, silently.
-    let mut config = config();
-    config.otel_endpoint = Some("https://otel.example.com/?a=1&b=2".to_owned());
-    let invocation = Invocation::resolve(&config)
-        .expect("resolve")
-        .expect("some");
-    let (path, plist) = launchd::plist(Path::new("/Users/dev"), &invocation).expect("render");
-
-    assert!(path.ends_with("digital.camer.ai.governance-auth.copilot-push.plist"));
-    assert!(
-        plist.contains("<string>https://otel.example.com/?a=1&amp;b=2</string>"),
-        "got:\n{plist}"
-    );
-    assert!(
-        plist.contains("<string>--copilot-spool-path</string>"),
-        "each argv word is its own <string>, not one shell line"
-    );
-    assert!(plist.contains("<integer>300</integer>"));
-    assert!(
-        plist.contains("/Users/dev/Library/Logs/governance-auth/governance-auth.log"),
-        "launchd has no journal, so stderr must land where Console.app looks \
-         -- and in the SAME rotated file `crate::logging` writes, not a \
-         second, unbounded one beside it"
-    );
-}
-
-#[test]
 fn the_timer_drains_exactly_the_file_copilot_is_told_to_write() {
     // The conservation property of this whole feature. `otel::configure_vscode`
     // writes `outfile` from `OtelSettings::copilot_spool`, and both come from
@@ -190,6 +163,7 @@ fn the_timer_drains_exactly_the_file_copilot_is_told_to_write() {
     );
 }
 
+mod launchd_plist;
 /// The classification the *row* depends on and no other test reaches. Written
 /// after an exit-code-only implementation of `survey` passed the entire suite:
 /// `systemctl --user is-active` exits non-zero for a stopped timer AND for a

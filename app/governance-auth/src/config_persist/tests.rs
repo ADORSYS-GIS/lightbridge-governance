@@ -4,9 +4,9 @@
 
 use super::*;
 
-struct TempDir(std::path::PathBuf);
+pub(super) struct TempDir(std::path::PathBuf);
 impl TempDir {
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -15,7 +15,7 @@ impl Drop for TempDir {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn tempdir() -> TempDir {
+pub(super) fn tempdir() -> TempDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -28,7 +28,7 @@ fn tempdir() -> TempDir {
     TempDir(path)
 }
 
-fn base() -> OauthConfig {
+pub(super) fn base() -> OauthConfig {
     OauthConfig {
         issuer: "https://auth.example".to_owned(),
         client_id: "cli".to_owned(),
@@ -45,6 +45,8 @@ fn base() -> OauthConfig {
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
+        callback_port: None,
+        callback_bind: std::net::IpAddr::from([127, 0, 0, 1]),
         token_exchange: None,
         last_no_claude: false,
         last_no_codex: false,
@@ -148,20 +150,6 @@ fn preserves_comments_and_keys_it_does_not_own() {
     assert!(!text.contains("https://old"), "stale value kept: {text}");
 }
 
-/// A secret in a second place the developer never chose.
-#[test]
-fn never_writes_the_otel_token() {
-    let dir = tempdir();
-    let path = dir.path().join("config.toml");
-    remember(&base(), ClientOptOut::default(), &path).expect("write");
-    let text = fs::read_to_string(&path).expect("read");
-    assert!(
-        !text.contains("SECRET-DO-NOT-PERSIST"),
-        "token persisted: {text}"
-    );
-    assert!(!text.contains("otel_token ="), "token key written: {text}");
-}
-
 /// Logging in twice must not grow or churn the file.
 #[test]
 fn is_idempotent() {
@@ -233,13 +221,4 @@ fn persists_a_profile_something_named() {
     assert_eq!(loaded.profile.as_deref(), Some("manual"));
 }
 
-#[cfg(unix)]
-#[test]
-fn is_written_private() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempdir();
-    let path = dir.path().join("config.toml");
-    remember(&base(), ClientOptOut::default(), &path).expect("write");
-    let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "config file must not be group/other readable");
-}
+mod secrecy;

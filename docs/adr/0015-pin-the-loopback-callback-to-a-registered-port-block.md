@@ -34,7 +34,7 @@ loudly when all five are held rather than falling back to an ephemeral port.
 
 Treat this as a **workaround with a deletion condition**, not an architecture: when
 authkestra#291 lands, revert to `bind(("127.0.0.1", 0))`, delete
-`app/governance-auth/src/oauth/callback_port.rs`, and drop the four extra registrations.
+`app/governance-auth/src/oauth/callback_port/mod.rs`, and drop the four extra registrations.
 
 The block is chosen by constraint, not preference:
 
@@ -60,7 +60,7 @@ and that is what the test asserts.
 
 **Negative**
 - **The port list is a cross-repo contract.** `CALLBACK_PORTS` in
-  `app/governance-auth/src/oauth/callback_port.rs` and `redirect_uris` in `ai-helm-values`
+  `app/governance-auth/src/oauth/callback_port/mod.rs` and `redirect_uris` in `ai-helm-values`
   `environments/prod/values/lightbridge-app.yaml` must match byte-for-byte. Changing one
   without the other yields `400 invalid redirect_uri`. Registration lands **first**: a
   registration the CLI does not use is inert, an unregistered CLI port is a hard failure.

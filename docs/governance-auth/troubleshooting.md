@@ -62,7 +62,7 @@ making a local port collision look like a broken server or a bad registration.
 The port the CLI bound is not registered on the client. These two lists are a contract and
 have drifted:
 
-- `CALLBACK_PORTS` in `app/governance-auth/src/oauth/callback_port.rs`
+- `CALLBACK_PORTS` in `app/governance-auth/src/oauth/callback_port/mod.rs`
 - `redirect_uris` on `governance-auth-cli` in `ai-helm-values`
   `environments/prod/values/lightbridge-app.yaml`
 

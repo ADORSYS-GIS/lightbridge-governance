@@ -27,15 +27,18 @@
 //! belong in a plain `//` comment, which neither clap nor rustdoc renders, or
 //! in `docs/governance-auth/configuration.md` -- which is also where the two
 //! mechanics every field depends on are argued: the `default_value` trap, and
-//! why all fifteen are `global = true` (`tests/cli_arg_order.rs` pins it).
+//! why all seventeen are `global = true` (`tests/cli_arg_order.rs` pins it).
 
-use std::path::Path;
+use std::{net::IpAddr, path::Path};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use url::Url;
 
 use crate::{config_file, security};
+
+mod token_exchange;
+pub use token_exchange::{ExchangeConfig, ExchangeTokenEndpoint};
 
 /// Compiled fallback for `scopes` -- the lowest of the five layers. Used to
 /// live as clap's `default_value`, which is exactly the bug this whole
@@ -174,6 +177,35 @@ pub struct OauthConfigArgs {
         global = true
     )]
     open_browser: Option<bool>,
+
+    /// Which port of the registered loopback block `login`'s browser flow
+    /// binds. Unset tries the block in order, as before this flag existed.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_CALLBACK_PORT",
+        value_parser = parse_callback_port_flag,
+        global = true,
+        long_help = "Which port of `oauth::callback_port::CALLBACK_PORTS` `login`'s browser flow \
+                     binds. This only SELECTS a port within that registered block -- a value \
+                     outside it is refused before any network call, because the authorization \
+                     server only has `redirect_uris` for those exact ports. A busy chosen port is \
+                     refused too, by name, never silently retried on another one."
+    )]
+    callback_port: Option<u16>,
+
+    /// The loopback callback listener's bind address. Default: 127.0.0.1.
+    #[arg(
+        long,
+        env = "GOVERNANCE_AUTH_CALLBACK_BIND",
+        value_parser = parse_callback_bind_flag,
+        global = true,
+        long_help = "The loopback callback listener's LISTEN address. Default: 127.0.0.1.\n\n\
+                     Opt-in, for a container: bind 0.0.0.0 inside it and publish \
+                     `127.0.0.1:<port>:<port>` on the host. The authorize URL's `redirect_uri` \
+                     host stays `127.0.0.1` regardless -- that is what the authorization server \
+                     has registered, not where this process happens to listen."
+    )]
+    callback_bind: Option<String>,
 
     /// Exchange the access token for a downstream one (RFC 8693) before
     /// `token`/`otel headers` print it. Off by default.
@@ -432,7 +464,7 @@ impl OauthConfigArgs {
             .or_else(|| machine.as_ref().and_then(|file| file.codex_telemetry_only))
             .unwrap_or(false);
 
-        let token_exchange = resolve_token_exchange(
+        let token_exchange = token_exchange::resolve(
             self.token_exchange,
             self.exchange_issuer.clone(),
             self.exchange_token_endpoint.clone(),
@@ -441,6 +473,28 @@ impl OauthConfigArgs {
             per_user.as_ref(),
             machine.as_ref(),
         )?;
+
+        // Config-file value re-validated (bypasses clap), same as `otel_endpoint`/`profile`.
+        let callback_port = self
+            .callback_port
+            .or_else(|| per_user.as_ref().and_then(|file| file.callback_port))
+            .or_else(|| machine.as_ref().and_then(|file| file.callback_port));
+        if let Some(port) = callback_port {
+            crate::oauth::callback_port::validate(port).map_err(|error| anyhow::anyhow!(error))?;
+        }
+
+        // Same reasoning as `callback_port` above.
+        let callback_bind = self
+            .callback_bind
+            .or_else(|| {
+                per_user
+                    .as_ref()
+                    .and_then(|file| file.callback_bind.clone())
+            })
+            .or_else(|| machine.as_ref().and_then(|file| file.callback_bind.clone()))
+            .map(|value| parse_callback_bind(&value).map_err(|error| anyhow::anyhow!(error)))
+            .transpose()?
+            .unwrap_or(crate::oauth::callback_port::DEFAULT_BIND);
 
         Ok(OauthConfig {
             issuer,
@@ -455,6 +509,8 @@ impl OauthConfigArgs {
             copilot_spool_path,
             otel_headers_debounce_ms,
             open_browser,
+            callback_port,
+            callback_bind,
             token_exchange,
             last_no_claude,
             last_no_codex,
@@ -462,78 +518,6 @@ impl OauthConfigArgs {
             last_codex_telemetry_only,
         })
     }
-}
-
-/// The token-exchange sub-block of [`OauthConfigArgs::resolve_with_paths`],
-/// split out as a free function (taking the five raw fields by value, rather
-/// than `&self`) because it's a five-field group with its own internal
-/// validation (client id required, exactly one of issuer/token-endpoint
-/// required) -- inlining it would make the parent function's field-by-field
-/// shape harder to scan. A `&self`-taking method would not compile here:
-/// by the point this is called, several *other* fields of `self` have
-/// already been individually moved out via `self.field.or_else(...)`
-/// (`Option<String>` isn't `Copy`), and Rust does not allow borrowing a
-/// struct as a whole once any one of its fields has been partially moved,
-/// even to read a field that was never touched.
-fn resolve_token_exchange(
-    token_exchange: Option<bool>,
-    exchange_issuer: Option<String>,
-    exchange_token_endpoint: Option<String>,
-    exchange_client_id: Option<String>,
-    exchange_scopes: Option<String>,
-    per_user: Option<&config_file::ConfigFile>,
-    machine: Option<&config_file::ConfigFile>,
-) -> Result<Option<ExchangeConfig>> {
-    let enabled = token_exchange
-        .or_else(|| per_user.and_then(|file| file.token_exchange))
-        .or_else(|| machine.and_then(|file| file.token_exchange))
-        .unwrap_or(false);
-
-    if !enabled {
-        return Ok(None);
-    }
-
-    let exchange_issuer = exchange_issuer
-        .or_else(|| per_user.and_then(|file| file.exchange_issuer.clone()))
-        .or_else(|| machine.and_then(|file| file.exchange_issuer.clone()))
-        .map(|value| parse_issuer(&value).map_err(|error| anyhow::anyhow!(error)))
-        .transpose()?;
-
-    let exchange_token_endpoint = exchange_token_endpoint
-        .or_else(|| per_user.and_then(|file| file.exchange_token_endpoint.clone()))
-        .or_else(|| machine.and_then(|file| file.exchange_token_endpoint.clone()))
-        .map(|value| parse_exchange_token_endpoint(&value).map_err(|error| anyhow::anyhow!(error)))
-        .transpose()?;
-
-    let client_id = exchange_client_id
-        .or_else(|| per_user.and_then(|file| file.exchange_client_id.clone()))
-        .or_else(|| machine.and_then(|file| file.exchange_client_id.clone()))
-        .context(
-            "--exchange-client-id (or GOVERNANCE_AUTH_EXCHANGE_CLIENT_ID, or \
-             `exchange_client_id` in a config file) is required when token exchange \
-             (--token-exchange) is enabled",
-        )?;
-
-    let scopes = exchange_scopes
-        .or_else(|| per_user.and_then(|file| file.exchange_scopes.clone()))
-        .or_else(|| machine.and_then(|file| file.exchange_scopes.clone()));
-
-    let token_endpoint = match (exchange_token_endpoint, exchange_issuer) {
-        (Some(endpoint), _) => ExchangeTokenEndpoint::Explicit(endpoint),
-        (None, Some(issuer)) => ExchangeTokenEndpoint::Issuer(issuer),
-        (None, None) => bail!(
-            "token exchange (--token-exchange) is enabled but neither \
-             --exchange-token-endpoint (GOVERNANCE_AUTH_EXCHANGE_TOKEN_ENDPOINT) nor \
-             --exchange-issuer (GOVERNANCE_AUTH_EXCHANGE_ISSUER) is set, in a flag, env var, or \
-             config file"
-        ),
-    };
-
-    Ok(Some(ExchangeConfig {
-        token_endpoint,
-        client_id,
-        scopes,
-    }))
 }
 
 /// The resolved, always-present OAuth2 client identity every command
@@ -577,6 +561,13 @@ pub struct OauthConfig {
     /// automatically. Defaults to `false`; the reasoning (issue #141) is in
     /// `docs/governance-auth/configuration.md`.
     pub open_browser: bool,
+    /// Which port of [`crate::oauth::CALLBACK_PORTS`] `login`'s loopback flow
+    /// binds. `None` means "try the block in order" (`oauth::callback_port::bind`).
+    /// Already validated as a block member -- see `resolve_with_paths`.
+    pub callback_port: Option<u16>,
+    /// The loopback listener's bind address. Defaults to `127.0.0.1`; the
+    /// authorize URL's `redirect_uri` host does not follow it, on purpose.
+    pub callback_bind: IpAddr,
     /// Present only when token exchange (RFC 8693) is enabled -- `None` is
     /// the ONLY representation of "off", so there is no separate bool that
     /// could drift out of sync with these fields. See `oauth::exchange`.
@@ -590,29 +581,6 @@ pub struct OauthConfig {
     pub last_no_codex: bool,
     pub last_no_vscode: bool,
     pub last_codex_telemetry_only: bool,
-}
-
-/// Resolved RFC 8693 token-exchange configuration, built by
-/// [`resolve_token_exchange`] only when `--token-exchange` (or its env
-/// var/config-file equivalent) is on. See `oauth::exchange`'s module doc for
-/// the request this drives and its fail-closed contract, and
-/// lightbridge-authz's `docs/token-exchange-integration.md` for the wire
-/// contract itself.
-#[derive(Debug, Clone)]
-pub struct ExchangeConfig {
-    pub token_endpoint: ExchangeTokenEndpoint,
-    pub client_id: String,
-    pub scopes: Option<String>,
-}
-
-/// Where the token-exchange request goes. An explicit
-/// `--exchange-token-endpoint` is used as-is; `--exchange-issuer` costs one
-/// OIDC discovery round trip (cached, same as the primary `--issuer` --
-/// see `oauth::discovery`) to find it.
-#[derive(Debug, Clone)]
-pub enum ExchangeTokenEndpoint {
-    Explicit(String),
-    Issuer(String),
 }
 
 /// Shared validation behind [`parse_issuer`] and
@@ -659,6 +627,36 @@ fn parse_profile(raw: &str) -> Result<String, String> {
     raw.parse::<crate::profile::Profile>()
         .map(|profile| profile.to_string())
         .map_err(|error| error.to_string())
+}
+
+/// `clap` value parser for `--callback-port`/`GOVERNANCE_AUTH_CALLBACK_PORT`.
+/// Delegates the block-membership check to
+/// [`crate::oauth::callback_port::validate`] (rejecting a port outside
+/// [`crate::oauth::CALLBACK_PORTS`] here, before `login` ever performs OIDC discovery) so
+/// the CLI/env layer and a config-file value, re-checked in
+/// `resolve_with_paths`, share one rule.
+fn parse_callback_port_flag(raw: &str) -> Result<u16, String> {
+    let port: u16 = raw
+        .parse()
+        .map_err(|error| format!("invalid --callback-port value {raw:?}: {error}"))?;
+    crate::oauth::callback_port::validate(port)?;
+    Ok(port)
+}
+
+/// `clap` value parser for `--callback-bind`. Kept a `String` here, like
+/// `--issuer`/[`parse_issuer`], so a config-file value (which never passes
+/// through clap) goes through the same [`IpAddr`] check in
+/// `resolve_with_paths` rather than a second, separately-written one.
+fn parse_callback_bind_flag(raw: &str) -> Result<String, String> {
+    parse_callback_bind(raw)?;
+    Ok(raw.to_owned())
+}
+
+/// Must be a bare IP address, not a hostname or a `host:port` pair -- the
+/// port is chosen separately, by `--callback-port`/[`crate::oauth::CALLBACK_PORTS`].
+fn parse_callback_bind(raw: &str) -> Result<IpAddr, String> {
+    raw.parse()
+        .map_err(|error| format!("invalid --callback-bind value {raw:?}: {error}"))
 }
 
 #[cfg(test)]

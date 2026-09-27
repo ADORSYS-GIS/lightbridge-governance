@@ -48,6 +48,8 @@ fn config() -> crate::config::OauthConfig {
         copilot_spool_path: None,
         otel_headers_debounce_ms: 240_000,
         open_browser: false,
+        callback_port: None,
+        callback_bind: std::net::IpAddr::from([127, 0, 0, 1]),
         token_exchange: None,
         last_no_claude: false,
         last_no_codex: false,
