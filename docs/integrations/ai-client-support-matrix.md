@@ -24,7 +24,7 @@ capability works per client; that one says *how*, and exactly where it breaks.
 | **Inference auth** | ✅ `apiKeyHelper`, refreshes | ⚠️ absolute `auth.command` plus `auth.args` array, see below | ✅ **full OAuth2 + refresh**, via `opencode-oauth2` | ❌ |
 | **Written by `governance-auth configure`** | ✅ with `--gateway-url` | ✅ with `--gateway-url`, and set as the **default** provider | ❌ not configured here | ⚠️ telemetry only |
 | **Telemetry endpoint** | ✅ `env.OTEL_EXPORTER_OTLP_ENDPOINT` in `settings.json` | ✅ `otel.exporter.otlp-http.endpoint` | ✅ `@vymalo/opencode-otel`, its OWN collector — see below | ✅ **not used** — `exporterType: file` + `outfile`, drained by `copilot push` |
-| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ❌ static only | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
+| **Telemetry auth, refreshing** | ✅ `otelHeadersHelper` | ✅ **out of band** — under `daemon` (ADR-0016) Codex exports to the loopback daemon with no credential; the daemon mints its own per forward | ❌ n/a | ✅ **out of band** — Copilot holds no credential; the drain refreshes its own |
 | **Telemetry auth, static** | ✅ | ✅ `otel.exporter.otlp-http.headers` | ❌ n/a | n/a — deliberately not used, see below |
 | **Model context windows** | ✅ `modelOverrides` (not yet wired) | — | ✅ **already consumes `/v1/models/info`** | — |
 | **Config file is safely mergeable** | ✅ JSON | ✅ TOML via `toml_edit` | ⚠️ JSONC — same hazard as VS Code | ⚠️ JSONC — refused if it has comments |
@@ -338,6 +338,10 @@ binary where they would silently rot as models change.
   [#84](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/84) —
   a lightbridge-authz key in `otel.exporter.otlp-http.headers` is accepted
   by the collector today (verified: 200, span reached Alloy).
+  *Superseded:* #142 narrowed the collector to `aud: governance-auth-cli`, so
+  that static key is now rejected. Under `daemon` (ADR-0016) Codex exports to
+  the loopback daemon with no credential and its telemetry arrives that way
+  ([#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144)).
 - **VS Code Copilot — telemetry only**, via the file exporter plus a drain
   `configure` schedules. It is the only client whose telemetry credential lives
   entirely outside the editor, which is also why it is the only one Settings
