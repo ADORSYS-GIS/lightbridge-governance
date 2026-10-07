@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.10.1](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.10.0...v2.10.1) (2026-10-07)
+
+
+### Documentation
+
+* **integrations:** Codex telemetry refreshes via the local daemon ([5b75b3f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/5b75b3f7c75bebd40a173ee6efd441763404cf03))
+* **integrations:** Codex telemetry refreshes via the local daemon ([7c4a6fe](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7c4a6fea82478d40ed145eacdf325fb18a85d904)), closes [#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144)
+
 ## [2.10.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.9.1...v2.10.0) (2026-09-27)
 
 
