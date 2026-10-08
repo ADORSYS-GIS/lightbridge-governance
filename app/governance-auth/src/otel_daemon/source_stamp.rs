@@ -87,7 +87,9 @@ use prost::Message;
 use super::receive::WireFormat;
 
 mod metrics;
+mod traces;
 pub(super) use metrics::enrich_metrics;
+pub(super) use traces::enrich_traces;
 
 /// The resource attribute this module writes. Matches the key
 /// `charts/lightbridge-governance`'s `publicOtelCollector` helper stamps --
