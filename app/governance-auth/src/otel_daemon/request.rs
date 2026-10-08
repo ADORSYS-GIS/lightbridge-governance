@@ -60,7 +60,9 @@ pub(super) async fn handle_request(
         // covers why this needs its own signal-specific check, parallel to
         // the logs one above rather than folded into it.
         signal::Signal::Metrics => source_stamp::enrich_metrics(&incoming.body, incoming.format),
-        signal::Signal::Traces => incoming.body,
+        // #369: before this, traces passed through unstamped and took the collector's static
+        // `claude-code` default -- which is how Copilot Chat spans became claude-code executions.
+        signal::Signal::Traces => source_stamp::enrich_traces(&incoming.body, incoming.format),
     };
     retained_response(&state, signal, body, incoming.format).await
 }
