@@ -252,6 +252,16 @@ spec:
     limits:
       cpu: {{ $otel.resources.limits.cpu | quote }}
       memory: {{ $otel.resources.limits.memory | quote }}
+  {{- /* Pod placement: the CR's spec.nodeSelector / spec.tolerations, which the
+         operator copies onto the collector Deployment. Empty = unrendered. */}}
+  {{- with $otel.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $otel.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   config:
     extensions:
       # Validates the caller's bearer token against the lightbridge-authz
@@ -888,3 +898,4 @@ spec:
     # Kubelet probes -- see the trap called out above this policy.
     - fromEntities: [host, remote-node, health]
 {{- end -}}
+

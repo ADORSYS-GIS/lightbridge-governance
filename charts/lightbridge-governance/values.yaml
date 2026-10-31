@@ -738,6 +738,15 @@ aiCliOtel:
     # collector looks perfectly healthy.
     traefikNamespace: traefik
     annotations: {}
+  # Pod placement, rendered as the OpenTelemetryCollector's spec.nodeSelector /
+  # spec.tolerations (the operator copies them onto the collector Deployment).
+  # Empty = schedule anywhere (render unchanged). A dedicated, tainted node group
+  # needs BOTH: the selector pins the pod there, the toleration admits it.
+  #   nodeSelector: { workload: converse }
+  #   tolerations:
+  #     - { key: workload, operator: Equal, value: converse, effect: NoSchedule }
+  nodeSelector: {}
+  tolerations: []
   resources:
     requests:
       cpu: 50m
@@ -887,6 +896,15 @@ opencodeOtel:
     # collector looks perfectly healthy.
     traefikNamespace: traefik
     annotations: {}
+  # Pod placement, rendered as the OpenTelemetryCollector's spec.nodeSelector /
+  # spec.tolerations (the operator copies them onto the collector Deployment).
+  # Empty = schedule anywhere (render unchanged). A dedicated, tainted node group
+  # needs BOTH: the selector pins the pod there, the toleration admits it.
+  #   nodeSelector: { workload: converse }
+  #   tolerations:
+  #     - { key: workload, operator: Equal, value: converse, effect: NoSchedule }
+  nodeSelector: {}
+  tolerations: []
   resources:
     requests:
       cpu: 50m
