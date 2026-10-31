@@ -36,6 +36,11 @@ metadata:
     {{- end }}
 spec:
   groups:
+    {{- /* Both groups below read metrics only the API exports
+           (governance_connector_*, governance_org_*): with the API off they would
+           never fire, and CopilotFreshnessMetricAbsent would fire forever. The
+           .jobs group reads kube-state-metrics and stays. */}}
+    {{- if include "lightbridge-governance.apiEnabled" . }}
     # ---------------------------------------------------------------------
     # Connector health. Sourced from `ingest_manifests` via the always-on API
     # (ADR-0007), so these survive a collector restart, label drift and a
@@ -208,6 +213,7 @@ spec:
               on a fresh deployment before the first sync; otherwise suspect a
               wrong TENANT_ID (an empty one used to write rows no scoped query
               could find) or a connector that has never completed a run.
+    {{- end }}
 
     # ---------------------------------------------------------------------
     # Raw CronJob health, from kube-state-metrics rather than this API's own

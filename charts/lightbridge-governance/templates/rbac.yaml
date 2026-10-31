@@ -1,4 +1,4 @@
-{{- if .Values.rbac.enabled }}
+{{- if and .Values.rbac.enabled (include "lightbridge-governance.apiEnabled" .) }}
 # TokenReview RBAC for /internal/v1/resolve caller authentication (ADR-0017).
 # The governance pod needs `create` on `tokenreviews` so the
 # TokenReviewVerifier can validate Bearer tokens presented by Authorino's
