@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.11.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.10.0...v2.11.0) (2026-10-31)
+
+
+### Features
+
+* **lightbridge-governance:** collector placement keys and a clean API-off switch ([#372](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/372)) ([24f73f5](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/24f73f517f8bbf99bec92250c605a29373814d41))
+
+
+### Bug Fixes
+
+* **lightbridge-governance:** set the collector PDB on the CR instead of rendering one ([#373](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/373)) ([4dcbc58](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/4dcbc58eedbe668034f7fa700a0878e5c33ed482))
+
+
+### Documentation
+
+* **integrations:** Codex telemetry refreshes via the local daemon ([5b75b3f](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/5b75b3f7c75bebd40a173ee6efd441763404cf03))
+* **integrations:** Codex telemetry refreshes via the local daemon ([7c4a6fe](https://github.com/ADORSYS-GIS/lightbridge-governance/commit/7c4a6fea82478d40ed145eacdf325fb18a85d904)), closes [#144](https://github.com/ADORSYS-GIS/lightbridge-governance/issues/144)
+
 ## [2.10.0](https://github.com/ADORSYS-GIS/lightbridge-governance/compare/v2.9.1...v2.10.0) (2026-09-27)
 
 
