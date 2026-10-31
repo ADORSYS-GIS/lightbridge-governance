@@ -785,7 +785,8 @@ aiCliOtel:
     # When the emptyDir exceeds sizeLimit the kubelet EVICTS the pod and the
     # emptyDir resets. Mitigations in this chart: `level: warn` on the logger
     # (only warn+ lines reach the file, not INFO), and a PodDisruptionBudget
-    # (minAvailable: 1) so a flood cannot evict both replicas at once. A
+    # (minAvailable: 1, set as the collector CR's spec.podDisruptionBudget in
+    # _helpers.tpl) so a flood cannot evict both replicas at once. A
     # rotation/truncation mechanism and a per-IP ingress rate limit are
     # follow-ups if this is ever sustained.
     #
