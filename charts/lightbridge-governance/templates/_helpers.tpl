@@ -262,6 +262,32 @@ spec:
   tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- /*
+  PodDisruptionBudget (lightbridge-governance#275, review finding): the
+  refusal-capture emptyDir can be filled by an attacker driving auth failures on
+  this public, unauthenticated-by-definition endpoint, which evicts the pod
+  (emptyDir over sizeLimit). With `replicas: 2` and no PDB, a sustained flood
+  can evict BOTH replicas near-simultaneously, dropping real Claude Code / Codex
+  / Copilot / OpenCode telemetry for the reschedule window. `minAvailable: 1`
+  guarantees at least one replica stays up through any voluntary disruption
+  (including the emptyDir-eviction path).
+  ⚠️ Narrower than that last clause reads: the kubelet's own eviction of a pod
+  whose emptyDir exceeds sizeLimit does not go through the Eviction API, so no
+  PDB can block it. What this PDB does stop is a drain or other API eviction
+  taking out the surviving replica while the other one is down.
+
+  Set on the CR, NOT as a chart-rendered PodDisruptionBudget: the operator
+  always reconciles its own PDB named `<CR name>-collector` (internal/manifests/
+  collector/poddisruptionbudget.go), defaulting to `maxUnavailable: 1` when this
+  field is unset. A chart PDB of the same name with `minAvailable: 1` made the
+  server-side-apply merge carry BOTH fields, which the API rejects -- Argo CD's
+  diff failed with "minAvailable and maxUnavailable cannot be both set" and the
+  whole Application stopped syncing. With the field set here, the operator
+  builds the PDB from it and replaces the spec wholesale (mutatePolicyV1PDB:
+  existing.Spec = desired.Spec), so only minAvailable remains.
+  */}}
+  podDisruptionBudget:
+    minAvailable: 1
   config:
     extensions:
       # Validates the caller's bearer token against the lightbridge-authz
