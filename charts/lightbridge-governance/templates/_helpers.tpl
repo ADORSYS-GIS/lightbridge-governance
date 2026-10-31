@@ -252,6 +252,16 @@ spec:
     limits:
       cpu: {{ $otel.resources.limits.cpu | quote }}
       memory: {{ $otel.resources.limits.memory | quote }}
+  {{- /* Pod placement: the CR's spec.nodeSelector / spec.tolerations, which the
+         operator copies onto the collector Deployment. Empty = unrendered. */}}
+  {{- with $otel.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $otel.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   config:
     extensions:
       # Validates the caller's bearer token against the lightbridge-authz
@@ -887,4 +897,17 @@ spec:
               protocol: TCP
     # Kubelet probes -- see the trap called out above this policy.
     - fromEntities: [host, remote-node, health]
+{{- end -}}
+
+{{/*
+Whether the API is deployed: app-template's own `controllers.api.enabled`
+(absent = true, app-template's default). app-template drops the Deployment by
+itself; the API's companions that THIS chart renders -- its env ConfigMap, its
+ServiceMonitor, its TokenReview RBAC and the alert groups built on the metrics
+only the API exports -- key off this so turning the API off leaves nothing
+behind that points at it (or, for `absent()` alerts, fires forever without it).
+Returns "true" or "".
+*/}}
+{{- define "lightbridge-governance.apiEnabled" -}}
+{{- if ne (toString (dig "controllers" "api" "enabled" true (index .Values "app-template"))) "false" }}true{{ end }}
 {{- end -}}

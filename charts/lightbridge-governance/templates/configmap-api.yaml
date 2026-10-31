@@ -24,6 +24,7 @@
 # matches no rows for tenant "", so governance_connector_has_synced reports 0
 # and the "no successful sync" alert fires instead of a healthy-looking gap.
 # ai-helm-values supplies the real value.
+{{- if include "lightbridge-governance.apiEnabled" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,3 +33,4 @@ metadata:
     app: {{ .Values.name }}
 data:
   TENANT_ID: {{ .Values.copilot.tenantId | quote }}
+{{- end }}
